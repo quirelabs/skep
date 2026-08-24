@@ -259,6 +259,12 @@ pub struct HealthCheck {
 }
 
 impl HealthCheck {
+    /// Runs the check once. Public because the question a frontend or a test
+    /// wants to ask is the same one the engine asks.
+    pub async fn check(&self) -> std::result::Result<(), String> {
+        crate::probe::check(&self.probe, self.timeout).await
+    }
+
     pub fn new(probe: Probe) -> Self {
         Self {
             probe,
@@ -338,16 +344,37 @@ impl Default for Backoff {
     }
 }
 
+/// How to ask a service to stop. Which signal means "wind down now" is a
+/// property of the service, not of the engine: Postgres reads SIGTERM as
+/// "wait for every client to leave first", which is not what a dev tool wants.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopSignal {
+    #[default]
+    Term,
+    Int,
+    Quit,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShutdownSpec {
-    /// Time between SIGTERM and SIGKILL.
+    #[serde(default)]
+    pub signal: StopSignal,
+    /// Time between that signal and SIGKILL.
     #[serde(rename = "grace_ms", with = "crate::serde_ms")]
     pub grace: Duration,
+}
+
+impl ShutdownSpec {
+    pub fn new(signal: StopSignal, grace: Duration) -> Self {
+        Self { signal, grace }
+    }
 }
 
 impl Default for ShutdownSpec {
     fn default() -> Self {
         Self {
+            signal: StopSignal::Term,
             grace: Duration::from_secs(10),
         }
     }

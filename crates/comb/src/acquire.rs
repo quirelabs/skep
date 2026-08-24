@@ -2,9 +2,11 @@
 //! until it has been downloaded whole and matched against its pinned hash, so
 //! "already installed" is a claim that can be trusted.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, LazyLock, Mutex as Registry};
 
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
@@ -17,6 +19,19 @@ use crate::platform::Platform;
 use crate::scratch::ScratchDir;
 
 const CHUNK: usize = 64 * 1024;
+
+/// One install per target at a time. Two frontends asking for the same service
+/// should wait for one download, not race two.
+static IN_FLIGHT: LazyLock<Registry<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| Registry::new(HashMap::new()));
+
+async fn claim(target: &Path) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = {
+        let mut registry = IN_FLIGHT.lock().expect("the install registry");
+        registry.entry(target.to_path_buf()).or_default().clone()
+    };
+    lock.lock_owned().await
+}
 
 /// One pinned artifact. The hash is our own, recorded by `scripts/pin-release.sh`,
 /// and is the trust root rather than whatever a server serves alongside it.
@@ -54,6 +69,11 @@ impl Fetch for Curl {
                 "--location",
                 "--silent",
                 "--show-error",
+                // Mirrors and CDNs return the occasional 5xx.
+                "--retry",
+                "3",
+                "--retry-delay",
+                "1",
                 // No redirect may downgrade the transport, and an error page
                 // must never reach the hasher.
                 "--proto",
@@ -97,6 +117,12 @@ async fn install<F: Fetch>(
     }
 
     let target = paths.binary_dir(name, &release.version);
+    if target.is_dir() {
+        return Ok(target);
+    }
+
+    let _claim = claim(&target).await;
+    // Someone may have finished this install while we waited for the claim.
     if target.is_dir() {
         return Ok(target);
     }
@@ -326,6 +352,29 @@ mod tests {
             .unwrap();
 
         assert_eq!(local.calls.load(Ordering::Relaxed), 1, "fetched twice");
+    }
+
+    #[tokio::test]
+    async fn concurrent_installs_download_once() {
+        let (fixture, local, release) = fixture("concurrent", false);
+        let local = Arc::new(local);
+
+        let attempts: Vec<_> = (0..4)
+            .map(|_| {
+                let (local, paths, release) =
+                    (local.clone(), fixture.paths.clone(), release.clone());
+                tokio::spawn(async move { install(&*local, &paths, "mailpit", &release).await })
+            })
+            .collect();
+        for attempt in attempts {
+            attempt.await.unwrap().unwrap();
+        }
+
+        assert_eq!(
+            local.calls.load(Ordering::Relaxed),
+            1,
+            "fetched more than once"
+        );
     }
 
     #[tokio::test]

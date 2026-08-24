@@ -20,7 +20,7 @@ use crate::paths::Paths;
 use crate::platform;
 use crate::probe;
 use crate::scratch::ScratchDir;
-use crate::spec::{HealthCheck, PrepareStep, RestartPolicy, ServiceSpec};
+use crate::spec::{HealthCheck, PrepareStep, RestartPolicy, ServiceSpec, ShutdownSpec, StopSignal};
 use crate::state::ServiceState;
 use crate::time::Timestamp;
 
@@ -92,12 +92,12 @@ impl Process {
     /// SIGTERM, then SIGKILL once the grace period is up. If asking politely
     /// failed there is nothing to wait for, so the grace is skipped rather
     /// than spent pretending.
-    async fn shut_down(&mut self, grace: Duration) {
+    async fn shut_down(&mut self, shutdown: &ShutdownSpec) {
         let asked = match self.child.id() {
-            Some(pid) => platform::terminate(pid).is_ok(),
+            Some(pid) => platform::terminate(pid, shutdown.signal).is_ok(),
             None => false,
         };
-        if !asked || timeout(grace, self.child.wait()).await.is_err() {
+        if !asked || timeout(shutdown.grace, self.child.wait()).await.is_err() {
             let _ = self.child.start_kill();
             let _ = self.child.wait().await;
         }
@@ -712,11 +712,14 @@ impl Engine {
         Some(instance.attempt)
     }
 
-    async fn grace_of(&self, id: &InstanceId) -> Duration {
+    async fn shutdown_of(&self, id: &InstanceId) -> ShutdownSpec {
         self.spec_of(id)
             .await
-            .map(|spec| spec.shutdown.grace)
-            .unwrap_or(FALLBACK_GRACE)
+            .map(|spec| spec.shutdown)
+            .unwrap_or_else(|_| ShutdownSpec {
+                signal: StopSignal::Term,
+                grace: FALLBACK_GRACE,
+            })
     }
 
     /// The only way a state ever changes. Illegal moves are rejected before
@@ -773,7 +776,7 @@ async fn supervise(
         let exit = tokio::select! {
             exit = process.child.wait() => exit,
             _ = stop.changed() => {
-                process.shut_down(engine.grace_of(&id).await).await;
+                process.shut_down(&engine.shutdown_of(&id).await).await;
                 return;
             }
         };

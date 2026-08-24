@@ -11,7 +11,7 @@ compile_error!(
      Linux is the intended second platform; Windows is out of scope."
 );
 
-pub fn terminate(_pid: u32) -> io::Result<()> {
+pub fn terminate(_pid: u32, _signal: crate::spec::StopSignal) -> io::Result<()> {
     unreachable!("the platform module fails to compile before this is reachable")
 }
 

@@ -5,7 +5,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use comb::{Engine, Error, EventKind, LogStream, ServiceState, ShutdownSpec};
+use comb::{Engine, Error, EventKind, LogStream, ServiceState, ShutdownSpec, StopSignal};
 use support::{TestHome, fake_spec, wait_for_log};
 
 #[tokio::test]
@@ -92,8 +92,8 @@ async fn an_uncooperative_process_is_killed_once_the_grace_expires() {
     let home = TestHome::new();
     let engine = Engine::new();
     let grace = Duration::from_millis(300);
-    let spec =
-        fake_spec(&home, "valkey@8", &["--ignore-term"]).with_shutdown(ShutdownSpec { grace });
+    let spec = fake_spec(&home, "valkey@8", &["--ignore-term"])
+        .with_shutdown(ShutdownSpec::new(StopSignal::Term, grace));
     let id = spec.id.clone();
     engine.register(spec).await.unwrap();
     let mut logs = engine.subscribe_logs(&id).await.unwrap();

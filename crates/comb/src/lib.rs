@@ -26,7 +26,7 @@ pub use paths::Paths;
 pub use platform::Platform;
 pub use spec::{
     Backoff, BinarySpec, HealthCheck, Port, PrepareStep, Probe, RestartPolicy, RestartSpec,
-    ServiceSpec, ShutdownSpec,
+    ServiceSpec, ShutdownSpec, StopSignal,
 };
 pub use state::ServiceState;
 pub use time::Timestamp;

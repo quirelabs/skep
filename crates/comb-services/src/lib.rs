@@ -2,12 +2,14 @@
 //! it; the engine owns spawning and supervision and never calls back in here.
 
 mod mailpit;
+mod postgres;
 
 use std::collections::BTreeMap;
 
 use comb::{Error, InstanceId, Label, Paths, Platform, Release, Result, ServiceSpec, Version};
 
 pub use mailpit::Mailpit;
+pub use postgres::Postgres;
 
 /// One pinned artifact in a catalog, keyed by version and platform. Generated
 /// by `scripts/pin-release.sh`; the hash is what every download is checked
@@ -149,7 +151,7 @@ pub async fn install(adapter: &dyn ServiceAdapter, version: &Version, paths: &Pa
 
 /// Every service comb ships with.
 pub fn catalog() -> &'static [&'static dyn ServiceAdapter] {
-    &[&Mailpit]
+    &[&Mailpit, &Postgres]
 }
 
 pub fn find(name: &str) -> Option<&'static dyn ServiceAdapter> {

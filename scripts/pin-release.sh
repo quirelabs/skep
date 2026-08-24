@@ -74,6 +74,11 @@ echo "archive contents:" >&2
 tar tzf "$archive" | head -12 | sed 's/^/  /' >&2
 echo >&2
 
+# One shared top-level directory means the payload is wrapped and must be
+# stripped. Inferring it beats remembering it per service.
+roots=$(tar tzf "$archive" | cut -d/ -f1 | sort -u | wc -l | tr -d ' ')
+if [[ $roots == 1 ]]; then strip=1; else strip=0; fi
+
 cat <<ENTRY
 Release {
     version: Version::new("$version")?,
@@ -83,6 +88,6 @@ print({'macos-arm64':'MacosArm64','macos-x86_64':'MacosX8664','linux-arm64':'Lin
     url: "$url".to_string(),
     sha256: "$sha256".to_string(),
     size: $size,
-    strip_components: 0,
+    strip_components: $strip,
 }
 ENTRY

@@ -4,11 +4,18 @@
 use std::io;
 use std::process::ExitStatus;
 
+use crate::spec::StopSignal;
+
 /// Ask a process to shut down cleanly. Escalating to SIGKILL once the grace
 /// period expires is the caller's job.
-pub fn terminate(pid: u32) -> io::Result<()> {
+pub fn terminate(pid: u32, signal: StopSignal) -> io::Result<()> {
+    let number = match signal {
+        StopSignal::Term => libc::SIGTERM,
+        StopSignal::Int => libc::SIGINT,
+        StopSignal::Quit => libc::SIGQUIT,
+    };
     // Safety: kill is safe for any pid; an unknown one just returns ESRCH.
-    let sent = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    let sent = unsafe { libc::kill(pid as libc::pid_t, number) };
     if sent == 0 {
         Ok(())
     } else {
