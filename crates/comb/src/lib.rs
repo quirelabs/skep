@@ -7,6 +7,7 @@ mod event;
 mod id;
 mod logs;
 mod paths;
+mod probe;
 mod serde_ms;
 mod signal;
 mod spec;

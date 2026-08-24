@@ -1,14 +1,23 @@
-//! A process the supervision tests can steer: it can hold a port, chatter on
-//! both output streams, and die on cue. Deliberately dependency free.
+//! A process the supervision tests can steer: it can hold a port, answer a
+//! protocol, chatter on both output streams, and die on cue.
 
-use std::io::Write;
-use std::net::TcpListener;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::Duration;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Speak {
+    Nothing,
+    Resp,
+    Http,
+}
 
 struct Options {
     ignore_term: bool,
     listen: Option<u16>,
+    listen_delay: Duration,
+    speak: Speak,
     emit_every: Option<Duration>,
     exit_after: Option<Duration>,
     exit_code: i32,
@@ -28,19 +37,8 @@ fn main() {
     }
 
     if let Some(port) = options.listen {
-        match TcpListener::bind(("127.0.0.1", port)) {
-            Ok(listener) => {
-                thread::spawn(move || {
-                    for stream in listener.incoming() {
-                        drop(stream);
-                    }
-                });
-            }
-            Err(error) => {
-                eprintln!("fake-service: cannot bind {port}: {error}");
-                std::process::exit(1);
-            }
-        }
+        let (delay, speak) = (options.listen_delay, options.speak);
+        thread::spawn(move || serve(port, delay, speak));
     }
 
     println!("ready pid={}", std::process::id());
@@ -68,6 +66,36 @@ fn main() {
     }
 }
 
+/// Binding late is what lets a test prove the engine waits for the port rather
+/// than for the clock.
+fn serve(port: u16, delay: Duration, speak: Speak) {
+    thread::sleep(delay);
+    let listener = match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("fake-service: cannot bind {port}: {error}");
+            std::process::exit(1);
+        }
+    };
+    for stream in listener.incoming().flatten() {
+        answer(stream, speak);
+    }
+}
+
+fn answer(mut stream: TcpStream, speak: Speak) {
+    if speak == Speak::Nothing {
+        return;
+    }
+    let mut request = [0u8; 512];
+    let _ = stream.read(&mut request);
+    let reply: &[u8] = match speak {
+        Speak::Resp => b"+PONG\r\n",
+        Speak::Http => b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        Speak::Nothing => b"",
+    };
+    let _ = stream.write_all(reply);
+}
+
 /// Refuse to die politely, so the supervisor has to escalate.
 #[cfg(unix)]
 fn ignore_term() {
@@ -87,6 +115,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
         ignore_term: false,
         listen: None,
+        listen_delay: Duration::ZERO,
+        speak: Speak::Nothing,
         emit_every: None,
         exit_after: None,
         exit_code: 1,
@@ -94,21 +124,39 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut args = args.peekable();
 
     while let Some(flag) = args.next() {
-        let mut value = || {
-            args.next()
-                .ok_or_else(|| format!("{flag} needs a value"))?
-                .parse::<u64>()
-                .map_err(|_| format!("{flag} needs a number"))
-        };
         match flag.as_str() {
             "--ignore-term" => options.ignore_term = true,
-            "--listen" => options.listen = Some(value()? as u16),
-            "--emit-every-ms" => options.emit_every = Some(Duration::from_millis(value()?)),
-            "--exit-after-ms" => options.exit_after = Some(Duration::from_millis(value()?)),
-            "--exit-code" => options.exit_code = value()? as i32,
+            "--listen" => options.listen = Some(number(&mut args, &flag)? as u16),
+            "--listen-delay-ms" => {
+                options.listen_delay = Duration::from_millis(number(&mut args, &flag)?)
+            }
+            "--speak" => {
+                options.speak = match text(&mut args, &flag)?.as_str() {
+                    "resp" => Speak::Resp,
+                    "http" => Speak::Http,
+                    other => return Err(format!("unknown dialect {other}")),
+                }
+            }
+            "--emit-every-ms" => {
+                options.emit_every = Some(Duration::from_millis(number(&mut args, &flag)?))
+            }
+            "--exit-after-ms" => {
+                options.exit_after = Some(Duration::from_millis(number(&mut args, &flag)?))
+            }
+            "--exit-code" => options.exit_code = number(&mut args, &flag)? as i32,
             other => return Err(format!("unknown flag {other}")),
         }
     }
 
     Ok(options)
+}
+
+fn text(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
+    args.next().ok_or_else(|| format!("{flag} needs a value"))
+}
+
+fn number(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<u64, String> {
+    text(args, flag)?
+        .parse()
+        .map_err(|_| format!("{flag} needs a number"))
 }

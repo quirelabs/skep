@@ -44,6 +44,18 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    #[error("{instance} never became ready: {reason}")]
+    NotReady {
+        instance: InstanceId,
+        reason: String,
+    },
+
+    #[error("{instance} died while starting: {reason}")]
+    DiedStarting {
+        instance: InstanceId,
+        reason: String,
+    },
+
     #[error("the log buffer for {0} was poisoned by a panic")]
     Poisoned(InstanceId),
 

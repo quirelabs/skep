@@ -153,3 +153,23 @@ pub async fn expect_none(
     .await;
     assert!(arrived.is_err(), "unexpected event {:?}", arrived.unwrap());
 }
+
+use comb::{HealthCheck, Probe};
+
+/// A port nobody is using yet. Bound and released so the child can take it.
+pub fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("binds an ephemeral port")
+        .local_addr()
+        .expect("has an address")
+        .port()
+}
+
+pub fn health(probe: Probe, startup_timeout: Duration) -> HealthCheck {
+    HealthCheck {
+        probe,
+        interval: Duration::from_millis(20),
+        timeout: Duration::from_millis(500),
+        startup_timeout,
+    }
+}

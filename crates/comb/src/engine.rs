@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
@@ -15,8 +15,9 @@ use crate::event::{Event, EventKind, LogLine, LogStream};
 use crate::id::InstanceId;
 use crate::logs::{LogSink, RingBuffer, pump};
 use crate::paths::Paths;
+use crate::probe;
 use crate::signal;
-use crate::spec::{RestartPolicy, ServiceSpec};
+use crate::spec::{HealthCheck, RestartPolicy, ServiceSpec};
 use crate::state::ServiceState;
 use crate::time::Timestamp;
 
@@ -225,8 +226,9 @@ impl Engine {
     pub async fn start(&self, id: &InstanceId) -> Result<()> {
         self.transition(id, ServiceState::Starting).await?;
         self.set_attempt(id, 0).await;
+        let spec = self.spec_of(id).await?;
 
-        let process = match self.launch(id).await {
+        let process = match self.launch_and_settle(id, &spec).await {
             Ok(process) => process,
             Err(error) => {
                 self.transition(id, ServiceState::failed(error.to_string()))
@@ -284,6 +286,56 @@ impl Engine {
         let mut instances = self.inner.instances.write().await;
         if let Some(instance) = instances.get_mut(id) {
             instance.running = Some(Running { stop, task });
+        }
+    }
+
+    /// Starts the process and waits for it to answer. Dropping the process on
+    /// any failure is what stops a half started service from lingering.
+    async fn launch_and_settle(&self, id: &InstanceId, spec: &ServiceSpec) -> Result<Process> {
+        let mut process = self.launch(id).await?;
+        let settled = tokio::select! {
+            result = self.await_ready(id, &spec.health) => result,
+            exit = process.child.wait() => {
+                let reason = match exit {
+                    Ok(status) => signal::describe_exit(&status),
+                    Err(error) => format!("could not be waited on: {error}"),
+                };
+                Err(Error::DiedStarting { instance: id.clone(), reason })
+            }
+        };
+        settled.map(|()| process)
+    }
+
+    /// Polls until the service answers or the startup budget runs out. Only the
+    /// final failure is published: a boot that probes fifty times should not
+    /// put fifty events on the stream.
+    async fn await_ready(&self, id: &InstanceId, health: &HealthCheck) -> Result<()> {
+        let started = Instant::now();
+        loop {
+            match probe::check(&health.probe, health.timeout).await {
+                Ok(()) => {
+                    self.inner.emit(
+                        Some(id.clone()),
+                        EventKind::ProbeSucceeded {
+                            after: started.elapsed(),
+                        },
+                    );
+                    return Ok(());
+                }
+                Err(reason) if started.elapsed() >= health.startup_timeout => {
+                    self.inner.emit(
+                        Some(id.clone()),
+                        EventKind::ProbeFailed {
+                            reason: reason.clone(),
+                        },
+                    );
+                    return Err(Error::NotReady {
+                        instance: id.clone(),
+                        reason,
+                    });
+                }
+                Err(_) => sleep(health.interval).await,
+            }
         }
     }
 
@@ -364,7 +416,7 @@ impl Engine {
             }
 
             self.transition(id, ServiceState::Starting).await.ok()?;
-            match self.launch(id).await {
+            match self.launch_and_settle(id, &spec).await {
                 Ok(process) => {
                     self.transition(id, ServiceState::Ready).await.ok()?;
                     return Some(process);
