@@ -102,6 +102,18 @@ pub enum Error {
     #[error("{0} is not implemented yet")]
     NotImplemented(&'static str),
 
+    #[error("no skep engine is running")]
+    NoHost,
+
+    #[error("another process is already hosting the engine{}", match pid {
+        Some(pid) => format!(" (pid {pid})"),
+        None => String::new(),
+    })]
+    AlreadyHosted { pid: Option<u32> },
+
+    #[error("{message}")]
+    Protocol { message: String },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

@@ -10,12 +10,12 @@ use crate::error::{Error, Result};
 #[cfg(target_os = "macos")]
 mod mac;
 #[cfg(target_os = "macos")]
-pub(crate) use mac::{describe_exit, terminate};
+pub(crate) use mac::{describe_exit, restrict, terminate, try_lock_exclusive};
 
 #[cfg(not(target_os = "macos"))]
 mod unsupported;
 #[cfg(not(target_os = "macos"))]
-pub(crate) use unsupported::{describe_exit, terminate};
+pub(crate) use unsupported::{describe_exit, restrict, terminate, try_lock_exclusive};
 
 /// A lookup key for pinned downloads. Never spelled out inside a URL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

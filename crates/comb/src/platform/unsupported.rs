@@ -2,7 +2,9 @@
 //! the build on purpose: a stub that quietly succeeds would turn graceful
 //! shutdown into "nothing happened" and still look like it worked.
 
+use std::fs::File;
 use std::io;
+use std::path::Path;
 use std::process::ExitStatus;
 
 compile_error!(
@@ -16,5 +18,13 @@ pub fn terminate(_pid: u32, _signal: crate::spec::StopSignal) -> io::Result<()> 
 }
 
 pub fn describe_exit(_status: &ExitStatus) -> String {
+    unreachable!("the platform module fails to compile before this is reachable")
+}
+
+pub fn try_lock_exclusive(_file: &File) -> io::Result<bool> {
+    unreachable!("the platform module fails to compile before this is reachable")
+}
+
+pub fn restrict(_path: &Path, _mode: u32) -> io::Result<()> {
     unreachable!("the platform module fails to compile before this is reachable")
 }

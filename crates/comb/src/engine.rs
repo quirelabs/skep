@@ -311,6 +311,21 @@ impl Engine {
         self.cascade(&reversed, &waits, Action::Stop).await
     }
 
+    /// Stops every service that is not already stopped, in dependency order.
+    pub async fn stop_everything(&self) -> Result<()> {
+        let running: Vec<InstanceId> = self
+            .status()
+            .await
+            .into_iter()
+            .filter(|status| status.state != ServiceState::Stopped)
+            .map(|status| status.id)
+            .collect();
+        if running.is_empty() {
+            return Ok(());
+        }
+        self.stop_all(&running).await
+    }
+
     async fn dependency_edges(&self) -> graph::Edges {
         self.inner
             .instances
@@ -376,7 +391,11 @@ impl Engine {
 
                 let outcome = match action {
                     Action::Start => engine.start(&id).await,
-                    Action::Stop => engine.stop(&id).await,
+                    // A dependency that is already down is not a failure.
+                    Action::Stop => match engine.status_of(&id).await {
+                        Ok(status) if status.state == ServiceState::Stopped => Ok(()),
+                        _ => engine.stop(&id).await,
+                    },
                 };
                 let _ = done.send(Some(outcome.is_ok()));
                 outcome
