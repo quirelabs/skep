@@ -2,13 +2,11 @@
 //! starts one behind your back, because a background host nobody asked for is
 //! how two of them end up racing.
 
-mod project;
 mod serve;
 
 use anyhow::{Result, anyhow, bail};
-use comb::{Client, Error, InstanceId, Paths, Request, Response, ServiceStatus, Version};
-use comb_services::{Request as ServiceRequest, find};
-use std::collections::BTreeMap;
+use comb::{Client, Error, InstanceId, Paths, Request, Response, ServiceStatus};
+use comb_services::{instance as resolve_instance, project};
 
 const USAGE: &str = "\
 skep, a local dev services manager
@@ -73,29 +71,9 @@ async fn dispatch() -> Result<()> {
     }
 }
 
-/// Turns `postgres` or `postgres@16.10.0` into the instance the engine knows.
+/// Turns `postgres` or `postgres@16` into the instance the engine knows.
 fn resolve(name: &str) -> Result<InstanceId> {
-    let (service, version) = match name.split_once('@') {
-        Some((service, version)) => (service, Some(version)),
-        None => (name, None),
-    };
-
-    let adapter = find(service).ok_or_else(|| {
-        let known: Vec<&str> = comb_services::catalog()
-            .iter()
-            .map(|adapter| adapter.name())
-            .collect();
-        anyhow!(
-            "unknown service {service}, try one of: {}",
-            known.join(", ")
-        )
-    })?;
-
-    let version = match version {
-        Some(text) => comb_services::resolve(adapter, text)?,
-        None => Version::new(adapter.default_version())?,
-    };
-    Ok(ServiceRequest::new().instance(adapter, &version)?)
+    Ok(resolve_instance(name, None)?)
 }
 
 /// Brings up everything the project asks for. One service failing never stops
@@ -121,10 +99,7 @@ async fn up() -> Result<()> {
     let Response::Status { services } = client.send(&Request::Status).await? else {
         bail!("unexpected reply");
     };
-    let running: BTreeMap<String, ServiceStatus> = services
-        .into_iter()
-        .map(|status| (status.id.to_string(), status))
-        .collect();
+    let running = services;
 
     let mut failed = 0;
     for (name, wanted) in &project.services {
@@ -148,68 +123,13 @@ async fn up() -> Result<()> {
 
 async fn bring_up(
     client: &mut Client,
-    running: &BTreeMap<String, ServiceStatus>,
+    running: &[ServiceStatus],
     name: &str,
-    wanted: &project::Service,
+    wanted: &comb_services::project::Service,
 ) -> Result<String> {
-    let adapter = find(name).ok_or_else(|| anyhow!("unknown service {name}"))?;
-    let version = match &wanted.version {
-        Some(text) => comb_services::resolve(adapter, text)?,
-        None => Version::new(adapter.default_version())?,
-    };
-
-    let mut request = ServiceRequest::new().with_version(version.clone());
-    if let Some(port) = wanted.port {
-        let (main, _) = adapter
-            .default_ports()
-            .first()
-            .ok_or_else(|| anyhow!("{name} listens on no ports"))?;
-        request = request.with_port(*main, port);
-    }
-    for (port, number) in &wanted.ports {
-        let known: Vec<&str> = adapter.default_ports().iter().map(|(n, _)| *n).collect();
-        if !known.contains(&port.as_str()) {
-            bail!("no port named {port}, {name} has: {}", known.join(", "));
-        }
-        request = request.with_port(port.clone(), *number);
-    }
-
-    let spec = adapter.spec(&request, &Paths::from_env())?;
-    let id = spec.id.clone();
-
-    // The resolved version is in the id, so a file saying "17" never leaves
-    // any doubt about what actually ran.
-    if let Some(status) = running.get(&id.to_string()) {
-        if status.state.is_running() {
-            return Ok(format!("{id} already running"));
-        }
-        if status.state.is_transitional() {
-            return Ok(format!("{id} already starting"));
-        }
-    }
-
-    reply(
-        client
-            .send(&Request::Register {
-                spec: Box::new(spec),
-            })
-            .await?,
-    )?;
-    reply(
-        client
-            .send(&Request::Start {
-                instance: id.clone(),
-            })
-            .await?,
-    )?;
-    Ok(format!("{id} started"))
-}
-
-fn reply(response: Response) -> Result<()> {
-    match response {
-        Response::Done => Ok(()),
-        Response::Failed { message } => bail!(message),
-        other => bail!("unexpected reply: {other:?}"),
+    match comb_services::bring_up(client, name, wanted, running, &Paths::from_env()).await {
+        Ok((id, outcome)) => Ok(format!("{id} {outcome}")),
+        Err(sentence) => bail!(sentence),
     }
 }
 

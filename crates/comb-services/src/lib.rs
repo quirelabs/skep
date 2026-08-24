@@ -3,10 +3,14 @@
 
 mod mailpit;
 mod postgres;
+pub mod project;
 
 use std::collections::BTreeMap;
 
-use comb::{Error, InstanceId, Label, Paths, Platform, Release, Result, ServiceSpec, Version};
+use comb::{
+    Client, Error, InstanceId, Label, Paths, Platform, Release, Request as Wire, Response, Result,
+    ServiceSpec, ServiceStatus, Version,
+};
 
 pub use mailpit::Mailpit;
 pub use postgres::Postgres;
@@ -74,15 +78,15 @@ impl Request {
         if versions(adapter).contains(&version) {
             Ok(version)
         } else {
-            Err(Error::InvalidId(format!(
-                "{} has no version {version}, known versions are {}",
-                adapter.name(),
-                versions(adapter)
+            Err(Error::UnknownVersion {
+                service: adapter.name().to_string(),
+                requested: version.to_string(),
+                known: versions(adapter)
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
-                    .join(", ")
-            )))
+                    .join(", "),
+            })
         }
     }
 
@@ -121,16 +125,14 @@ pub fn resolve(adapter: &dyn ServiceAdapter, requested: &str) -> Result<Version>
             have.len() >= wanted.len() && have[..wanted.len()] == wanted[..]
         })
         .cloned()
-        .ok_or_else(|| {
-            Error::InvalidId(format!(
-                "{} has no version matching {requested}, known versions are {}",
-                adapter.name(),
-                known
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))
+        .ok_or_else(|| Error::UnknownVersion {
+            service: adapter.name().to_string(),
+            requested: requested.to_string(),
+            known: known
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
         })
 }
 
@@ -174,6 +176,118 @@ pub async fn install(adapter: &dyn ServiceAdapter, version: &Version, paths: &Pa
     let release = release(adapter, version)?;
     comb::ensure(paths, adapter.name(), &release).await?;
     Ok(())
+}
+
+/// Turns what a person or an agent typed into the instance the engine knows.
+/// Accepts `postgres`, `postgres@16`, or a name and version given separately.
+pub fn instance(service: &str, version: Option<&str>) -> Result<InstanceId> {
+    let (adapter, version) = lookup(service, version)?;
+    Ok(InstanceId {
+        service: adapter.name().parse()?,
+        version,
+        label: None,
+    })
+}
+
+/// The spec for a service as a caller asked for it, ports included.
+pub fn spec_for(
+    service: &str,
+    version: Option<&str>,
+    ports: &BTreeMap<String, u16>,
+    paths: &Paths,
+) -> Result<ServiceSpec> {
+    let (adapter, version) = lookup(service, version)?;
+    let mut request = Request::new().with_version(version);
+    for (name, number) in ports {
+        let known: Vec<&str> = adapter.default_ports().iter().map(|(n, _)| *n).collect();
+        if !known.contains(&name.as_str()) {
+            return Err(Error::UnknownPort {
+                service: adapter.name().to_string(),
+                port: name.clone(),
+                known: known.join(", "),
+            });
+        }
+        request = request.with_port(name.clone(), *number);
+    }
+    adapter.spec(&request, paths)
+}
+
+fn lookup(service: &str, version: Option<&str>) -> Result<(&'static dyn ServiceAdapter, Version)> {
+    let (name, inline) = match service.split_once('@') {
+        Some((name, version)) => (name, Some(version)),
+        None => (service, None),
+    };
+    let adapter = find(name).ok_or_else(|| Error::UnknownService {
+        name: name.to_string(),
+        known: names().join(", "),
+    })?;
+    let version = match version.or(inline) {
+        Some(text) => resolve(adapter, text)?,
+        None => Version::new(adapter.default_version())?,
+    };
+    Ok((adapter, version))
+}
+
+/// Brings one service from a project file up, idempotently. Shared so the CLI
+/// and the MCP cannot drift on what "already running" means or how a failure
+/// is worded. The error is the sentence to show as it is.
+pub async fn bring_up(
+    client: &mut Client,
+    name: &str,
+    wanted: &project::Service,
+    running: &[ServiceStatus],
+    paths: &Paths,
+) -> std::result::Result<(InstanceId, &'static str), String> {
+    let mut ports = wanted.ports.clone();
+    if let Some(port) = wanted.port {
+        ports.insert(
+            main_port(name).map_err(|e| e.to_string())?.to_string(),
+            port,
+        );
+    }
+    let spec = spec_for(name, wanted.version.as_deref(), &ports, paths)
+        .map_err(|error| error.to_string())?;
+    let id = spec.id.clone();
+
+    if let Some(status) = running.iter().find(|status| status.id == id) {
+        if status.state.is_running() {
+            return Ok((id, "already running"));
+        }
+        if status.state.is_transitional() {
+            return Ok((id, "already starting"));
+        }
+    }
+
+    for request in [
+        Wire::Register {
+            spec: Box::new(spec),
+        },
+        Wire::Start {
+            instance: id.clone(),
+        },
+    ] {
+        match client.send(&request).await {
+            Ok(Response::Done) => {}
+            Ok(Response::Failed { message }) => return Err(message),
+            Ok(other) => return Err(format!("unexpected reply: {other:?}")),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok((id, "started"))
+}
+
+/// The port a service is mainly known by, which the `port` shorthand sets.
+pub fn main_port(service: &str) -> Result<&'static str> {
+    let (adapter, _) = lookup(service, None)?;
+    adapter
+        .default_ports()
+        .first()
+        .map(|(name, _)| *name)
+        .ok_or_else(|| Error::InvalidId(format!("{service} listens on no ports")))
+}
+
+pub fn names() -> Vec<&'static str> {
+    catalog().iter().map(|adapter| adapter.name()).collect()
 }
 
 /// Every service comb ships with.

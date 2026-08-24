@@ -1,12 +1,45 @@
 //! Drives the real binary. The CLI is a pure client, so the interesting cases
 //! are the ones where there is no engine to talk to.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn skep() -> Command {
     Command::new(env!("CARGO_BIN_EXE_skep"))
+}
+
+/// Kills the host even when a test panics before it gets there.
+struct Serving(std::process::Child);
+
+impl Serving {
+    fn start(home: &Path) -> Self {
+        let child = skep()
+            .arg("serve")
+            .env("SKEP_HOME", home)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let socket = home.join("run").join("engine.sock");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !socket.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(socket.exists(), "the host never bound its socket");
+        Self(child)
+    }
+
+    fn wind_down(mut self) -> std::process::ExitStatus {
+        unsafe { libc::kill(self.0.id() as i32, libc::SIGTERM) };
+        self.0.wait().unwrap()
+    }
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 struct Home(PathBuf);
@@ -62,20 +95,8 @@ fn an_unknown_service_lists_the_known_ones() {
 #[test]
 fn it_hosts_answers_and_winds_down() {
     let home = Home::new("round-trip");
-    let mut serving = skep()
-        .arg("serve")
-        .env("SKEP_HOME", &home.0)
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    // Wait for the socket rather than for the clock.
     let socket = home.0.join("run").join("engine.sock");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !socket.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(socket.exists(), "the host never bound its socket");
+    let serving = Serving::start(&home.0);
 
     let listed = skep()
         .arg("status")
@@ -100,9 +121,10 @@ fn it_hosts_answers_and_winds_down() {
         String::from_utf8_lossy(&refused.stderr)
     );
 
-    unsafe { libc::kill(serving.id() as i32, libc::SIGTERM) };
-    let finished = serving.wait().unwrap();
-    assert!(finished.success(), "the host should exit cleanly");
+    assert!(
+        serving.wind_down().success(),
+        "the host should exit cleanly"
+    );
     assert!(!socket.exists(), "the socket should be cleaned up");
 }
 
@@ -158,17 +180,7 @@ fn up_reports_every_service_even_when_one_fails() {
     )
     .unwrap();
 
-    let mut serving = skep()
-        .arg("serve")
-        .env("SKEP_HOME", &home.0)
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let socket = home.0.join("run").join("engine.sock");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !socket.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let serving = Serving::start(&home.0);
 
     let output = skep()
         .arg("up")
@@ -187,8 +199,7 @@ fn up_reports_every_service_even_when_one_fails() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    unsafe { libc::kill(serving.id() as i32, libc::SIGTERM) };
-    serving.wait().unwrap();
+    serving.wind_down();
 }
 
 #[test]

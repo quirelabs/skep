@@ -68,7 +68,9 @@ fn main() {
 
     if let Some(interval) = options.emit_every {
         thread::spawn(move || {
-            for line in 1u64.. {
+            let mut line = 0u64;
+            loop {
+                line += 1;
                 println!("out {line}");
                 eprintln!("err {line}");
                 thread::sleep(interval);

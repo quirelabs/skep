@@ -9,6 +9,23 @@ pub enum Error {
     #[error("invalid id: {0}")]
     InvalidId(String),
 
+    #[error("unknown service {name}, try one of: {known}")]
+    UnknownService { name: String, known: String },
+
+    #[error("{service} has no version matching {requested}, known versions are {known}")]
+    UnknownVersion {
+        service: String,
+        requested: String,
+        known: String,
+    },
+
+    #[error("{service} has no port named {port}, it has: {known}")]
+    UnknownPort {
+        service: String,
+        port: String,
+        known: String,
+    },
+
     #[error("no instance {0} is registered")]
     UnknownInstance(InstanceId),
 
@@ -84,6 +101,9 @@ pub enum Error {
         reason: String,
     },
 
+    #[error("in {path}: {message}")]
+    Project { path: String, message: String },
+
     #[error("{message}")]
     PortTaken { port: u16, message: String },
 
@@ -105,7 +125,7 @@ pub enum Error {
     #[error("{0} is not implemented yet")]
     NotImplemented(&'static str),
 
-    #[error("no skep engine is running")]
+    #[error("no skep engine is running. Start one with `skep serve`.")]
     NoHost,
 
     #[error("another process is already hosting the engine{}", match pid {

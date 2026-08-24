@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use comb::{Error, Result};
 use serde::Deserialize;
 
 pub const FILE: &str = "skep.toml";
@@ -38,17 +38,21 @@ pub fn find(start: &Path) -> Option<PathBuf> {
 }
 
 pub fn load(path: &Path) -> Result<Project> {
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("in {}", path.display()))
+    let text = std::fs::read_to_string(path).map_err(Error::Io)?;
+    // The parse error names the offending key and its position, so it is
+    // repeated verbatim rather than summarised.
+    toml::from_str(&text).map_err(|error| Error::Project {
+        path: path.display().to_string(),
+        message: error.to_string(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse(text: &str) -> Result<Project> {
-        toml::from_str(text).map_err(Into::into)
+    fn parse(text: &str) -> std::result::Result<Project, toml::de::Error> {
+        toml::from_str(text)
     }
 
     #[test]
