@@ -20,7 +20,9 @@ use crate::paths::Paths;
 use crate::platform;
 use crate::probe;
 use crate::scratch::ScratchDir;
-use crate::spec::{HealthCheck, PrepareStep, RestartPolicy, ServiceSpec, ShutdownSpec, StopSignal};
+use crate::spec::{
+    BinarySpec, HealthCheck, PrepareStep, RestartPolicy, ServiceSpec, ShutdownSpec, StopSignal,
+};
 use crate::state::ServiceState;
 use crate::time::Timestamp;
 
@@ -427,6 +429,7 @@ impl Engine {
     /// Starts the process and waits for it to answer. Dropping the process on
     /// any failure is what stops a half started service from lingering.
     async fn launch_and_settle(&self, id: &InstanceId, spec: &ServiceSpec) -> Result<Process> {
+        self.provision(id, spec).await?;
         self.ensure_data_dir(id, spec).await?;
         self.prepare(id, spec).await?;
         let mut process = self.launch(id).await?;
@@ -474,6 +477,40 @@ impl Engine {
                 Err(_) => sleep(health.interval).await,
             }
         }
+    }
+
+    /// Installs the pinned release if the binary is not there yet. Announced
+    /// like any other phase, because a first start that downloads forty
+    /// megabytes should say so rather than look stuck.
+    async fn provision(&self, id: &InstanceId, spec: &ServiceSpec) -> Result<()> {
+        let (Some(release), BinarySpec::Managed { name, version, .. }) =
+            (&spec.release, &spec.binary)
+        else {
+            return Ok(());
+        };
+        if spec.binary.resolve(&self.inner.paths).exists() {
+            return Ok(());
+        }
+
+        let step = format!("download {name} {version}");
+        self.set_activity(id, Some(step.clone())).await;
+        self.inner.emit(
+            Some(id.clone()),
+            EventKind::Preparing { step: step.clone() },
+        );
+
+        let started = Instant::now();
+        crate::acquire::ensure(&self.inner.paths, name, release).await?;
+
+        self.inner.emit(
+            Some(id.clone()),
+            EventKind::Prepared {
+                step,
+                took: started.elapsed(),
+            },
+        );
+        self.set_activity(id, None).await;
+        Ok(())
     }
 
     /// Runs the one-time setup a service needs before it can serve, announcing

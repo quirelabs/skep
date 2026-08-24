@@ -77,6 +77,7 @@ impl ServiceAdapter for Postgres {
 
     fn spec(&self, request: &Request, paths: &Paths) -> Result<ServiceSpec> {
         let version = request.resolve_version(self)?;
+        let release = crate::release(self, &version)?;
         let id = request.instance(self, &version)?;
         let port = request.port(self, "postgres")?;
         let data_dir = paths.data_dir(&id);
@@ -102,6 +103,7 @@ impl ServiceAdapter for Postgres {
             BinarySpec::managed(self.name(), version, self.program()),
             &data_dir,
         )
+        .with_release(release)
         .with_display_name(self.display_name())
         .with_args([
             "-D".to_string(),

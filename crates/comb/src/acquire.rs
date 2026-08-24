@@ -35,7 +35,7 @@ async fn claim(target: &Path) -> tokio::sync::OwnedMutexGuard<()> {
 
 /// One pinned artifact. The hash is our own, recorded by `scripts/pin-release.sh`,
 /// and is the trust root rather than whatever a server serves alongside it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Release {
     pub version: Version,
     /// Pins are keyed per platform from the start, so a URL template never

@@ -18,7 +18,10 @@ mod unsupported;
 pub(crate) use unsupported::{describe_exit, restrict, terminate, try_lock_exclusive};
 
 /// A lookup key for pinned downloads. Never spelled out inside a URL.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
 pub enum Platform {
     MacosArm64,
     MacosX8664,

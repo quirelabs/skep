@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::acquire::Release;
 use crate::id::{InstanceId, Version};
 use crate::paths::Paths;
 
@@ -14,6 +15,10 @@ pub struct ServiceSpec {
     pub id: InstanceId,
     pub display_name: String,
     pub binary: BinarySpec,
+    /// Where to get the binary if it is not installed yet. The engine fetches
+    /// it as a named phase, so a first start explains its own delay.
+    #[serde(default)]
+    pub release: Option<Release>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
@@ -43,6 +48,7 @@ impl ServiceSpec {
             display_name: id.service.to_string(),
             id,
             binary,
+            release: None,
             args: Vec::new(),
             env: BTreeMap::new(),
             working_dir: None,
@@ -59,6 +65,11 @@ impl ServiceSpec {
     /// The port frontends show in a service row.
     pub fn primary_port(&self) -> Option<u16> {
         self.ports.first().map(|port| port.number)
+    }
+
+    pub fn with_release(mut self, release: Release) -> Self {
+        self.release = Some(release);
+        self
     }
 
     pub fn with_display_name(mut self, name: impl Into<String>) -> Self {

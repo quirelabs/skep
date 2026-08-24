@@ -46,6 +46,7 @@ impl ServiceAdapter for Mailpit {
 
     fn spec(&self, request: &Request, paths: &Paths) -> Result<ServiceSpec> {
         let version = request.resolve_version(self)?;
+        let release = crate::release(self, &version)?;
         let id = request.instance(self, &version)?;
         let http = request.port(self, "http")?;
         let smtp = request.port(self, "smtp")?;
@@ -57,6 +58,7 @@ impl ServiceAdapter for Mailpit {
             BinarySpec::managed(self.name(), version, self.program()),
             &data_dir,
         )
+        .with_release(release)
         .with_display_name(self.display_name())
         .with_args([
             // Mailpit defaults to every interface. A local dev tool should not.
