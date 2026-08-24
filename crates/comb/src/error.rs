@@ -1,4 +1,4 @@
-use crate::id::InstanceId;
+use crate::id::{InstanceId, Version};
 use crate::state::ServiceState;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -42,6 +42,24 @@ pub enum Error {
         path: String,
         #[source]
         source: std::io::Error,
+    },
+
+    #[error("{step} for {name} {version} failed: {reason}")]
+    Acquire {
+        step: &'static str,
+        name: String,
+        version: Version,
+        reason: String,
+    },
+
+    #[error(
+        "{name} {version} does not match its pinned checksum: expected {expected}, got {actual}"
+    )]
+    Checksum {
+        name: String,
+        version: Version,
+        expected: String,
+        actual: String,
     },
 
     #[error("{instance} depends on {missing}, which is not registered")]

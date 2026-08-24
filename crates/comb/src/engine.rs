@@ -16,8 +16,8 @@ use crate::graph;
 use crate::id::InstanceId;
 use crate::logs::{LogSink, RingBuffer, pump};
 use crate::paths::Paths;
+use crate::platform;
 use crate::probe;
-use crate::signal;
 use crate::spec::{HealthCheck, RestartPolicy, ServiceSpec};
 use crate::state::ServiceState;
 use crate::time::Timestamp;
@@ -82,12 +82,15 @@ struct Process {
 }
 
 impl Process {
-    /// SIGTERM, then SIGKILL once the grace period is up.
+    /// SIGTERM, then SIGKILL once the grace period is up. If asking politely
+    /// failed there is nothing to wait for, so the grace is skipped rather
+    /// than spent pretending.
     async fn shut_down(&mut self, grace: Duration) {
-        if let Some(pid) = self.child.id() {
-            let _ = signal::terminate(pid);
-        }
-        if timeout(grace, self.child.wait()).await.is_err() {
+        let asked = match self.child.id() {
+            Some(pid) => platform::terminate(pid).is_ok(),
+            None => false,
+        };
+        if !asked || timeout(grace, self.child.wait()).await.is_err() {
             let _ = self.child.start_kill();
             let _ = self.child.wait().await;
         }
@@ -402,7 +405,7 @@ impl Engine {
             result = self.await_ready(id, &spec.health) => result,
             exit = process.child.wait() => {
                 let reason = match exit {
-                    Ok(status) => signal::describe_exit(&status),
+                    Ok(status) => platform::describe_exit(&status),
                     Err(error) => format!("could not be waited on: {error}"),
                 };
                 Err(Error::DiedStarting { instance: id.clone(), reason })
@@ -623,7 +626,7 @@ async fn supervise(
             return;
         };
         let (reason, crashed) = match exit {
-            Ok(status) => (signal::describe_exit(&status), !status.success()),
+            Ok(status) => (platform::describe_exit(&status), !status.success()),
             Err(error) => (format!("could not be waited on: {error}"), true),
         };
 
