@@ -16,6 +16,7 @@ use crate::event::LogLine;
 use crate::id::InstanceId;
 use crate::paths::Paths;
 use crate::platform;
+use crate::spec::ServiceSpec;
 
 /// Bumped whenever [`Request`] or [`Response`] changes shape.
 pub const PROTOCOL: u32 = 1;
@@ -29,6 +30,10 @@ const RUN_DIR_MODE: u32 = 0o700;
 #[derive(Debug, Serialize, Deserialize)]
 struct Hello {
     protocol: u32,
+    /// The host's state directory. A client building specs has to agree about
+    /// where things live, and disagreeing quietly is worse than not starting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,10 +52,24 @@ enum Greeting {
 #[serde(tag = "request", rename_all = "snake_case")]
 pub enum Request {
     Status,
-    Start { instance: InstanceId },
-    Stop { instance: InstanceId },
-    Restart { instance: InstanceId },
-    Logs { instance: InstanceId, lines: usize },
+    /// Teaches the host about a service, or updates a stopped one. Clients own
+    /// the catalog; the host owns the processes.
+    Register {
+        spec: Box<ServiceSpec>,
+    },
+    Start {
+        instance: InstanceId,
+    },
+    Stop {
+        instance: InstanceId,
+    },
+    Restart {
+        instance: InstanceId,
+    },
+    Logs {
+        instance: InstanceId,
+        lines: usize,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -176,7 +195,14 @@ async fn talk(engine: Engine, stream: UnixStream) -> Result<()> {
         };
         return send(&mut stream, &refusal).await;
     }
-    send(&mut stream, &Hello { protocol: PROTOCOL }).await?;
+    send(
+        &mut stream,
+        &Hello {
+            protocol: PROTOCOL,
+            root: Some(engine.paths().root().to_path_buf()),
+        },
+    )
+    .await?;
 
     loop {
         line.clear();
@@ -208,6 +234,7 @@ async fn answer(engine: &Engine, request: Request) -> Response {
                 },
             };
         }
+        Request::Register { spec } => engine.upsert(*spec).await,
         Request::Start { instance } => engine.start(&instance).await,
         Request::Stop { instance } => engine.stop(&instance).await,
         Request::Restart { instance } => engine.restart(&instance).await,
@@ -253,9 +280,29 @@ impl Client {
             stream: BufReader::new(stream),
         };
 
-        send(&mut client.stream, &Hello { protocol: PROTOCOL }).await?;
+        send(
+            &mut client.stream,
+            &Hello {
+                protocol: PROTOCOL,
+                root: None,
+            },
+        )
+        .await?;
         match client.read::<Greeting>().await? {
-            Greeting::Accepted(hello) if hello.protocol == PROTOCOL => Ok(client),
+            Greeting::Accepted(hello) if hello.protocol == PROTOCOL => {
+                let ours = paths.root();
+                match hello.root {
+                    Some(theirs) if theirs != ours => Err(Error::Protocol {
+                        message: format!(
+                            "the running engine keeps its state in {}, this command expects {}. \
+                             Check SKEP_HOME.",
+                            theirs.display(),
+                            ours.display()
+                        ),
+                    }),
+                    _ => Ok(client),
+                }
+            }
             Greeting::Accepted(hello) => Err(Error::Protocol {
                 message: mismatch(hello.protocol),
             }),

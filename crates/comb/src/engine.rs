@@ -161,6 +161,29 @@ impl Engine {
         Ok(())
     }
 
+    /// Registers a spec, or updates the one already there. A stopped service
+    /// can be redefined freely; a running one only if nothing changed, since
+    /// silently reconfiguring something that is serving would be a lie.
+    pub async fn upsert(&self, spec: ServiceSpec) -> Result<()> {
+        let id = spec.id.clone();
+        let mut instances = self.inner.instances.write().await;
+        match instances.get_mut(&id) {
+            None => {
+                drop(instances);
+                return self.register(spec).await;
+            }
+            Some(instance) if instance.spec == spec => Ok(()),
+            Some(instance) if instance.state == ServiceState::Stopped => {
+                instance.spec = spec;
+                Ok(())
+            }
+            Some(instance) => Err(Error::NotStopped {
+                instance: id.clone(),
+                state: instance.state.clone(),
+            }),
+        }
+    }
+
     pub async fn deregister(&self, id: &InstanceId) -> Result<()> {
         let mut instances = self.inner.instances.write().await;
         let instance = instances

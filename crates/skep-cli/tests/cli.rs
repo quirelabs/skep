@@ -105,3 +105,109 @@ fn it_hosts_answers_and_winds_down() {
     assert!(finished.success(), "the host should exit cleanly");
     assert!(!socket.exists(), "the socket should be cleaned up");
 }
+
+#[test]
+fn up_without_a_project_file_says_where_it_looked() {
+    let home = Home::new("no-project");
+    let elsewhere = Home::new("empty-dir");
+    let output = skep()
+        .arg("up")
+        .current_dir(&elsewhere.0)
+        .env("SKEP_HOME", &home.0)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let message = String::from_utf8_lossy(&output.stderr);
+    assert!(message.contains("no skep.toml"), "{message}");
+}
+
+#[test]
+fn up_refuses_a_file_it_does_not_understand() {
+    let home = Home::new("typo");
+    let project = Home::new("typo-project");
+    std::fs::write(
+        project.0.join("skep.toml"),
+        "[services.postgres]\nverison = \"16\"\n",
+    )
+    .unwrap();
+
+    let output = skep()
+        .arg("up")
+        .current_dir(&project.0)
+        .env("SKEP_HOME", &home.0)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let message = String::from_utf8_lossy(&output.stderr);
+    // The typo, and what it should have been.
+    assert!(message.contains("verison"), "{message}");
+    assert!(message.contains("expected one of `version`"), "{message}");
+}
+
+#[test]
+fn up_reports_every_service_even_when_one_fails() {
+    let home = Home::new("partial");
+    let project = Home::new("partial-project");
+    // Two services that cannot start, so nothing is downloaded or bound, and
+    // the point being tested is that the second is still attempted.
+    std::fs::write(
+        project.0.join("skep.toml"),
+        "[services.redis]\nversion = \"7\"\n\n[services.mysql]\nversion = \"8\"\n",
+    )
+    .unwrap();
+
+    let mut serving = skep()
+        .arg("serve")
+        .env("SKEP_HOME", &home.0)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let socket = home.0.join("run").join("engine.sock");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let output = skep()
+        .arg("up")
+        .current_dir(&project.0)
+        .env("SKEP_HOME", &home.0)
+        .output()
+        .unwrap();
+
+    let listed = String::from_utf8_lossy(&output.stdout);
+    assert!(listed.contains("redis: unknown service redis"), "{listed}");
+    assert!(listed.contains("mysql: unknown service mysql"), "{listed}");
+    assert!(!output.status.success(), "a failure should be a failure");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("2 of 2"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    unsafe { libc::kill(serving.id() as i32, libc::SIGTERM) };
+    serving.wait().unwrap();
+}
+
+#[test]
+fn up_without_an_engine_says_how_to_start_one() {
+    let home = Home::new("up-no-engine");
+    let project = Home::new("up-no-engine-project");
+    std::fs::write(project.0.join("skep.toml"), "[services.mailpit]\n").unwrap();
+
+    let output = skep()
+        .arg("up")
+        .current_dir(&project.0)
+        .env("SKEP_HOME", &home.0)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no skep engine is running"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

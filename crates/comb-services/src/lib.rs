@@ -107,7 +107,34 @@ impl Request {
     }
 }
 
-/// Versions this adapter can install on this machine, in catalog order.
+/// Resolves a version the way a project file writes one: "17" finds the newest
+/// pinned 17.x, while an exact version is taken as given. Matching is on dot
+/// boundaries, so "1" never matches "15.14.0".
+pub fn resolve(adapter: &dyn ServiceAdapter, requested: &str) -> Result<Version> {
+    let known = versions(adapter);
+    let wanted: Vec<&str> = requested.split('.').collect();
+
+    known
+        .iter()
+        .find(|version| {
+            let have: Vec<&str> = version.as_str().split('.').collect();
+            have.len() >= wanted.len() && have[..wanted.len()] == wanted[..]
+        })
+        .cloned()
+        .ok_or_else(|| {
+            Error::InvalidId(format!(
+                "{} has no version matching {requested}, known versions are {}",
+                adapter.name(),
+                known
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })
+}
+
+/// Versions this adapter can install on this machine, newest first.
 pub fn versions(adapter: &dyn ServiceAdapter) -> Vec<Version> {
     let platform = Platform::current();
     adapter
@@ -177,6 +204,23 @@ mod tests {
                 "{} defaults to an unpinned version",
                 adapter.name()
             );
+            // resolve() returns the first match, so newest first is load bearing.
+            let ordered: Vec<Vec<u32>> = versions(*adapter)
+                .iter()
+                .map(|version| {
+                    version
+                        .as_str()
+                        .split('.')
+                        .map(|part| part.parse().unwrap_or(0))
+                        .collect()
+                })
+                .collect();
+            assert!(
+                ordered.windows(2).all(|pair| pair[0] > pair[1]),
+                "{} pins are not newest first: {ordered:?}",
+                adapter.name()
+            );
+
             for pin in adapter.pins() {
                 assert!(
                     pin.url.starts_with("https://"),
@@ -201,6 +245,23 @@ mod tests {
         let error = request.resolve_version(&Mailpit).unwrap_err();
 
         assert!(error.to_string().contains("known versions are"));
+    }
+
+    #[test]
+    fn a_major_resolves_to_the_newest_pinned_patch() {
+        assert_eq!(resolve(&Postgres, "17").unwrap().as_str(), "17.6.0");
+        assert_eq!(resolve(&Postgres, "16").unwrap().as_str(), "16.10.0");
+        assert_eq!(resolve(&Postgres, "16.10.0").unwrap().as_str(), "16.10.0");
+
+        // Dot boundaries, so a major is never matched by a prefix.
+        assert!(resolve(&Postgres, "1").is_err());
+        assert_eq!(resolve(&Mailpit, "1").unwrap().as_str(), "1.31.0");
+
+        let error = resolve(&Postgres, "14").unwrap_err().to_string();
+        assert!(
+            error.contains("known versions are 17.6.0, 16.10.0, 15.14.0"),
+            "{error}"
+        );
     }
 
     #[test]

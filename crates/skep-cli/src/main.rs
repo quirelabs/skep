@@ -2,17 +2,20 @@
 //! starts one behind your back, because a background host nobody asked for is
 //! how two of them end up racing.
 
+mod project;
 mod serve;
 
 use anyhow::{Result, anyhow, bail};
 use comb::{Client, Error, InstanceId, Paths, Request, Response, ServiceStatus, Version};
 use comb_services::{Request as ServiceRequest, find};
+use std::collections::BTreeMap;
 
 const USAGE: &str = "\
 skep, a local dev services manager
 
 usage:
   skep serve                  host the engine and every service, in the foreground
+  skep up                     start everything skep.toml asks for
   skep status                 show every service
   skep start <service>        start a service
   skep stop <service>         stop a service
@@ -37,6 +40,7 @@ async fn dispatch() -> Result<()> {
 
     match command.as_str() {
         "serve" => serve::run().await,
+        "up" => up().await,
         "status" => status().await,
         "start" => {
             act(Request::Start {
@@ -87,12 +91,126 @@ fn resolve(name: &str) -> Result<InstanceId> {
         )
     })?;
 
-    let mut request = ServiceRequest::new();
-    if let Some(version) = version {
-        request = request.with_version(Version::new(version)?);
+    let version = match version {
+        Some(text) => comb_services::resolve(adapter, text)?,
+        None => Version::new(adapter.default_version())?,
+    };
+    Ok(ServiceRequest::new().instance(adapter, &version)?)
+}
+
+/// Brings up everything the project asks for. One service failing never stops
+/// the others: a project half up with three clear errors beats one error and
+/// no idea about the rest.
+async fn up() -> Result<()> {
+    let here = std::env::current_dir()?;
+    let path = project::find(&here).ok_or_else(|| {
+        anyhow!(
+            "no {} here or in any parent of {}",
+            project::FILE,
+            here.display()
+        )
+    })?;
+    let project = project::load(&path)?;
+    println!("{}", path.display());
+    if project.services.is_empty() {
+        println!("  nothing to start");
+        return Ok(());
     }
-    let version = request.resolve_version(adapter)?;
-    Ok(request.instance(adapter, &version)?)
+
+    let mut client = connect().await?;
+    let Response::Status { services } = client.send(&Request::Status).await? else {
+        bail!("unexpected reply");
+    };
+    let running: BTreeMap<String, ServiceStatus> = services
+        .into_iter()
+        .map(|status| (status.id.to_string(), status))
+        .collect();
+
+    let mut failed = 0;
+    for (name, wanted) in &project.services {
+        match bring_up(&mut client, &running, name, wanted).await {
+            Ok(line) => println!("  {line}"),
+            Err(error) => {
+                failed += 1;
+                println!("  {name}: {error:#}");
+            }
+        }
+    }
+
+    if failed > 0 {
+        bail!(
+            "{failed} of {} services did not start",
+            project.services.len()
+        );
+    }
+    Ok(())
+}
+
+async fn bring_up(
+    client: &mut Client,
+    running: &BTreeMap<String, ServiceStatus>,
+    name: &str,
+    wanted: &project::Service,
+) -> Result<String> {
+    let adapter = find(name).ok_or_else(|| anyhow!("unknown service {name}"))?;
+    let version = match &wanted.version {
+        Some(text) => comb_services::resolve(adapter, text)?,
+        None => Version::new(adapter.default_version())?,
+    };
+
+    let mut request = ServiceRequest::new().with_version(version.clone());
+    if let Some(port) = wanted.port {
+        let (main, _) = adapter
+            .default_ports()
+            .first()
+            .ok_or_else(|| anyhow!("{name} listens on no ports"))?;
+        request = request.with_port(*main, port);
+    }
+    for (port, number) in &wanted.ports {
+        let known: Vec<&str> = adapter.default_ports().iter().map(|(n, _)| *n).collect();
+        if !known.contains(&port.as_str()) {
+            bail!("no port named {port}, {name} has: {}", known.join(", "));
+        }
+        request = request.with_port(port.clone(), *number);
+    }
+
+    let spec = adapter.spec(&request, &Paths::from_env())?;
+    let id = spec.id.clone();
+
+    // The resolved version is in the id, so a file saying "17" never leaves
+    // any doubt about what actually ran.
+    if let Some(status) = running.get(&id.to_string()) {
+        if status.state.is_running() {
+            return Ok(format!("{id} already running"));
+        }
+        if status.state.is_transitional() {
+            return Ok(format!("{id} already starting"));
+        }
+    }
+
+    reply(
+        client
+            .send(&Request::Register {
+                spec: Box::new(spec),
+            })
+            .await?,
+    )?;
+    reply(
+        client
+            .send(&Request::Start {
+                instance: id.clone(),
+            })
+            .await?,
+    )?;
+    Ok(format!("{id} started"))
+}
+
+fn reply(response: Response) -> Result<()> {
+    match response {
+        Response::Done => Ok(()),
+        Response::Failed { message } => bail!(message),
+        other => bail!("unexpected reply: {other:?}"),
+    }
 }
 
 fn one(args: &[String]) -> Result<InstanceId> {
