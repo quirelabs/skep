@@ -5,7 +5,6 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
@@ -15,6 +14,7 @@ use crate::error::{Error, Result};
 use crate::id::Version;
 use crate::paths::Paths;
 use crate::platform::Platform;
+use crate::scratch::ScratchDir;
 
 const CHUNK: usize = 64 * 1024;
 
@@ -101,20 +101,16 @@ async fn install<F: Fetch>(
         return Ok(target);
     }
 
-    let parent = target
-        .parent()
-        .expect("a binary directory always has a parent")
-        .to_path_buf();
-    tokio::fs::create_dir_all(&parent)
+    let scratch = ScratchDir::beside(&target, name)
+        .map_err(|error| failed("preparing", name, release, error))?;
+    let archive = scratch.join("archive");
+    let unpacked = scratch.join("unpacked");
+    tokio::fs::create_dir_all(&unpacked)
         .await
         .map_err(|error| failed("preparing", name, release, error))?;
 
-    // Scratch lives beside the target so the final rename stays on one
-    // filesystem, and cleans itself up on every failure path.
-    let scratch = Scratch::new(&parent, name, release)?;
-
     fetch
-        .fetch(&release.url, &scratch.archive)
+        .fetch(&release.url, &archive)
         .await
         .map_err(|reason| Error::Acquire {
             step: "download",
@@ -123,10 +119,10 @@ async fn install<F: Fetch>(
             reason,
         })?;
 
-    verify(&scratch.archive, name, release).await?;
-    unpack(&scratch.archive, &scratch.staging, name, release).await?;
+    verify(&archive, name, release).await?;
+    unpack(&archive, &unpacked, name, release).await?;
 
-    match tokio::fs::rename(&scratch.staging, &target).await {
+    match scratch.promote(&unpacked, &target).await {
         Ok(()) => Ok(target),
         // Another process finished the same install first, which is fine.
         Err(_) if target.is_dir() => Ok(target),
@@ -218,40 +214,9 @@ fn hex(bytes: &[u8]) -> String {
     text
 }
 
-/// Temporary paths that disappear whether the install succeeds or not.
-struct Scratch {
-    archive: PathBuf,
-    staging: PathBuf,
-}
-
-impl Scratch {
-    fn new(parent: &Path, name: &str, release: &Release) -> Result<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let stamp = format!(
-            ".{name}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
-        let scratch = Self {
-            archive: parent.join(format!("{stamp}.archive")),
-            staging: parent.join(format!("{stamp}.staging")),
-        };
-        std::fs::create_dir_all(&scratch.staging)
-            .map_err(|error| failed("preparing", name, release, error))?;
-        Ok(scratch)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.archive);
-        let _ = std::fs::remove_dir_all(&self.staging);
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 

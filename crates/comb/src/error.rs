@@ -77,6 +77,13 @@ pub enum Error {
         dependency: InstanceId,
     },
 
+    #[error("{instance} could not {step}: {reason}")]
+    Prepare {
+        instance: InstanceId,
+        step: String,
+        reason: String,
+    },
+
     #[error("{instance} never became ready: {reason}")]
     NotReady {
         instance: InstanceId,

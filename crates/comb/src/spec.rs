@@ -23,6 +23,10 @@ pub struct ServiceSpec {
     pub data_dir: PathBuf,
     #[serde(default)]
     pub ports: Vec<Port>,
+    /// One-time work that must finish before the service itself runs, such as
+    /// initdb. The engine runs these; adapters only describe them.
+    #[serde(default)]
+    pub prepare: Vec<PrepareStep>,
     #[serde(default)]
     pub health: HealthCheck,
     #[serde(default)]
@@ -44,6 +48,7 @@ impl ServiceSpec {
             working_dir: None,
             data_dir: data_dir.into(),
             ports: Vec::new(),
+            prepare: Vec::new(),
             health: HealthCheck::default(),
             depends_on: Vec::new(),
             restart: RestartSpec::default(),
@@ -78,6 +83,11 @@ impl ServiceSpec {
 
     pub fn with_ports<I: IntoIterator<Item = Port>>(mut self, ports: I) -> Self {
         self.ports = ports.into_iter().collect();
+        self
+    }
+
+    pub fn with_prepare<I: IntoIterator<Item = PrepareStep>>(mut self, steps: I) -> Self {
+        self.prepare = steps.into_iter().collect();
         self
     }
 
@@ -137,6 +147,61 @@ impl BinarySpec {
             } => paths.binary_dir(name, version).join(program),
             Self::Path { path } => path.clone(),
         }
+    }
+}
+
+/// A command the engine runs once, before the service starts. Named so the
+/// event stream can say what is happening rather than showing a long silence.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PrepareStep {
+    pub name: String,
+    pub binary: BinarySpec,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Skipped when this path is already there, which is what makes a second
+    /// start fast and a wiped data directory self healing.
+    #[serde(default)]
+    pub unless_exists: Option<PathBuf>,
+    /// The directory this step builds. It is written to scratch and renamed
+    /// here only on success, so the path existing proves the step finished
+    /// rather than merely started. Write `{output}` in args and env for the
+    /// scratch path.
+    #[serde(default)]
+    pub produces: Option<PathBuf>,
+}
+
+impl PrepareStep {
+    pub fn new(name: impl Into<String>, binary: BinarySpec) -> Self {
+        Self {
+            name: name.into(),
+            binary,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            unless_exists: None,
+            produces: None,
+        }
+    }
+
+    pub fn with_args<I: IntoIterator<Item = S>, S: Into<String>>(mut self, args: I) -> Self {
+        self.args = args.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn unless_exists(mut self, path: impl Into<PathBuf>) -> Self {
+        self.unless_exists = Some(path.into());
+        self
+    }
+
+    pub fn produces(mut self, path: impl Into<PathBuf>) -> Self {
+        self.produces = Some(path.into());
+        self
     }
 }
 

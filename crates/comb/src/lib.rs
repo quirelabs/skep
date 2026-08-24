@@ -11,6 +11,7 @@ mod logs;
 mod paths;
 mod platform;
 mod probe;
+mod scratch;
 mod serde_ms;
 mod spec;
 mod state;
@@ -24,8 +25,8 @@ pub use id::{InstanceId, Label, ServiceName, Version};
 pub use paths::Paths;
 pub use platform::Platform;
 pub use spec::{
-    Backoff, BinarySpec, HealthCheck, Port, Probe, RestartPolicy, RestartSpec, ServiceSpec,
-    ShutdownSpec,
+    Backoff, BinarySpec, HealthCheck, Port, PrepareStep, Probe, RestartPolicy, RestartSpec,
+    ServiceSpec, ShutdownSpec,
 };
 pub use state::ServiceState;
 pub use time::Timestamp;

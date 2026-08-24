@@ -15,6 +15,7 @@ enum Speak {
 
 struct Options {
     fail_if_exists: Option<String>,
+    touch: Vec<String>,
     ignore_term: bool,
     listen: Option<u16>,
     listen_delay: Duration,
@@ -40,6 +41,17 @@ fn main() {
             std::process::exit(1);
         }
         let _ = std::fs::write(marker, b"started");
+    }
+
+    for path in &options.touch {
+        let path = std::path::Path::new(path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(error) = std::fs::write(path, b"touched") {
+            eprintln!("fake-service: cannot touch {}: {error}", path.display());
+            std::process::exit(1);
+        }
     }
 
     if options.ignore_term {
@@ -124,6 +136,7 @@ fn ignore_term() {
 fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
         fail_if_exists: None,
+        touch: Vec::new(),
         ignore_term: false,
         listen: None,
         listen_delay: Duration::ZERO,
@@ -137,6 +150,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--fail-if-exists" => options.fail_if_exists = Some(text(&mut args, &flag)?),
+            "--touch" => options.touch.push(text(&mut args, &flag)?),
             "--ignore-term" => options.ignore_term = true,
             "--listen" => options.listen = Some(number(&mut args, &flag)? as u16),
             "--listen-delay-ms" => {

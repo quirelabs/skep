@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,7 +19,8 @@ use crate::logs::{LogSink, RingBuffer, pump};
 use crate::paths::Paths;
 use crate::platform;
 use crate::probe;
-use crate::spec::{HealthCheck, RestartPolicy, ServiceSpec};
+use crate::scratch::ScratchDir;
+use crate::spec::{HealthCheck, PrepareStep, RestartPolicy, ServiceSpec};
 use crate::state::ServiceState;
 use crate::time::Timestamp;
 
@@ -37,6 +39,10 @@ pub struct ServiceStatus {
     pub ports: BTreeMap<String, u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// The named phase of a long start, so a caller never sees Starting with
+    /// no explanation for ten seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
     /// When the current state was entered.
     pub since: Timestamp,
 }
@@ -62,6 +68,7 @@ struct Instance {
     pid: Option<u32>,
     logs: broadcast::Sender<LogLine>,
     history: Arc<Mutex<RingBuffer>>,
+    activity: Option<String>,
     running: Option<Running>,
     /// Restart attempts since the last deliberate start.
     attempt: u32,
@@ -143,6 +150,7 @@ impl Engine {
                 pid: None,
                 logs,
                 history: Arc::new(Mutex::new(RingBuffer::new(LOG_HISTORY))),
+                activity: None,
                 running: None,
                 attempt: 0,
             },
@@ -400,6 +408,8 @@ impl Engine {
     /// Starts the process and waits for it to answer. Dropping the process on
     /// any failure is what stops a half started service from lingering.
     async fn launch_and_settle(&self, id: &InstanceId, spec: &ServiceSpec) -> Result<Process> {
+        self.ensure_data_dir(id, spec).await?;
+        self.prepare(id, spec).await?;
         let mut process = self.launch(id).await?;
         let settled = tokio::select! {
             result = self.await_ready(id, &spec.health) => result,
@@ -447,17 +457,161 @@ impl Engine {
         }
     }
 
-    async fn launch(&self, id: &InstanceId) -> Result<Process> {
-        let spec = self.spec_of(id).await?;
-        let program = spec.binary.resolve(&self.inner.paths);
+    /// Runs the one-time setup a service needs before it can serve, announcing
+    /// each phase so a long first start is legible rather than silent.
+    async fn prepare(&self, id: &InstanceId, spec: &ServiceSpec) -> Result<()> {
+        for step in &spec.prepare {
+            if step
+                .unless_exists
+                .as_ref()
+                .is_some_and(|marker| marker.exists())
+            {
+                continue;
+            }
 
+            self.set_activity(id, Some(step.name.clone())).await;
+            self.inner.emit(
+                Some(id.clone()),
+                EventKind::Preparing {
+                    step: step.name.clone(),
+                },
+            );
+
+            let started = Instant::now();
+            match &step.produces {
+                // Built in scratch and renamed in as the last act, so a killed
+                // step can never leave output that a later run would trust.
+                Some(target) => {
+                    let failed = |reason: String| Error::Prepare {
+                        instance: id.clone(),
+                        step: step.name.clone(),
+                        reason,
+                    };
+                    let scratch = ScratchDir::beside(target, id.service.as_str())
+                        .map_err(|error| failed(error.to_string()))?;
+                    let output = scratch.join("output");
+                    tokio::fs::create_dir_all(&output)
+                        .await
+                        .map_err(|error| failed(error.to_string()))?;
+
+                    self.run_step(id, step, Some(&output)).await?;
+
+                    scratch
+                        .promote(&output, target)
+                        .await
+                        .map_err(|error| failed(error.to_string()))?;
+                }
+                None => self.run_step(id, step, None).await?,
+            }
+
+            self.inner.emit(
+                Some(id.clone()),
+                EventKind::Prepared {
+                    step: step.name.clone(),
+                    took: started.elapsed(),
+                },
+            );
+        }
+        self.set_activity(id, None).await;
+        Ok(())
+    }
+
+    async fn run_step(
+        &self,
+        id: &InstanceId,
+        step: &PrepareStep,
+        output: Option<&Path>,
+    ) -> Result<()> {
+        let program = step.binary.resolve(&self.inner.paths);
+        let failed = |reason: String| Error::Prepare {
+            instance: id.clone(),
+            step: step.name.clone(),
+            reason,
+        };
+
+        let args: Vec<String> = step
+            .args
+            .iter()
+            .map(|arg| substitute(arg, output))
+            .collect();
+        let env: Vec<(&String, String)> = step
+            .env
+            .iter()
+            .map(|(key, value)| (key, substitute(value, output)))
+            .collect();
+
+        let mut child = Command::new(&program)
+            .args(&args)
+            .envs(env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| failed(format!("{} did not spawn: {error}", program.display())))?;
+
+        // Setup output goes to the same history as the service's own, so the
+        // reason a first start failed is where anyone would look for it.
+        let sink = self.sink_of(id).await?;
+        let pumps = vec![
+            pump(
+                child.stdout.take().expect("stdout is piped"),
+                LogStream::Stdout,
+                sink.clone(),
+            ),
+            pump(
+                child.stderr.take().expect("stderr is piped"),
+                LogStream::Stderr,
+                sink,
+            ),
+        ];
+
+        let status = child
+            .wait()
+            .await
+            .map_err(|error| failed(error.to_string()))?;
+        for pump in pumps {
+            let _ = pump.await;
+        }
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(failed(platform::describe_exit(&status)))
+        }
+    }
+
+    async fn ensure_data_dir(&self, id: &InstanceId, spec: &ServiceSpec) -> Result<()> {
         tokio::fs::create_dir_all(&spec.data_dir)
             .await
             .map_err(|source| Error::DataDir {
                 instance: id.clone(),
                 path: spec.data_dir.display().to_string(),
                 source,
-            })?;
+            })
+    }
+
+    async fn sink_of(&self, id: &InstanceId) -> Result<LogSink> {
+        let instances = self.inner.instances.read().await;
+        let instance = instances
+            .get(id)
+            .ok_or_else(|| Error::UnknownInstance(id.clone()))?;
+        Ok(LogSink {
+            buffer: instance.history.clone(),
+            live: instance.logs.clone(),
+        })
+    }
+
+    async fn set_activity(&self, id: &InstanceId, activity: Option<String>) {
+        let mut instances = self.inner.instances.write().await;
+        if let Some(instance) = instances.get_mut(id) {
+            instance.activity = activity;
+        }
+    }
+
+    async fn launch(&self, id: &InstanceId) -> Result<Process> {
+        let spec = self.spec_of(id).await?;
+        let program = spec.binary.resolve(&self.inner.paths);
 
         let mut command = Command::new(&program);
         command
@@ -581,6 +735,8 @@ impl Engine {
         }
         let from = std::mem::replace(&mut instance.state, to.clone());
         instance.since = Timestamp::now();
+        // Any state change ends whatever phase was being reported.
+        instance.activity = None;
         if !to.is_running() {
             instance.pid = None;
         }
@@ -588,6 +744,14 @@ impl Engine {
         self.inner
             .emit(Some(id.clone()), EventKind::StateChanged { from, to });
         Ok(())
+    }
+}
+
+/// Points a step at its scratch directory instead of its final one.
+fn substitute(value: &str, output: Option<&Path>) -> String {
+    match output {
+        Some(path) => value.replace("{output}", &path.display().to_string()),
+        None => value.to_string(),
     }
 }
 
@@ -688,6 +852,7 @@ impl Instance {
                 .map(|port| (port.name.clone(), port.number))
                 .collect(),
             pid: self.pid,
+            activity: self.activity.clone(),
             since: self.since,
         }
     }

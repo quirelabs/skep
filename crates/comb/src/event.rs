@@ -25,6 +25,15 @@ pub struct Event {
 pub enum EventKind {
     Registered,
     Deregistered,
+    /// A named phase of a long start, so a ten second wait is never silent.
+    Preparing {
+        step: String,
+    },
+    Prepared {
+        step: String,
+        #[serde(rename = "took_ms", with = "crate::serde_ms")]
+        took: Duration,
+    },
     StateChanged {
         from: ServiceState,
         to: ServiceState,
