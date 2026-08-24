@@ -89,3 +89,67 @@ pub async fn wait_for_log(
     .await
     .expect("the expected log line should arrive")
 }
+
+use comb::{Backoff, Event, EventKind, RestartPolicy, RestartSpec, ServiceState};
+
+/// A restart policy with a short, flat backoff so tests stay quick.
+pub fn restart_after(policy: RestartPolicy, max_attempts: u32, delay: Duration) -> RestartSpec {
+    RestartSpec {
+        policy,
+        backoff: Backoff {
+            initial: delay,
+            max: delay,
+            factor: 1.0,
+            max_attempts,
+        },
+    }
+}
+
+pub async fn wait_for_event(
+    events: &mut Receiver<Event>,
+    matching: impl Fn(&EventKind) -> bool,
+) -> Event {
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.expect("the event stream stays open");
+            if matching(&event.kind) {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("the expected event should arrive")
+}
+
+pub async fn wait_for_state(
+    events: &mut Receiver<Event>,
+    matching: impl Fn(&ServiceState) -> bool + Copy,
+) -> ServiceState {
+    let event = wait_for_event(events, |kind| match kind {
+        EventKind::StateChanged { to, .. } => matching(to),
+        _ => false,
+    })
+    .await;
+    match event.kind {
+        EventKind::StateChanged { to, .. } => to,
+        _ => unreachable!("filtered above"),
+    }
+}
+
+/// Fails if a matching event shows up inside the window.
+pub async fn expect_none(
+    events: &mut Receiver<Event>,
+    window: Duration,
+    matching: impl Fn(&EventKind) -> bool,
+) {
+    let arrived = timeout(window, async {
+        loop {
+            let event = events.recv().await.expect("the event stream stays open");
+            if matching(&event.kind) {
+                return event;
+            }
+        }
+    })
+    .await;
+    assert!(arrived.is_err(), "unexpected event {:?}", arrived.unwrap());
+}

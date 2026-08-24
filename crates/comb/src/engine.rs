@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{RwLock, broadcast, watch};
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 use crate::error::{Error, Result};
 use crate::event::{Event, EventKind, LogLine, LogStream};
@@ -16,13 +16,14 @@ use crate::id::InstanceId;
 use crate::logs::{LogSink, RingBuffer, pump};
 use crate::paths::Paths;
 use crate::signal;
-use crate::spec::ServiceSpec;
+use crate::spec::{RestartPolicy, ServiceSpec};
 use crate::state::ServiceState;
 use crate::time::Timestamp;
 
 const EVENT_CAPACITY: usize = 1024;
 const LOG_CAPACITY: usize = 1024;
 const LOG_HISTORY: usize = 1000;
+const FALLBACK_GRACE: Duration = Duration::from_secs(10);
 
 /// What a frontend needs to draw one row.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -60,17 +61,26 @@ struct Instance {
     logs: broadcast::Sender<LogLine>,
     history: Arc<Mutex<RingBuffer>>,
     running: Option<Running>,
+    /// Restart attempts since the last deliberate start.
+    attempt: u32,
 }
 
-/// A live child and the tasks draining its output.
+/// The handle a caller uses to interrupt a supervisor, whether it is watching a
+/// live child or waiting out a backoff.
 struct Running {
+    stop: watch::Sender<bool>,
+    task: JoinHandle<()>,
+}
+
+/// A live child and the tasks draining its output. Exactly one supervisor owns
+/// one of these at a time, which is what makes waiting on the child safe.
+struct Process {
     child: Child,
     pumps: Vec<JoinHandle<()>>,
 }
 
-impl Running {
-    /// SIGTERM, then SIGKILL once the grace period is up. The pumps end by
-    /// themselves when the pipes close, so awaiting them drains the last lines.
+impl Process {
+    /// SIGTERM, then SIGKILL once the grace period is up.
     async fn shut_down(&mut self, grace: Duration) {
         if let Some(pid) = self.child.id() {
             let _ = signal::terminate(pid);
@@ -79,6 +89,12 @@ impl Running {
             let _ = self.child.start_kill();
             let _ = self.child.wait().await;
         }
+        self.drain().await;
+    }
+
+    /// The pumps end on their own once the pipes close, so awaiting them keeps
+    /// the last lines a process wrote instead of truncating them.
+    async fn drain(&mut self) {
         for pump in self.pumps.drain(..) {
             let _ = pump.await;
         }
@@ -123,6 +139,7 @@ impl Engine {
                 logs,
                 history: Arc::new(Mutex::new(RingBuffer::new(LOG_HISTORY))),
                 running: None,
+                attempt: 0,
             },
         );
         self.inner.emit(Some(id), EventKind::Registered);
@@ -207,43 +224,70 @@ impl Engine {
     /// second caller is rejected by the state machine, not by a lock.
     pub async fn start(&self, id: &InstanceId) -> Result<()> {
         self.transition(id, ServiceState::Starting).await?;
-        match self.spawn(id).await {
-            Ok(()) => self.transition(id, ServiceState::Ready).await,
+        self.set_attempt(id, 0).await;
+
+        let process = match self.launch(id).await {
+            Ok(process) => process,
             Err(error) => {
-                let failed = ServiceState::failed(error.to_string());
-                self.transition(id, failed).await?;
-                Err(error)
+                self.transition(id, ServiceState::failed(error.to_string()))
+                    .await?;
+                return Err(error);
             }
-        }
+        };
+
+        // Ready lands before the supervisor exists, so a supervisor can never
+        // race the very state it is there to watch. If this transition loses to
+        // a concurrent stop, the process drops and kill_on_drop cleans up.
+        self.transition(id, ServiceState::Ready).await?;
+        self.watch(id, process).await;
+        Ok(())
     }
 
+    /// Works from any live state. A service waiting out a backoff has no child
+    /// to signal but still has a supervisor to call off, and one that already
+    /// gave up has neither.
     pub async fn stop(&self, id: &InstanceId) -> Result<()> {
-        self.transition(id, ServiceState::Stopping).await?;
+        self.announce_stopping(id).await?;
 
-        let (running, grace) = {
-            let mut instances = self.inner.instances.write().await;
-            let instance = instances
-                .get_mut(id)
-                .ok_or_else(|| Error::UnknownInstance(id.clone()))?;
-            (instance.running.take(), instance.spec.shutdown.grace)
-        };
-        if let Some(mut running) = running {
-            running.shut_down(grace).await;
+        if let Some(running) = self.take_running(id).await {
+            let _ = running.stop.send(true);
+            let _ = running.task.await;
         }
 
+        // A supervisor can finish a relaunch in the instant before it sees the
+        // stop, so the state is read again rather than assumed.
+        self.announce_stopping(id).await?;
         self.transition(id, ServiceState::Stopped).await
     }
 
+    /// Moves to `Stopping` only from the states that have something to wind
+    /// down, letting the transition matrix decide rather than a second list.
+    async fn announce_stopping(&self, id: &InstanceId) -> Result<()> {
+        let state = self.status_of(id).await?.state;
+        if state.can_transition_to(&ServiceState::Stopping) {
+            self.transition(id, ServiceState::Stopping).await?;
+        }
+        Ok(())
+    }
+
     pub async fn restart(&self, id: &InstanceId) -> Result<()> {
-        match self.status_of(id).await?.state {
-            ServiceState::Stopped => {}
-            ServiceState::Failed { .. } => self.transition(id, ServiceState::Stopped).await?,
-            _ => self.stop(id).await?,
+        if !matches!(self.status_of(id).await?.state, ServiceState::Stopped) {
+            self.stop(id).await?;
         }
         self.start(id).await
     }
 
-    async fn spawn(&self, id: &InstanceId) -> Result<()> {
+    /// Hands a freshly launched process to a supervisor that owns it from here.
+    async fn watch(&self, id: &InstanceId, process: Process) {
+        let (stop, listener) = watch::channel(false);
+        let task = tokio::spawn(supervise(self.clone(), id.clone(), process, listener));
+        let mut instances = self.inner.instances.write().await;
+        if let Some(instance) = instances.get_mut(id) {
+            instance.running = Some(Running { stop, task });
+        }
+    }
+
+    async fn launch(&self, id: &InstanceId) -> Result<Process> {
         let spec = self.spec_of(id).await?;
         let program = spec.binary.resolve(&self.inner.paths);
 
@@ -285,15 +329,80 @@ impl Engine {
             buffer: instance.history.clone(),
             live: instance.logs.clone(),
         };
-        instance.running = Some(Running {
+        instance.pid = pid;
+        Ok(Process {
             child,
             pumps: vec![
                 pump(stdout, LogStream::Stdout, sink.clone()),
                 pump(stderr, LogStream::Stderr, sink),
             ],
-        });
-        instance.pid = pid;
-        Ok(())
+        })
+    }
+
+    /// Waits out the backoff and brings the service back, or gives up. Returns
+    /// `None` when the attempt cap is reached or a stop arrives mid-wait.
+    async fn relaunch(&self, id: &InstanceId, stop: &mut watch::Receiver<bool>) -> Option<Process> {
+        loop {
+            let spec = self.spec_of(id).await.ok()?;
+            let attempt = self.bump_attempt(id).await?;
+            if spec.restart.backoff.is_exhausted(attempt) {
+                return None;
+            }
+            let delay = spec.restart.backoff.delay_for(attempt);
+
+            self.transition(id, ServiceState::Restarting { attempt })
+                .await
+                .ok()?;
+            self.inner.emit(
+                Some(id.clone()),
+                EventKind::RestartScheduled { attempt, delay },
+            );
+
+            tokio::select! {
+                _ = sleep(delay) => {}
+                _ = stop.changed() => return None,
+            }
+
+            self.transition(id, ServiceState::Starting).await.ok()?;
+            match self.launch(id).await {
+                Ok(process) => {
+                    self.transition(id, ServiceState::Ready).await.ok()?;
+                    return Some(process);
+                }
+                Err(error) => {
+                    // A failed relaunch is just another attempt.
+                    self.transition(id, ServiceState::failed(error.to_string()))
+                        .await
+                        .ok()?;
+                }
+            }
+        }
+    }
+
+    async fn take_running(&self, id: &InstanceId) -> Option<Running> {
+        let mut instances = self.inner.instances.write().await;
+        instances.get_mut(id).and_then(|i| i.running.take())
+    }
+
+    async fn set_attempt(&self, id: &InstanceId, attempt: u32) {
+        let mut instances = self.inner.instances.write().await;
+        if let Some(instance) = instances.get_mut(id) {
+            instance.attempt = attempt;
+        }
+    }
+
+    async fn bump_attempt(&self, id: &InstanceId) -> Option<u32> {
+        let mut instances = self.inner.instances.write().await;
+        let instance = instances.get_mut(id)?;
+        instance.attempt += 1;
+        Some(instance.attempt)
+    }
+
+    async fn grace_of(&self, id: &InstanceId) -> Duration {
+        self.spec_of(id)
+            .await
+            .map(|spec| spec.shutdown.grace)
+            .unwrap_or(FALLBACK_GRACE)
     }
 
     /// The only way a state ever changes. Illegal moves are rejected before
@@ -319,6 +428,65 @@ impl Engine {
         self.inner
             .emit(Some(id.clone()), EventKind::StateChanged { from, to });
         Ok(())
+    }
+}
+
+/// Owns one running service for as long as it lives: it waits on the child,
+/// reports the exit, and drives the restart policy until told to stop.
+async fn supervise(
+    engine: Engine,
+    id: InstanceId,
+    mut process: Process,
+    mut stop: watch::Receiver<bool>,
+) {
+    loop {
+        let exit = tokio::select! {
+            exit = process.child.wait() => exit,
+            _ = stop.changed() => {
+                process.shut_down(engine.grace_of(&id).await).await;
+                return;
+            }
+        };
+
+        process.drain().await;
+
+        // A stop that landed in the same instant owns the rest of the story,
+        // so a deliberate shutdown is never reported as a crash.
+        if *stop.borrow() {
+            return;
+        }
+
+        let Ok(spec) = engine.spec_of(&id).await else {
+            return;
+        };
+        let (reason, crashed) = match exit {
+            Ok(status) => (signal::describe_exit(&status), !status.success()),
+            Err(error) => (format!("could not be waited on: {error}"), true),
+        };
+
+        // The reason is recorded before any restart is considered, which is
+        // what the state machine guarantees for us.
+        if engine
+            .transition(&id, ServiceState::failed(reason))
+            .await
+            .is_err()
+        {
+            return;
+        }
+
+        let wanted = match spec.restart.policy {
+            RestartPolicy::Never => false,
+            RestartPolicy::Always => true,
+            RestartPolicy::OnCrash => crashed,
+        };
+        if !wanted {
+            return;
+        }
+
+        match engine.relaunch(&id, &mut stop).await {
+            Some(next) => process = next,
+            None => return,
+        }
     }
 }
 
