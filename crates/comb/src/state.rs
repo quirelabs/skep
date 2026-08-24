@@ -46,14 +46,16 @@ impl ServiceState {
 
     /// The single source of truth for what the supervisor is allowed to do.
     /// Transitions to the same state are never legal, so a repeated event
-    /// cannot slip through unnoticed.
+    /// cannot slip through unnoticed. `Failed` is the only door into
+    /// `Restarting`, which makes "every restart has a recorded cause" a
+    /// property of the state machine rather than a habit of the supervisor.
     pub fn can_transition_to(&self, next: &Self) -> bool {
         use ServiceState::*;
         matches!(
             (self, next),
             (Stopped, Starting)
                 | (Starting, Ready | Stopping | Failed { .. })
-                | (Ready, Stopping | Failed { .. } | Restarting { .. })
+                | (Ready, Stopping | Failed { .. })
                 | (Stopping, Stopped | Failed { .. })
                 | (Failed { .. }, Starting | Restarting { .. } | Stopped)
                 | (Restarting { .. }, Starting | Stopped | Failed { .. })
@@ -87,8 +89,9 @@ mod tests {
 
     #[test]
     fn a_crash_loop_is_legal_end_to_end() {
-        let loop_ = [
+        let cycle = [
             Ready,
+            ServiceState::failed("exit 1"),
             Restarting { attempt: 1 },
             Starting,
             ServiceState::failed("exit 1"),
@@ -96,7 +99,7 @@ mod tests {
             Starting,
             Ready,
         ];
-        for pair in loop_.windows(2) {
+        for pair in cycle.windows(2) {
             assert!(
                 pair[0].can_transition_to(&pair[1]),
                 "{} -> {} should be legal",
@@ -115,6 +118,14 @@ mod tests {
         assert!(!Stopping.can_transition_to(&Ready));
         assert!(!Starting.can_transition_to(&Restarting { attempt: 1 }));
         assert!(!Restarting { attempt: 1 }.can_transition_to(&Restarting { attempt: 2 }));
+    }
+
+    #[test]
+    fn every_restart_is_preceded_by_a_recorded_failure() {
+        assert!(!Ready.can_transition_to(&Restarting { attempt: 1 }));
+        assert!(!Starting.can_transition_to(&Restarting { attempt: 1 }));
+        assert!(!Stopped.can_transition_to(&Restarting { attempt: 1 }));
+        assert!(ServiceState::failed("exit 1").can_transition_to(&Restarting { attempt: 1 }));
     }
 
     #[test]

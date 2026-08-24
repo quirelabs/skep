@@ -5,6 +5,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::id::{InstanceId, Version};
+use crate::paths::Paths;
 
 /// Everything the engine needs to supervise one instance. Adapters produce
 /// this; the engine reads it and never calls back into the adapter to spawn.
@@ -125,6 +126,17 @@ impl BinarySpec {
 
     pub fn path(path: impl Into<PathBuf>) -> Self {
         Self::Path { path: path.into() }
+    }
+
+    pub fn resolve(&self, paths: &Paths) -> PathBuf {
+        match self {
+            Self::Managed {
+                name,
+                version,
+                program,
+            } => paths.binary_dir(name, version).join(program),
+            Self::Path { path } => path.clone(),
+        }
     }
 }
 

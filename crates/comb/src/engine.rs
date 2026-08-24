@@ -1,19 +1,28 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tokio::process::{Child, Command};
 use tokio::sync::{RwLock, broadcast};
+use tokio::task::JoinHandle;
+use tokio::time::timeout;
 
 use crate::error::{Error, Result};
-use crate::event::{Event, EventKind, LogLine};
+use crate::event::{Event, EventKind, LogLine, LogStream};
 use crate::id::InstanceId;
+use crate::logs::{LogSink, RingBuffer, pump};
+use crate::paths::Paths;
+use crate::signal;
 use crate::spec::ServiceSpec;
 use crate::state::ServiceState;
 use crate::time::Timestamp;
 
 const EVENT_CAPACITY: usize = 1024;
 const LOG_CAPACITY: usize = 1024;
+const LOG_HISTORY: usize = 1000;
 
 /// What a frontend needs to draw one row.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -40,6 +49,7 @@ struct Inner {
     instances: RwLock<BTreeMap<InstanceId, Instance>>,
     events: broadcast::Sender<Event>,
     seq: AtomicU64,
+    paths: Paths,
 }
 
 struct Instance {
@@ -48,22 +58,52 @@ struct Instance {
     since: Timestamp,
     pid: Option<u32>,
     logs: broadcast::Sender<LogLine>,
+    history: Arc<Mutex<RingBuffer>>,
+    running: Option<Running>,
+}
+
+/// A live child and the tasks draining its output.
+struct Running {
+    child: Child,
+    pumps: Vec<JoinHandle<()>>,
+}
+
+impl Running {
+    /// SIGTERM, then SIGKILL once the grace period is up. The pumps end by
+    /// themselves when the pipes close, so awaiting them drains the last lines.
+    async fn shut_down(&mut self, grace: Duration) {
+        if let Some(pid) = self.child.id() {
+            let _ = signal::terminate(pid);
+        }
+        if timeout(grace, self.child.wait()).await.is_err() {
+            let _ = self.child.start_kill();
+            let _ = self.child.wait().await;
+        }
+        for pump in self.pumps.drain(..) {
+            let _ = pump.await;
+        }
+    }
 }
 
 impl Engine {
     pub fn new() -> Self {
-        Self::with_event_capacity(EVENT_CAPACITY)
+        Self::with_paths(Paths::from_env())
     }
 
-    pub fn with_event_capacity(capacity: usize) -> Self {
-        let (events, _) = broadcast::channel(capacity);
+    pub fn with_paths(paths: Paths) -> Self {
+        let (events, _) = broadcast::channel(EVENT_CAPACITY);
         Self {
             inner: Arc::new(Inner {
                 instances: RwLock::new(BTreeMap::new()),
                 events,
                 seq: AtomicU64::new(0),
+                paths,
             }),
         }
+    }
+
+    pub fn paths(&self) -> &Paths {
+        &self.inner.paths
     }
 
     pub async fn register(&self, spec: ServiceSpec) -> Result<()> {
@@ -81,6 +121,8 @@ impl Engine {
                 since: Timestamp::now(),
                 pid: None,
                 logs,
+                history: Arc::new(Mutex::new(RingBuffer::new(LOG_HISTORY))),
+                running: None,
             },
         );
         self.inner.emit(Some(id), EventKind::Registered);
@@ -148,32 +190,114 @@ impl Engine {
             .ok_or_else(|| Error::UnknownInstance(id.clone()))
     }
 
+    /// The newest captured lines, oldest first.
+    pub async fn logs(&self, id: &InstanceId, lines: usize) -> Result<Vec<LogLine>> {
+        let instances = self.inner.instances.read().await;
+        let instance = instances
+            .get(id)
+            .ok_or_else(|| Error::UnknownInstance(id.clone()))?;
+        let history = instance
+            .history
+            .lock()
+            .map_err(|_| Error::Poisoned(id.clone()))?;
+        Ok(history.tail(lines))
+    }
+
+    /// Moving to `Starting` first is what makes this safe to call twice: the
+    /// second caller is rejected by the state machine, not by a lock.
     pub async fn start(&self, id: &InstanceId) -> Result<()> {
-        self.require_registered(id).await?;
-        Err(Error::NotImplemented("start"))
+        self.transition(id, ServiceState::Starting).await?;
+        match self.spawn(id).await {
+            Ok(()) => self.transition(id, ServiceState::Ready).await,
+            Err(error) => {
+                let failed = ServiceState::failed(error.to_string());
+                self.transition(id, failed).await?;
+                Err(error)
+            }
+        }
     }
 
     pub async fn stop(&self, id: &InstanceId) -> Result<()> {
-        self.require_registered(id).await?;
-        Err(Error::NotImplemented("stop"))
+        self.transition(id, ServiceState::Stopping).await?;
+
+        let (running, grace) = {
+            let mut instances = self.inner.instances.write().await;
+            let instance = instances
+                .get_mut(id)
+                .ok_or_else(|| Error::UnknownInstance(id.clone()))?;
+            (instance.running.take(), instance.spec.shutdown.grace)
+        };
+        if let Some(mut running) = running {
+            running.shut_down(grace).await;
+        }
+
+        self.transition(id, ServiceState::Stopped).await
     }
 
     pub async fn restart(&self, id: &InstanceId) -> Result<()> {
-        self.require_registered(id).await?;
-        Err(Error::NotImplemented("restart"))
+        match self.status_of(id).await?.state {
+            ServiceState::Stopped => {}
+            ServiceState::Failed { .. } => self.transition(id, ServiceState::Stopped).await?,
+            _ => self.stop(id).await?,
+        }
+        self.start(id).await
     }
 
-    async fn require_registered(&self, id: &InstanceId) -> Result<()> {
-        if self.inner.instances.read().await.contains_key(id) {
-            Ok(())
-        } else {
-            Err(Error::UnknownInstance(id.clone()))
+    async fn spawn(&self, id: &InstanceId) -> Result<()> {
+        let spec = self.spec_of(id).await?;
+        let program = spec.binary.resolve(&self.inner.paths);
+
+        tokio::fs::create_dir_all(&spec.data_dir)
+            .await
+            .map_err(|source| Error::DataDir {
+                instance: id.clone(),
+                path: spec.data_dir.display().to_string(),
+                source,
+            })?;
+
+        let mut command = Command::new(&program);
+        command
+            .args(&spec.args)
+            .envs(&spec.env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            // Never leave a child behind if the engine goes away.
+            .kill_on_drop(true);
+        if let Some(dir) = &spec.working_dir {
+            command.current_dir(dir);
         }
+
+        let mut child = command.spawn().map_err(|source| Error::Spawn {
+            instance: id.clone(),
+            program: program.display().to_string(),
+            source,
+        })?;
+        let pid = child.id();
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let stderr = child.stderr.take().expect("stderr is piped");
+
+        let mut instances = self.inner.instances.write().await;
+        let instance = instances
+            .get_mut(id)
+            .ok_or_else(|| Error::UnknownInstance(id.clone()))?;
+        let sink = LogSink {
+            buffer: instance.history.clone(),
+            live: instance.logs.clone(),
+        };
+        instance.running = Some(Running {
+            child,
+            pumps: vec![
+                pump(stdout, LogStream::Stdout, sink.clone()),
+                pump(stderr, LogStream::Stderr, sink),
+            ],
+        });
+        instance.pid = pid;
+        Ok(())
     }
 
     /// The only way a state ever changes. Illegal moves are rejected before
     /// anything is written, so an observer never sees an impossible history.
-    #[allow(dead_code)]
     pub(crate) async fn transition(&self, id: &InstanceId, to: ServiceState) -> Result<()> {
         let mut instances = self.inner.instances.write().await;
         let instance = instances
@@ -382,18 +506,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lifecycle_calls_are_still_stubs() {
-        let engine = engine_with(&["valkey@8"]).await;
+    async fn a_binary_that_is_not_there_fails_the_start() {
+        let engine = Engine::new();
         let id: InstanceId = "valkey@8".parse().unwrap();
+        let spec = ServiceSpec::new(
+            id.clone(),
+            BinarySpec::path("/nonexistent/valkey"),
+            std::env::temp_dir().join("skep-missing-binary"),
+        );
+        engine.register(spec).await.unwrap();
 
-        assert!(matches!(
-            engine.start(&id).await,
-            Err(Error::NotImplemented("start"))
-        ));
-        assert!(matches!(
-            engine.restart(&id).await,
-            Err(Error::NotImplemented("restart"))
-        ));
+        let error = engine.start(&id).await.unwrap_err();
+
+        assert!(matches!(error, Error::Spawn { .. }));
+        assert!(error.to_string().contains("/nonexistent/valkey"));
+        let state = engine.status_of(&id).await.unwrap().state;
+        assert!(matches!(state, ServiceState::Failed { .. }));
     }
 
     #[tokio::test]

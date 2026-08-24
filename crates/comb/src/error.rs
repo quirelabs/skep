@@ -28,6 +28,25 @@ pub enum Error {
         state: ServiceState,
     },
 
+    #[error("cannot start {instance}: {program} did not spawn: {source}")]
+    Spawn {
+        instance: InstanceId,
+        program: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("cannot prepare the data directory {path} for {instance}: {source}")]
+    DataDir {
+        instance: InstanceId,
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("the log buffer for {0} was poisoned by a panic")]
+    Poisoned(InstanceId),
+
     #[error("{0} is not implemented yet")]
     NotImplemented(&'static str),
 

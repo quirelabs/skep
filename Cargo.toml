@@ -2,6 +2,16 @@
 resolver = "3"
 members = [
     "crates/comb",
+    "crates/fake-service",
+    "crates/comb-services",
+    "crates/skep-cli",
+    "crates/skep-mcp",
+    "app/skep",
+]
+
+# The fake service exists for tests only, so a plain build leaves it out.
+default-members = [
+    "crates/comb",
     "crates/comb-services",
     "crates/skep-cli",
     "crates/skep-mcp",
@@ -23,12 +33,14 @@ tokio = { version = "1", features = [
     "macros",
     "sync",
     "time",
+    "fs",
     "process",
     "net",
     "io-util",
     "signal",
 ] }
 futures = "0.3"
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"

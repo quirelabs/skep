@@ -1,0 +1,15 @@
+[package]
+name = "fake-service"
+description = "Controllable stand-in process for engine supervision tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[[bin]]
+name = "fake-service"
+path = "src/main.rs"

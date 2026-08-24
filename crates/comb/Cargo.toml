@@ -12,6 +12,10 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }
 
+# Only the signal boundary in src/signal.rs needs it.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 serde_json = { workspace = true }
 
