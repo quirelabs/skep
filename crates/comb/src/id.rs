@@ -1,16 +1,18 @@
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::error::{Error, Result};
 
 /// Newtype with a restricted character set, so that the `Display` form of an
-/// [`InstanceId`] is always unambiguous to parse back.
+/// [`InstanceId`] is always unambiguous to parse back. Backed by `Arc<str>`
+/// because ids are cloned into every event, error and map key.
 macro_rules! string_id {
     ($name:ident, $what:literal, $expected:literal, $pred:expr) => {
         #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        pub struct $name(String);
+        pub struct $name(Arc<str>);
 
         impl $name {
             pub fn new(value: impl Into<String>) -> Result<Self> {
@@ -25,7 +27,7 @@ macro_rules! string_id {
                         $what, value, bad, $expected
                     )));
                 }
-                Ok(Self(value))
+                Ok(Self(Arc::from(value)))
             }
 
             pub fn as_str(&self) -> &str {

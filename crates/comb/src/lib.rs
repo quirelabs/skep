@@ -4,6 +4,7 @@
 mod engine;
 mod error;
 mod event;
+mod graph;
 mod id;
 mod logs;
 mod paths;

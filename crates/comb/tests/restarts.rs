@@ -228,3 +228,85 @@ async fn a_deliberate_start_clears_the_attempt_counter() {
     let event = wait_for_event(&mut events, is_restart).await;
     assert_eq!(attempt_of(&event.kind), 1, "the counter should start over");
 }
+
+#[tokio::test]
+async fn attempts_run_out_even_when_the_service_never_comes_back() {
+    let home = TestHome::new();
+    let engine = Engine::new();
+    let port = support::free_port();
+    let marker = home.path().join("started-once");
+    let args = [
+        "--fail-if-exists".to_string(),
+        marker.display().to_string(),
+        "--listen".to_string(),
+        port.to_string(),
+        "--exit-after-ms".to_string(),
+        "100".to_string(),
+    ];
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    let spec = fake_spec(&home, "valkey@8", &borrowed)
+        .with_health(support::health(
+            comb::Probe::Tcp { port },
+            Duration::from_secs(5),
+        ))
+        .with_restart(restart_after(RestartPolicy::OnCrash, 3, QUICK));
+    let id = spec.id.clone();
+    engine.register(spec).await.unwrap();
+    let mut events = engine.subscribe_events();
+    let mut tally = engine.subscribe_events();
+
+    // The first run binds the port and comes up; every relaunch dies on sight.
+    engine.start(&id).await.unwrap();
+
+    let mut attempts = Vec::new();
+    for _ in 0..3 {
+        attempts.push(attempt_of(
+            &wait_for_event(&mut events, is_restart).await.kind,
+        ));
+    }
+    assert_eq!(attempts, [1, 2, 3]);
+
+    wait_for_state(&mut events, |s| matches!(s, ServiceState::Failed { .. })).await;
+    expect_none(&mut events, QUICK * 10, is_restart).await;
+    assert!(matches!(
+        engine.status_of(&id).await.unwrap().state,
+        ServiceState::Failed { .. }
+    ));
+
+    // The point of the test: the attempts ran out without the service ever
+    // reaching ready a second time.
+    let readies = std::iter::from_fn(|| tally.try_recv().ok())
+        .filter(|event| {
+            matches!(&event.kind, EventKind::StateChanged { to, .. } if *to == ServiceState::Ready)
+        })
+        .count();
+    assert_eq!(readies, 1, "only the first run should have come up");
+}
+
+#[tokio::test]
+async fn a_first_start_that_never_comes_up_is_not_retried() {
+    let home = TestHome::new();
+    let engine = Engine::new();
+    let spec = fake_spec(&home, "valkey@8", &[])
+        .with_health(support::health(
+            comb::Probe::Tcp {
+                port: support::free_port(),
+            },
+            Duration::from_millis(150),
+        ))
+        .with_restart(restart_after(RestartPolicy::Always, 3, QUICK));
+    let id = spec.id.clone();
+    engine.register(spec).await.unwrap();
+    let mut events = engine.subscribe_events();
+
+    // A start reports its own failure. Supervision covers services that were
+    // up and then went down, not ones that never arrived.
+    let error = engine.start(&id).await.unwrap_err();
+
+    assert!(matches!(error, comb::Error::NotReady { .. }));
+    expect_none(&mut events, QUICK * 10, is_restart).await;
+    assert!(matches!(
+        engine.status_of(&id).await.unwrap().state,
+        ServiceState::Failed { .. }
+    ));
+}

@@ -44,6 +44,21 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    #[error("{instance} depends on {missing}, which is not registered")]
+    UnknownDependency {
+        instance: InstanceId,
+        missing: InstanceId,
+    },
+
+    #[error("dependency cycle: {0}")]
+    DependencyCycle(String),
+
+    #[error("{instance} was skipped because {dependency} failed")]
+    DependencyFailed {
+        instance: InstanceId,
+        dependency: InstanceId,
+    },
+
     #[error("{instance} never became ready: {reason}")]
     NotReady {
         instance: InstanceId,
@@ -64,4 +79,19 @@ pub enum Error {
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Errors travel in every Result the engine returns, so they stay small.
+    #[test]
+    fn the_error_type_stays_compact() {
+        assert!(
+            size_of::<Error>() <= 128,
+            "Error grew to {} bytes",
+            size_of::<Error>()
+        );
+    }
 }

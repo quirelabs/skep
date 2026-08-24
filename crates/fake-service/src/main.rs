@@ -14,6 +14,7 @@ enum Speak {
 }
 
 struct Options {
+    fail_if_exists: Option<String>,
     ignore_term: bool,
     listen: Option<u16>,
     listen_delay: Duration,
@@ -31,6 +32,15 @@ fn main() {
             std::process::exit(2);
         }
     };
+
+    // Lets a test make the first run succeed and every later one fail.
+    if let Some(marker) = &options.fail_if_exists {
+        if std::path::Path::new(marker).exists() {
+            eprintln!("fake-service: refusing to start again");
+            std::process::exit(1);
+        }
+        let _ = std::fs::write(marker, b"started");
+    }
 
     if options.ignore_term {
         ignore_term();
@@ -113,6 +123,7 @@ fn ignore_term() {
 
 fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
+        fail_if_exists: None,
         ignore_term: false,
         listen: None,
         listen_delay: Duration::ZERO,
@@ -125,6 +136,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
 
     while let Some(flag) = args.next() {
         match flag.as_str() {
+            "--fail-if-exists" => options.fail_if_exists = Some(text(&mut args, &flag)?),
             "--ignore-term" => options.ignore_term = true,
             "--listen" => options.listen = Some(number(&mut args, &flag)? as u16),
             "--listen-delay-ms" => {

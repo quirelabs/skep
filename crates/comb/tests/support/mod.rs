@@ -60,6 +60,12 @@ impl TestHome {
     }
 }
 
+impl TestHome {
+    pub fn path(&self) -> &std::path::Path {
+        &self.root
+    }
+}
+
 impl Drop for TestHome {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);

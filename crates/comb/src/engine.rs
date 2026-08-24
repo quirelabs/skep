@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,6 +12,7 @@ use tokio::time::{sleep, timeout};
 
 use crate::error::{Error, Result};
 use crate::event::{Event, EventKind, LogLine, LogStream};
+use crate::graph;
 use crate::id::InstanceId;
 use crate::logs::{LogSink, RingBuffer, pump};
 use crate::paths::Paths;
@@ -279,6 +280,110 @@ impl Engine {
         self.start(id).await
     }
 
+    /// Brings up everything the requested services need. Each one waits only
+    /// for its own dependencies to report ready, so independent branches of the
+    /// graph boot at the same time.
+    pub async fn start_all(&self, ids: &[InstanceId]) -> Result<()> {
+        let edges = self.dependency_edges().await;
+        let order = graph::plan(&edges, ids)?;
+        let waits = graph::upward(&order, &edges);
+        self.cascade(&order, &waits, Action::Start).await
+    }
+
+    /// The same walk in reverse: nothing is stopped while something that
+    /// depends on it is still running.
+    pub async fn stop_all(&self, ids: &[InstanceId]) -> Result<()> {
+        let edges = self.dependency_edges().await;
+        let order = graph::plan(&edges, ids)?;
+        let waits = graph::downward(&order, &edges);
+        let reversed: Vec<InstanceId> = order.into_iter().rev().collect();
+        self.cascade(&reversed, &waits, Action::Stop).await
+    }
+
+    async fn dependency_edges(&self) -> graph::Edges {
+        self.inner
+            .instances
+            .read()
+            .await
+            .iter()
+            .map(|(id, instance)| (id.clone(), instance.spec.depends_on.clone()))
+            .collect()
+    }
+
+    /// One task per service, each gated on the services it must not overtake.
+    /// A gate that reports failure fails its dependents rather than hanging.
+    async fn cascade(
+        &self,
+        order: &[InstanceId],
+        waits: &HashMap<InstanceId, Vec<InstanceId>>,
+        action: Action,
+    ) -> Result<()> {
+        let mut senders = HashMap::new();
+        let mut gates = HashMap::new();
+        for id in order {
+            let (done, gate) = watch::channel(None::<bool>);
+            senders.insert(id.clone(), done);
+            gates.insert(id.clone(), gate);
+        }
+
+        let mut tasks = Vec::with_capacity(order.len());
+        for id in order {
+            let waiting: Vec<_> = waits
+                .get(id)
+                .into_iter()
+                .flatten()
+                .filter_map(|other| gates.get(other).map(|gate| (other.clone(), gate.clone())))
+                .collect();
+            let done = senders.remove(id).expect("every planned id has a channel");
+            let engine = self.clone();
+            let id = id.clone();
+
+            tasks.push(tokio::spawn(async move {
+                for (other, mut gate) in waiting {
+                    loop {
+                        let settled = *gate.borrow_and_update();
+                        match settled {
+                            Some(true) => break,
+                            Some(false) => {
+                                let _ = done.send(Some(false));
+                                return Err(Error::DependencyFailed {
+                                    instance: id.clone(),
+                                    dependency: other,
+                                });
+                            }
+                            None => {}
+                        }
+                        if gate.changed().await.is_err() {
+                            let _ = done.send(Some(false));
+                            return Err(Error::DependencyFailed {
+                                instance: id.clone(),
+                                dependency: other,
+                            });
+                        }
+                    }
+                }
+
+                let outcome = match action {
+                    Action::Start => engine.start(&id).await,
+                    Action::Stop => engine.stop(&id).await,
+                };
+                let _ = done.send(Some(outcome.is_ok()));
+                outcome
+            }));
+        }
+
+        let mut first = None;
+        for task in tasks {
+            if let Ok(Err(error)) = task.await {
+                first.get_or_insert(error);
+            }
+        }
+        match first {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     /// Hands a freshly launched process to a supervisor that owns it from here.
     async fn watch(&self, id: &InstanceId, process: Process) {
         let (stop, listener) = watch::channel(false);
@@ -481,6 +586,12 @@ impl Engine {
             .emit(Some(id.clone()), EventKind::StateChanged { from, to });
         Ok(())
     }
+}
+
+#[derive(Clone, Copy)]
+enum Action {
+    Start,
+    Stop,
 }
 
 /// Owns one running service for as long as it lives: it waits on the child,
