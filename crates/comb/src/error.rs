@@ -84,6 +84,9 @@ pub enum Error {
         reason: String,
     },
 
+    #[error("{message}")]
+    PortTaken { port: u16, message: String },
+
     #[error("{instance} never became ready: {reason}")]
     NotReady {
         instance: InstanceId,

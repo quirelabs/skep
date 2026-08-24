@@ -28,3 +28,7 @@ pub fn try_lock_exclusive(_file: &File) -> io::Result<bool> {
 pub fn restrict(_path: &Path, _mode: u32) -> io::Result<()> {
     unreachable!("the platform module fails to compile before this is reachable")
 }
+
+pub async fn listener_on(_port: u16) -> Option<crate::ports::Listener> {
+    unreachable!("the platform module fails to compile before this is reachable")
+}

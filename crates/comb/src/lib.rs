@@ -11,6 +11,7 @@ mod id;
 mod logs;
 mod paths;
 mod platform;
+mod ports;
 mod probe;
 mod scratch;
 mod serde_ms;

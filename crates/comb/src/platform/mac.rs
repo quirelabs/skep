@@ -8,6 +8,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::ExitStatus;
 
+use std::time::Duration;
+
+use tokio::time::timeout;
+
+use crate::ports::Listener;
 use crate::spec::StopSignal;
 
 /// Ask a process to shut down cleanly. Escalating to SIGKILL once the grace
@@ -58,4 +63,52 @@ pub fn try_lock_exclusive(file: &File) -> io::Result<bool> {
 /// the right to drive every service on the machine.
 pub fn restrict(path: &Path, mode: u32) -> io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// Asks lsof who is listening. A diagnostic, so every failure is silence
+/// rather than an error: never let the explanation break the operation.
+pub async fn listener_on(port: u16) -> Option<Listener> {
+    let lsof = tokio::process::Command::new("lsof")
+        .args(["-nP", "+c", "0", "-sTCP:LISTEN", "-F", "pc"])
+        .arg(format!("-iTCP:{port}"))
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+
+    // lsof can stall on a busy machine, and a stalled explanation is worse
+    // than none.
+    let output = timeout(Duration::from_secs(2), lsof).await.ok()?.ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    let mut pid = None;
+    let mut command = None;
+    for line in text.lines() {
+        match line.split_at_checked(1) {
+            Some(("p", rest)) => pid = rest.trim().parse().ok(),
+            Some(("c", rest)) => command = Some(rest.trim().to_string()),
+            _ => {}
+        }
+        if pid.is_some() && command.is_some() {
+            break;
+        }
+    }
+
+    let pid = pid?;
+    Some(Listener {
+        executable: executable_of(pid).await,
+        command: command.unwrap_or_else(|| "an unknown process".to_string()),
+        pid,
+    })
+}
+
+async fn executable_of(pid: u32) -> Option<String> {
+    let output = tokio::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!path.is_empty()).then_some(path)
 }

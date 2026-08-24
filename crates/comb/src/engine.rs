@@ -429,6 +429,7 @@ impl Engine {
     /// Starts the process and waits for it to answer. Dropping the process on
     /// any failure is what stops a half started service from lingering.
     async fn launch_and_settle(&self, id: &InstanceId, spec: &ServiceSpec) -> Result<Process> {
+        self.check_ports(id, spec).await?;
         self.provision(id, spec).await?;
         self.ensure_data_dir(id, spec).await?;
         self.prepare(id, spec).await?;
@@ -440,7 +441,12 @@ impl Engine {
                     Ok(status) => platform::describe_exit(&status),
                     Err(error) => format!("could not be waited on: {error}"),
                 };
-                Err(Error::DiedStarting { instance: id.clone(), reason })
+                // The port can be taken between the check and the bind, so ask
+                // again. A bind failure deserves the same answer either way.
+                Err(match self.check_ports(id, spec).await {
+                    Err(taken) => taken,
+                    Ok(()) => Error::DiedStarting { instance: id.clone(), reason },
+                })
             }
         };
         settled.map(|()| process)
@@ -477,6 +483,30 @@ impl Engine {
                 Err(_) => sleep(health.interval).await,
             }
         }
+    }
+
+    /// Refuses to start onto a port someone else holds. This narrows the race
+    /// rather than closing it, which is why the same check runs again if the
+    /// process dies during startup.
+    async fn check_ports(&self, id: &InstanceId, spec: &ServiceSpec) -> Result<()> {
+        for port in &spec.ports {
+            let Some(listener) = platform::listener_on(port.number).await else {
+                continue;
+            };
+            self.inner.emit(
+                Some(id.clone()),
+                EventKind::PortConflict {
+                    port: port.number,
+                    pid: Some(listener.pid),
+                    process: Some(listener.command.clone()),
+                },
+            );
+            return Err(Error::PortTaken {
+                port: port.number,
+                message: crate::ports::describe(port.number, &listener),
+            });
+        }
+        Ok(())
     }
 
     /// Installs the pinned release if the binary is not there yet. Announced
