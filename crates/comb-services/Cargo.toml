@@ -1,0 +1,10 @@
+[package]
+name = "comb-services"
+description = "Built-in service adapters for the comb engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+comb = { workspace = true }

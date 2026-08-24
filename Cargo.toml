@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/comb",
+    "crates/comb-services",
+    "crates/skep-cli",
+    "crates/skep-mcp",
+    "app/skep",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/quirelabs/skep"
+
+[workspace.dependencies]
+comb = { path = "crates/comb" }
+comb-services = { path = "crates/comb-services" }
+
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "process",
+    "net",
+    "io-util",
+    "signal",
+] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+criterion = "0.7"

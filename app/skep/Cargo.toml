@@ -1,0 +1,14 @@
+[package]
+name = "skep-app"
+description = "Skep macOS application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "skep-app"
+path = "src/main.rs"
+
+[dependencies]
+comb = { workspace = true }
