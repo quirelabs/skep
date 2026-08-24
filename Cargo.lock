@@ -133,6 +133,7 @@ name = "comb-services"
 version = "0.0.0"
 dependencies = [
  "comb",
+ "tokio",
 ]
 
 [[package]]
