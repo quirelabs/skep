@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use comb::{Engine, Paths};
 use comb_services::{Request, catalog};
-use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use tokio::runtime::Runtime;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -68,6 +68,10 @@ fn main() -> Result<()> {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Skep".into()),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
                 |_, cx| cx.new(|cx| ui::Skep::new(bridge, menubar, cx)),

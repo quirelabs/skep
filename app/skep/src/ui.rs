@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use comb::{Applied, InstanceId, LogLine, Mirror, ServiceState, ServiceStatus};
 use gpui::{
-    Animation, AnimationExt, AnyElement, Context, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div,
-    ease_in_out, pulsating_between, px,
+    Animation, AnimationExt, AnyElement, Context, FontWeight, Hsla, InteractiveElement,
+    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
+    div, ease_in_out, pulsating_between, px,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -30,6 +30,9 @@ const RAIL: &[(&str, bool)] = &[
 const MOTION: Duration = Duration::from_millis(180);
 const BREATH: Duration = Duration::from_millis(1100);
 const LOG_HEIGHT: f32 = 208.;
+/// Ships with every macOS, unlike the generic family names, which font-kit
+/// will not resolve.
+const MONO: &str = "Menlo";
 const LOG_LIMIT: usize = 400;
 
 enum Connection {
@@ -209,6 +212,7 @@ impl Render for Skep {
             .bg(self.theme.base)
             .text_color(self.theme.text)
             .text_sm()
+            .line_height(px(20.))
             .child(self.rail())
             .child(self.content(cx))
     }
@@ -228,9 +232,14 @@ impl Skep {
             .gap_0p5()
             .children(RAIL.iter().map(|(name, built)| {
                 div()
-                    .px_5()
+                    .px_6()
                     .py_1()
                     .text_color(if *built { theme.text } else { theme.idle })
+                    .font_weight(if *built {
+                        FontWeight::MEDIUM
+                    } else {
+                        FontWeight::NORMAL
+                    })
                     .child(SharedString::from(*name))
             }))
     }
@@ -286,7 +295,11 @@ impl Skep {
             .py_4()
             .border_b_1()
             .border_color(self.theme.border)
-            .child(SharedString::from("Services"))
+            .child(
+                div()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(SharedString::from("Services")),
+            )
             .child(
                 div()
                     .text_xs()
@@ -344,7 +357,7 @@ impl Skep {
             .items_center()
             .gap_3()
             .px_6()
-            .py_3p5()
+            .py_3()
             .cursor_pointer()
             .hover(|style| style.bg(theme.raised))
             .on_click(cx.listener({
@@ -352,7 +365,7 @@ impl Skep {
                 move |skep, _, _, cx| skep.toggle(id.clone(), cx)
             }))
             .child(self.dot(&status, working, index))
-            .child(div().w(px(186.)).child(key.clone()))
+            .child(div().w(px(186.)).truncate().child(key.clone()))
             .child(
                 div()
                     .w(px(104.))
@@ -433,7 +446,8 @@ impl Skep {
                     .px_6()
                     .py_0p5()
                     .text_xs()
-                    .font_family("monospace")
+                    .line_height(px(17.))
+                    .font_family(MONO)
                     .text_color(muted)
                     .child(SharedString::from(line.text))
                     .with_animation(
