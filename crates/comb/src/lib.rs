@@ -19,7 +19,7 @@ mod spec;
 mod state;
 mod time;
 
-pub use acquire::{Release, ensure};
+pub use acquire::{Build, Release, ensure};
 pub use engine::{Engine, ServiceStatus};
 pub use error::{Error, Result};
 pub use event::{Event, EventKind, LogLine, LogStream};

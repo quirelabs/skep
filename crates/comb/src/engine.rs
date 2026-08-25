@@ -553,7 +553,10 @@ impl Engine {
         );
 
         let started = Instant::now();
-        crate::acquire::ensure(&self.inner.paths, name, release).await?;
+        // Build output goes to the service's own history, so a failed compile
+        // is diagnosable exactly where everything else about it is.
+        let sink = self.sink_of(id).await?;
+        crate::acquire::ensure_reported(&self.inner.paths, name, release, &sink).await?;
 
         self.inner.emit(
             Some(id.clone()),

@@ -2,20 +2,24 @@
 //! it; the engine owns spawning and supervision and never calls back in here.
 
 mod mailpit;
+mod mongodb;
 mod mysql;
 mod postgres;
 pub mod project;
+mod valkey;
 
 use std::collections::BTreeMap;
 
 use comb::{
-    Client, Error, InstanceId, Label, Paths, Platform, Release, Request as Wire, Response, Result,
-    ServiceSpec, ServiceStatus, Version,
+    Build, Client, Error, InstanceId, Label, Paths, Platform, Release, Request as Wire, Response,
+    Result, ServiceSpec, ServiceStatus, Version,
 };
 
 pub use mailpit::Mailpit;
+pub use mongodb::Mongodb;
 pub use mysql::Mysql;
 pub use postgres::Postgres;
+pub use valkey::Valkey;
 
 /// One pinned artifact in a catalog, keyed by version and platform. Generated
 /// by `scripts/pin-release.sh`; the hash is what every download is checked
@@ -39,6 +43,12 @@ pub trait ServiceAdapter: Send + Sync {
     fn default_version(&self) -> &'static str;
     /// Port names this service listens on, with their defaults.
     fn default_ports(&self) -> &'static [(&'static str, u16)];
+    /// Set when the pinned artifact is source that has to be compiled. Part of
+    /// the release, so installing and describing a service cannot disagree
+    /// about whether a build is needed.
+    fn build(&self) -> Option<Build> {
+        None
+    }
     /// Everything the engine needs to supervise one instance of this service.
     fn spec(&self, request: &Request, paths: &Paths) -> Result<ServiceSpec>;
 }
@@ -163,6 +173,7 @@ pub fn release(adapter: &dyn ServiceAdapter, version: &Version) -> Result<Releas
             sha256: pin.sha256.to_string(),
             size: pin.size,
             strip_components: pin.strip_components,
+            build: adapter.build(),
         })
         .ok_or_else(|| {
             Error::InvalidId(format!(
@@ -294,7 +305,7 @@ pub fn names() -> Vec<&'static str> {
 
 /// Every service comb ships with.
 pub fn catalog() -> &'static [&'static dyn ServiceAdapter] {
-    &[&Mailpit, &Mysql, &Postgres]
+    &[&Mailpit, &Mongodb, &Mysql, &Postgres, &Valkey]
 }
 
 pub fn find(name: &str) -> Option<&'static dyn ServiceAdapter> {

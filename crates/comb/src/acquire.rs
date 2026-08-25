@@ -13,9 +13,11 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use crate::error::{Error, Result};
+use crate::event::LogStream;
 use crate::id::Version;
+use crate::logs::{LogSink, pump};
 use crate::paths::Paths;
-use crate::platform::Platform;
+use crate::platform::{self, Platform};
 use crate::scratch::ScratchDir;
 
 const CHUNK: usize = 64 * 1024;
@@ -48,11 +50,41 @@ pub struct Release {
     /// Leading path components to drop, matching tar's own flag. Archives differ:
     /// some put the binary at the root, some wrap everything in one directory.
     pub strip_components: u8,
+    /// Set when the artifact is source that has to be compiled. The compiler is
+    /// then the only unpinned input.
+    #[serde(default)]
+    pub build: Option<Build>,
+}
+
+/// How to turn a source tarball into something runnable. The result is promoted
+/// only after it links and answers for itself, so a half-built binary can never
+/// appear at the final path.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Build {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Run with --version once the build finishes, as proof it worked.
+    /// Relative to the build directory.
+    pub verify: String,
+    /// What to keep, relative to the build directory. Everything else is
+    /// object files nobody needs on disk forever.
+    pub keep: Vec<String>,
 }
 
 /// Installs a release if it is not already there, returning its directory.
 pub async fn ensure(paths: &Paths, name: &str, release: &Release) -> Result<PathBuf> {
-    install(&Curl, paths, name, release).await
+    install(&Curl, paths, name, release, None).await
+}
+
+/// The same, with build output going somewhere a person can read it.
+pub(crate) async fn ensure_reported(
+    paths: &Paths,
+    name: &str,
+    release: &Release,
+    sink: &LogSink,
+) -> Result<PathBuf> {
+    install(&Curl, paths, name, release, Some(sink)).await
 }
 
 trait Fetch {
@@ -101,6 +133,7 @@ async fn install<F: Fetch>(
     paths: &Paths,
     name: &str,
     release: &Release,
+    sink: Option<&LogSink>,
 ) -> Result<PathBuf> {
     let current = Platform::current();
     if current != Some(release.platform) {
@@ -119,6 +152,17 @@ async fn install<F: Fetch>(
     let target = paths.binary_dir(name, &release.version);
     if target.is_dir() {
         return Ok(target);
+    }
+
+    // Before anything is downloaded: a machine that cannot compile should be
+    // told so now, not after a source tarball and a failed make.
+    if release.build.is_some()
+        && let Some(problem) = platform::build_tools_missing().await
+    {
+        return Err(Error::BuildTools {
+            name: name.to_string(),
+            problem,
+        });
     }
 
     let _claim = claim(&target).await;
@@ -148,7 +192,17 @@ async fn install<F: Fetch>(
     verify(&archive, name, release).await?;
     unpack(&archive, &unpacked, name, release).await?;
 
-    match scratch.promote(&unpacked, &target).await {
+    let finished = match &release.build {
+        Some(build) => {
+            compile(&unpacked, name, release, build, sink).await?;
+            let kept = scratch.join("kept");
+            harvest(&unpacked, &kept, name, release, build).await?;
+            kept
+        }
+        None => unpacked,
+    };
+
+    match scratch.promote(&finished, &target).await {
         Ok(()) => Ok(target),
         // Another process finished the same install first, which is fine.
         Err(_) if target.is_dir() => Ok(target),
@@ -221,6 +275,117 @@ async fn unpack(archive: &Path, into: &Path, name: &str, release: &Release) -> R
             reason: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         })
     }
+}
+
+/// Compiles in scratch, with output going to the same history as the service's
+/// own, then insists the result can answer for itself.
+async fn compile(
+    unpacked: &Path,
+    name: &str,
+    release: &Release,
+    build: &Build,
+    sink: Option<&LogSink>,
+) -> Result<()> {
+    let piped = || {
+        if sink.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        }
+    };
+    let mut child = Command::new(&build.program)
+        .args(&build.args)
+        .current_dir(unpacked)
+        .stdin(Stdio::null())
+        .stdout(piped())
+        .stderr(piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| failed("building", name, release, error))?;
+
+    let mut pumps = Vec::new();
+    if let Some(sink) = sink {
+        pumps.push(pump(
+            child.stdout.take().expect("stdout is piped"),
+            LogStream::Stdout,
+            sink.clone(),
+        ));
+        pumps.push(pump(
+            child.stderr.take().expect("stderr is piped"),
+            LogStream::Stderr,
+            sink.clone(),
+        ));
+    }
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|error| failed("building", name, release, error))?;
+    for pump in pumps {
+        let _ = pump.await;
+    }
+    if !status.success() {
+        return Err(Error::Acquire {
+            step: "building",
+            name: name.to_string(),
+            version: release.version.clone(),
+            reason: format!(
+                "{} {}: see the log for the compiler's own words",
+                build.program,
+                platform::describe_exit(&status)
+            ),
+        });
+    }
+
+    // Linking is not the same as working. Ask it what it is.
+    let program = unpacked.join(&build.verify);
+    let spoke = Command::new(&program)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|error| failed("building", name, release, error))?;
+    if !spoke.status.success() {
+        return Err(Error::Acquire {
+            step: "building",
+            name: name.to_string(),
+            version: release.version.clone(),
+            reason: format!("{} did not answer --version", build.verify),
+        });
+    }
+    if let Some(sink) = sink {
+        let text = String::from_utf8_lossy(&spoke.stdout).trim().to_string();
+        sink.record(LogStream::Stdout, format!("built {text}"));
+    }
+    Ok(())
+}
+
+/// Keeps the few files worth keeping. A build tree is mostly object files.
+async fn harvest(
+    built: &Path,
+    kept: &Path,
+    name: &str,
+    release: &Release,
+    build: &Build,
+) -> Result<()> {
+    for wanted in &build.keep {
+        let from = built.join(wanted);
+        let to = kept.join(wanted);
+        if let Some(parent) = to.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|error| failed("building", name, release, error))?;
+        }
+        tokio::fs::copy(&from, &to).await.map_err(|error| {
+            failed(
+                "building",
+                name,
+                release,
+                format!("{}: {error}", from.display()),
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn failed(step: &'static str, name: &str, release: &Release, error: impl ToString) -> Error {
@@ -305,6 +470,7 @@ mod tests {
             sha256: hex(&Sha256::digest(&bytes)),
             size: bytes.len() as u64,
             strip_components: u8::from(wrapped),
+            build: None,
         };
         let paths = Paths::new(root.join("home"));
         (
@@ -321,7 +487,7 @@ mod tests {
     async fn installs_a_flat_archive_where_the_layout_says() {
         let (fixture, local, release) = fixture("flat", false);
 
-        let installed = install(&local, &fixture.paths, "mailpit", &release)
+        let installed = install(&local, &fixture.paths, "mailpit", &release, None)
             .await
             .unwrap();
 
@@ -333,7 +499,7 @@ mod tests {
     async fn strips_the_wrapping_directory_when_told_to() {
         let (fixture, local, release) = fixture("wrapped", true);
 
-        let installed = install(&local, &fixture.paths, "mailpit", &release)
+        let installed = install(&local, &fixture.paths, "mailpit", &release, None)
             .await
             .unwrap();
 
@@ -344,10 +510,10 @@ mod tests {
     async fn a_second_install_is_a_no_op() {
         let (fixture, local, release) = fixture("cached", false);
 
-        install(&local, &fixture.paths, "mailpit", &release)
+        install(&local, &fixture.paths, "mailpit", &release, None)
             .await
             .unwrap();
-        install(&local, &fixture.paths, "mailpit", &release)
+        install(&local, &fixture.paths, "mailpit", &release, None)
             .await
             .unwrap();
 
@@ -363,7 +529,7 @@ mod tests {
             .map(|_| {
                 let (local, paths, release) =
                     (local.clone(), fixture.paths.clone(), release.clone());
-                tokio::spawn(async move { install(&*local, &paths, "mailpit", &release).await })
+                tokio::spawn(async move { install(&*local, &paths, "mailpit", &release, None).await })
             })
             .collect();
         for attempt in attempts {
@@ -382,7 +548,7 @@ mod tests {
         let (fixture, local, mut release) = fixture("tampered", false);
         release.sha256 = "0".repeat(64);
 
-        let error = install(&local, &fixture.paths, "mailpit", &release)
+        let error = install(&local, &fixture.paths, "mailpit", &release, None)
             .await
             .unwrap_err();
 
@@ -408,7 +574,7 @@ mod tests {
             _ => Platform::MacosArm64,
         };
 
-        let error = install(&local, &fixture.paths, "mailpit", &release)
+        let error = install(&local, &fixture.paths, "mailpit", &release, None)
             .await
             .unwrap_err();
 
@@ -420,7 +586,7 @@ mod tests {
         let (fixture, local, mut release) = fixture("truncated", false);
         release.size += 1;
 
-        let error = install(&local, &fixture.paths, "mailpit", &release)
+        let error = install(&local, &fixture.paths, "mailpit", &release, None)
             .await
             .unwrap_err();
 

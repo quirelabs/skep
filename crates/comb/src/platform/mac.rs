@@ -112,3 +112,31 @@ async fn executable_of(pid: u32) -> Option<String> {
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!path.is_empty()).then_some(path)
 }
+
+/// Checks the machine can compile before anything is downloaded, so a missing
+/// toolchain is a sentence rather than a cryptic make failure minutes in.
+pub async fn build_tools_missing() -> Option<String> {
+    let ran = |program: &'static str, arg: &'static str| async move {
+        tokio::process::Command::new(program)
+            .arg(arg)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map(|status| status.success())
+            .unwrap_or(false)
+    };
+
+    if !ran("xcode-select", "-p").await || !ran("cc", "--version").await {
+        return Some(
+            "the Xcode command line tools are not installed. Install them with \
+             `xcode-select --install`, then try again"
+                .to_string(),
+        );
+    }
+    if !ran("make", "-v").await {
+        return Some("make is not available on this machine".to_string());
+    }
+    None
+}

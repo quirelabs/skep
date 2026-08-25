@@ -42,6 +42,11 @@ pub(crate) struct LogSink {
 }
 
 impl LogSink {
+    /// For lines the engine writes itself, such as the result of a build.
+    pub(crate) fn record(&self, stream: LogStream, text: String) {
+        self.push(LogLine::new(stream, text));
+    }
+
     fn push(&self, line: LogLine) {
         if let Ok(mut buffer) = self.buffer.lock() {
             buffer.push(line.clone());

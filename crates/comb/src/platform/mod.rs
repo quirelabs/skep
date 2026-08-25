@@ -10,7 +10,9 @@ use crate::error::{Error, Result};
 #[cfg(target_os = "macos")]
 mod mac;
 #[cfg(target_os = "macos")]
-pub(crate) use mac::{describe_exit, listener_on, restrict, terminate, try_lock_exclusive};
+pub(crate) use mac::{
+    build_tools_missing, describe_exit, listener_on, restrict, terminate, try_lock_exclusive,
+};
 
 #[cfg(not(target_os = "macos"))]
 mod unsupported;

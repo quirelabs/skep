@@ -69,6 +69,9 @@ pub enum Error {
         reason: String,
     },
 
+    #[error("{name} has to be built from source, but {problem}")]
+    BuildTools { name: String, problem: String },
+
     #[error(
         "{name} {version} does not match its pinned checksum: expected {expected}, got {actual}"
     )]

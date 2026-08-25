@@ -32,3 +32,7 @@ pub fn restrict(_path: &Path, _mode: u32) -> io::Result<()> {
 pub async fn listener_on(_port: u16) -> Option<crate::ports::Listener> {
     unreachable!("the platform module fails to compile before this is reachable")
 }
+
+pub async fn build_tools_missing() -> Option<String> {
+    unreachable!("the platform module fails to compile before this is reachable")
+}

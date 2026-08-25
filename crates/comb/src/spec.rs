@@ -259,6 +259,10 @@ pub enum Probe {
     Mysql {
         port: u16,
     },
+    /// A real OP_MSG ping, so a mongod still starting up cannot pass.
+    Mongo {
+        port: u16,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

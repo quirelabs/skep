@@ -16,6 +16,7 @@ async fn fetches_and_verifies_the_pinned_mailpit() {
         sha256: "108c4d8345368825924a61c492d96ffd82961f84cda5137c8e1ed03c1d2433b7".to_string(),
         size: 10_092_536,
         strip_components: 0,
+        build: None,
     };
 
     let installed = ensure(&paths, "mailpit", &release).await.unwrap();

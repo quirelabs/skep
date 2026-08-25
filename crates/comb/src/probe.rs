@@ -11,6 +11,7 @@ use crate::spec::Probe;
 
 const LOOPBACK: &str = "127.0.0.1";
 const PROTOCOL_3: i32 = 196_608;
+const OP_MSG: i32 = 2013;
 
 /// Runs one check. The error is the sentence a user ends up reading.
 pub(crate) async fn check(probe: &Probe, limit: Duration) -> Result<(), String> {
@@ -32,6 +33,10 @@ pub(crate) async fn check(probe: &Probe, limit: Duration) -> Result<(), String> 
             } else {
                 Err(format!("answered {status}, expected {expect}"))
             }
+        }
+        Probe::Mongo { port } => {
+            let reply = exchange(*port, &mongo_ping(), limit).await?;
+            mongo_ok(&reply)
         }
         Probe::Mysql { port } => {
             let greeting = listen_first(*port, limit).await?;
@@ -83,6 +88,58 @@ async fn exchange(port: u16, request: &[u8], limit: Duration) -> Result<Vec<u8>,
         Ok(Ok(reply)) => Ok(reply),
         Ok(Err(error)) => Err(format!("port {port} broke off: {error}")),
         Err(_) => Err(format!("port {port} did not reply within {limit:?}")),
+    }
+}
+
+/// An OP_MSG carrying `{ping: 1, $db: "admin"}`, the cheapest thing a mongod
+/// answers once it is genuinely serving.
+fn mongo_ping() -> Vec<u8> {
+    let mut fields = Vec::new();
+    fields.push(0x10); // int32
+    fields.extend_from_slice(b"ping\0");
+    fields.extend_from_slice(&1i32.to_le_bytes());
+    fields.push(0x02); // string
+    fields.extend_from_slice(b"$db\0");
+    fields.extend_from_slice(&6i32.to_le_bytes());
+    fields.extend_from_slice(b"admin\0");
+    fields.push(0x00); // end of document
+
+    let mut document = ((fields.len() + 4) as i32).to_le_bytes().to_vec();
+    document.extend_from_slice(&fields);
+
+    let body = 4 + 1 + document.len();
+    let mut message = ((16 + body) as i32).to_le_bytes().to_vec();
+    message.extend_from_slice(&1i32.to_le_bytes()); // requestID
+    message.extend_from_slice(&0i32.to_le_bytes()); // responseTo
+    message.extend_from_slice(&OP_MSG.to_le_bytes());
+    message.extend_from_slice(&0u32.to_le_bytes()); // flagBits
+    message.push(0x00); // section kind: body
+    message.extend_from_slice(&document);
+    message
+}
+
+/// The reply is an OP_MSG whose document carries `ok` as a double.
+fn mongo_ok(reply: &[u8]) -> Result<(), String> {
+    if reply.len() < 21 {
+        return Err("answered with a reply too short to be a message".to_string());
+    }
+    let opcode = i32::from_le_bytes(reply[12..16].try_into().expect("four bytes"));
+    if opcode != OP_MSG {
+        return Err(format!("answered with opcode {opcode}, expected {OP_MSG}"));
+    }
+
+    // The 0x01 prefix marks a double, so this matches the field rather than
+    // the same two letters appearing in some message text.
+    let at = reply
+        .windows(4)
+        .position(|window| window == b"\x01ok\0")
+        .ok_or("answered without an ok field")?;
+    let value = reply
+        .get(at + 4..at + 12)
+        .ok_or("the ok field is truncated")?;
+    match f64::from_le_bytes(value.try_into().expect("eight bytes")) {
+        1.0 => Ok(()),
+        ok => Err(format!("answered ok: {ok}")),
     }
 }
 
@@ -189,6 +246,49 @@ mod tests {
         reply.extend_from_slice(b"SFATAL\0Mthe database system is starting up\0\0");
 
         assert_eq!(postgres_error(&reply), "the database system is starting up");
+    }
+
+    #[test]
+    fn the_mongo_ping_is_a_well_formed_op_msg() {
+        let message = mongo_ping();
+
+        assert_eq!(
+            i32::from_le_bytes(message[0..4].try_into().unwrap()) as usize,
+            message.len(),
+            "the length prefix must describe the whole message"
+        );
+        assert_eq!(
+            i32::from_le_bytes(message[12..16].try_into().unwrap()),
+            OP_MSG
+        );
+        assert_eq!(message[20], 0x00, "section kind should be a body");
+        let document = &message[21..];
+        assert_eq!(
+            i32::from_le_bytes(document[0..4].try_into().unwrap()) as usize,
+            document.len(),
+            "the BSON length must describe the whole document"
+        );
+        assert_eq!(document[document.len() - 1], 0x00, "unterminated document");
+    }
+
+    #[test]
+    fn a_mongo_reply_is_judged_on_its_ok_field() {
+        let reply = |ok: f64| {
+            let mut bytes = vec![0u8; 12];
+            bytes.extend_from_slice(&OP_MSG.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            bytes.push(0x00);
+            bytes.extend_from_slice(b"\x01ok\0");
+            bytes.extend_from_slice(&ok.to_le_bytes());
+            bytes
+        };
+
+        assert!(mongo_ok(&reply(1.0)).is_ok());
+        assert!(mongo_ok(&reply(0.0)).unwrap_err().contains("ok: 0"));
+
+        let mut wrong = reply(1.0);
+        wrong[12..16].copy_from_slice(&1i32.to_le_bytes());
+        assert!(mongo_ok(&wrong).unwrap_err().contains("opcode 1"));
     }
 
     #[test]

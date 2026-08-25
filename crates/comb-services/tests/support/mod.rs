@@ -54,6 +54,28 @@ pub fn curl(url: &str) -> String {
     String::from_utf8_lossy(&output.stdout).to_string()
 }
 
+/// Registers an instance without installing anything first, leaving the engine
+/// to fetch and build it as part of starting. That is the path a user takes,
+/// and the only one where build output reaches the service's log history.
+pub async fn registered_cold(
+    adapter: &'static dyn ServiceAdapter,
+    label: &str,
+    ports: &[&str],
+) -> (Engine, InstanceId, Vec<u16>) {
+    let paths = Paths::new(shared_home());
+    let chosen: Vec<u16> = ports.iter().map(|_| free_port()).collect();
+    let mut request = Request::new().with_label(label.parse().unwrap());
+    for (name, port) in ports.iter().zip(&chosen) {
+        request = request.with_port(*name, *port);
+    }
+
+    let spec = adapter.spec(&request, &paths).unwrap();
+    let id = spec.id.clone();
+    let engine = Engine::with_paths(paths);
+    engine.register(spec).await.unwrap();
+    (engine, id, chosen)
+}
+
 /// Installs the pinned release and registers one labelled instance on free
 /// ports, so tests never collide with each other or with the developer's own
 /// services.
