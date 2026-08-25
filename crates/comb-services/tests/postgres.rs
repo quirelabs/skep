@@ -1,67 +1,23 @@
 //! Boots a real Postgres cluster: initdb, a protocol-level readiness check,
 //! and a shutdown that leaves the cluster clean.
 
-use std::path::PathBuf;
+mod support;
+
 use std::time::{Duration, Instant};
 
-use comb::{Engine, HealthCheck, InstanceId, Paths, ServiceState, Version};
-use comb_services::{Postgres, Request, ServiceAdapter, install};
+use comb::{Engine, HealthCheck, InstanceId, ServiceState};
+use comb_services::Postgres;
+use support::{history, registered, start};
 
-fn shared_home() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/skep-test-home")
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-async fn registered(label: &str) -> (Engine, InstanceId, HealthCheck) {
-    let paths = Paths::new(shared_home());
-    let version = Version::new(Postgres.default_version()).unwrap();
-    install(&Postgres, &version, &paths)
-        .await
-        .expect("the pinned release installs");
-
-    let request = Request::new()
-        .with_label(label.parse().unwrap())
-        .with_port("postgres", free_port());
-    let spec = Postgres.spec(&request, &paths).unwrap();
-    let (id, health) = (spec.id.clone(), spec.health.clone());
-
-    let engine = Engine::with_paths(paths);
-    engine.register(spec).await.unwrap();
+async fn registered_pg(label: &str) -> (Engine, InstanceId, HealthCheck) {
+    let (engine, id, _) = registered(&Postgres, label, &["postgres"]).await;
+    let health = engine.spec_of(&id).await.unwrap().health;
     (engine, id, health)
-}
-
-/// Starts and, on failure, shows what the service said. A bare "exited with
-/// code 1" is not something anyone should have to reproduce by hand.
-async fn start(engine: &Engine, id: &InstanceId) {
-    if let Err(error) = engine.start(id).await {
-        panic!(
-            "{error}\n--- service output ---\n{}",
-            history(engine, id).await
-        );
-    }
-}
-
-async fn history(engine: &Engine, id: &InstanceId) -> String {
-    engine
-        .logs(id, 500)
-        .await
-        .unwrap()
-        .iter()
-        .map(|line| line.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[tokio::test]
 async fn the_probe_tells_a_starting_cluster_from_a_serving_one() {
-    let (engine, id, health) = registered("probe").await;
+    let (engine, id, health) = registered_pg("probe").await;
 
     // Watch from outside the engine, from before the postmaster exists until
     // it answers. A probe that cannot tell these apart adds nothing over a
@@ -111,7 +67,7 @@ async fn the_probe_tells_a_starting_cluster_from_a_serving_one() {
 
 #[tokio::test]
 async fn a_stop_checkpoints_so_the_next_start_is_clean() {
-    let (engine, id, _) = registered("shutdown").await;
+    let (engine, id, _) = registered_pg("shutdown").await;
 
     start(&engine, &id).await;
     engine.stop(&id).await.unwrap();
@@ -140,7 +96,7 @@ async fn a_stop_checkpoints_so_the_next_start_is_clean() {
 
 #[tokio::test]
 async fn setup_runs_once_and_the_cluster_is_reused() {
-    let (engine, id, _) = registered("reuse").await;
+    let (engine, id, _) = registered_pg("reuse").await;
 
     start(&engine, &id).await;
     engine.stop(&id).await.unwrap();

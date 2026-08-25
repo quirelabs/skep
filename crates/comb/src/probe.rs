@@ -33,6 +33,17 @@ pub(crate) async fn check(probe: &Probe, limit: Duration) -> Result<(), String> 
                 Err(format!("answered {status}, expected {expect}"))
             }
         }
+        Probe::Mysql { port } => {
+            let greeting = listen_first(*port, limit).await?;
+            // Byte four is the first payload byte: the protocol version, or
+            // 0xff when the server is refusing rather than serving.
+            match greeting.get(4) {
+                Some(0x0a) => Ok(()),
+                Some(0xff) => Err(mysql_error(&greeting)),
+                Some(other) => Err(format!("answered with an unexpected packet {other:#04x}")),
+                None => Err("closed the connection without a greeting".to_string()),
+            }
+        }
         Probe::Postgres {
             port,
             user,
@@ -72,6 +83,38 @@ async fn exchange(port: u16, request: &[u8], limit: Duration) -> Result<Vec<u8>,
         Ok(Ok(reply)) => Ok(reply),
         Ok(Err(error)) => Err(format!("port {port} broke off: {error}")),
         Err(_) => Err(format!("port {port} did not reply within {limit:?}")),
+    }
+}
+
+/// For protocols where the server speaks first.
+async fn listen_first(port: u16, limit: Duration) -> Result<Vec<u8>, String> {
+    let mut stream = connect(port, limit).await?;
+    let listen = async {
+        let mut reply = vec![0u8; 512];
+        let read = stream.read(&mut reply).await?;
+        reply.truncate(read);
+        Ok::<_, std::io::Error>(reply)
+    };
+    match timeout(limit, listen).await {
+        Ok(Ok(reply)) => Ok(reply),
+        Ok(Err(error)) => Err(format!("port {port} broke off: {error}")),
+        Err(_) => Err(format!("port {port} did not greet within {limit:?}")),
+    }
+}
+
+/// A MySQL error packet: header, marker, a two byte code, an optional SQL
+/// state marked with #, then the message.
+fn mysql_error(packet: &[u8]) -> String {
+    let body = &packet[packet.len().min(7)..];
+    let body = match body.first() {
+        Some(b'#') => &body[body.len().min(6)..],
+        _ => body,
+    };
+    let message = String::from_utf8_lossy(body).trim().to_string();
+    if message.is_empty() {
+        "refused the connection".to_string()
+    } else {
+        message
     }
 }
 
@@ -146,6 +189,18 @@ mod tests {
         reply.extend_from_slice(b"SFATAL\0Mthe database system is starting up\0\0");
 
         assert_eq!(postgres_error(&reply), "the database system is starting up");
+    }
+
+    #[test]
+    fn a_mysql_error_packet_reads_as_its_message() {
+        let mut packet = vec![0x17, 0, 0, 0, 0xff, 0x69, 0x04];
+        packet.extend_from_slice(b"#08S01Host is not allowed to connect");
+
+        assert_eq!(
+            mysql_error(&packet),
+            "Host is not allowed to connect",
+            "the SQL state marker should not reach the user"
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! it; the engine owns spawning and supervision and never calls back in here.
 
 mod mailpit;
+mod mysql;
 mod postgres;
 pub mod project;
 
@@ -13,6 +14,7 @@ use comb::{
 };
 
 pub use mailpit::Mailpit;
+pub use mysql::Mysql;
 pub use postgres::Postgres;
 
 /// One pinned artifact in a catalog, keyed by version and platform. Generated
@@ -292,7 +294,7 @@ pub fn names() -> Vec<&'static str> {
 
 /// Every service comb ships with.
 pub fn catalog() -> &'static [&'static dyn ServiceAdapter] {
-    &[&Mailpit, &Postgres]
+    &[&Mailpit, &Mysql, &Postgres]
 }
 
 pub fn find(name: &str) -> Option<&'static dyn ServiceAdapter> {

@@ -254,6 +254,11 @@ pub enum Probe {
         user: String,
         database: String,
     },
+    /// MySQL speaks first, so readiness is its greeting rather than a bound
+    /// port.
+    Mysql {
+        port: u16,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
