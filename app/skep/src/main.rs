@@ -2,6 +2,7 @@
 //! is open, and takes them down with it when it closes.
 
 mod bridge;
+mod platform;
 mod theme;
 mod ui;
 
@@ -31,6 +32,7 @@ fn main() -> Result<()> {
     })?;
 
     let bridge = bridge::start(&runtime, engine.clone());
+    let commands = bridge.commands.clone();
 
     // A window quit runs through on_app_quit below, but a terminated process
     // never gets there, and children left holding ports outlive the thing that
@@ -57,6 +59,10 @@ fn main() -> Result<()> {
     }
 
     gpui_platform::application().run(move |cx: &mut App| {
+        // AppKit only, and only here.
+        let menubar = objc2_foundation::MainThreadMarker::new()
+            .map(|mtm| platform::Menubar::new(mtm, commands.clone()));
+
         let bounds = Bounds::centered(None, size(px(860.), px(560.)), cx);
         let window = cx
             .open_window(
@@ -64,7 +70,7 @@ fn main() -> Result<()> {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|cx| ui::Skep::new(bridge, cx)),
+                |_, cx| cx.new(|cx| ui::Skep::new(bridge, menubar, cx)),
             )
             .expect("a window");
 

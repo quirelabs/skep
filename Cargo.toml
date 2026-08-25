@@ -53,6 +53,28 @@ tokio = { version = "1", features = [
 ] }
 futures = "0.3"
 libc = "0.2"
+# The menubar item, which GPUI has no API for at this revision. App only: the
+# engine never touches AppKit.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+    "NSStatusBar",
+    "NSStatusItem",
+    "NSStatusBarButton",
+    "NSMenu",
+    "NSMenuItem",
+    "NSApplication",
+    "NSResponder",
+    "NSView",
+    "NSControl",
+    "NSButton",
+    "NSColor",
+    "NSAttributedString",
+] }
+objc2-foundation = { version = "0.3", features = [
+    "NSString",
+    "NSAttributedString",
+    "NSDictionary",
+] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -12,6 +12,7 @@ use gpui::{
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::bridge::{Bridge, Command, Update};
+use crate::platform::Menubar;
 use crate::theme::Theme;
 
 const RAIL: &[(&str, bool)] = &[
@@ -30,6 +31,7 @@ enum Connection {
 }
 
 pub struct Skep {
+    menubar: Option<Menubar>,
     theme: Theme,
     mirror: Mirror,
     connection: Connection,
@@ -39,7 +41,7 @@ pub struct Skep {
 }
 
 impl Skep {
-    pub fn new(bridge: Bridge, cx: &mut Context<Self>) -> Self {
+    pub fn new(bridge: Bridge, menubar: Option<Menubar>, cx: &mut Context<Self>) -> Self {
         // The engine speaks on a tokio runtime, so its messages are collected
         // here rather than delivered. Draining is cheap and keeps every update
         // arriving on GPUI's own thread.
@@ -55,13 +57,24 @@ impl Skep {
         })
         .detach();
 
-        Self {
+        let mut skep = Self {
+            menubar,
             theme: Theme::dark(),
             mirror: Mirror::new(),
             connection: Connection::Waiting,
             problem: None,
             commands: bridge.commands,
             updates: bridge.updates,
+        };
+        skep.reflect();
+        skep
+    }
+
+    /// The menubar says the same thing the window does, from the same replica.
+    fn reflect(&mut self) {
+        if let Some(menubar) = &self.menubar {
+            let services: Vec<_> = self.mirror.services().cloned().collect();
+            menubar.show(self.mirror.summary().glyph(), &services);
         }
     }
 
@@ -91,6 +104,7 @@ impl Skep {
             }
         }
         if moved {
+            self.reflect();
             cx.notify();
         }
     }
