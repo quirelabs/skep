@@ -49,6 +49,15 @@ pub struct ServiceStatus {
     pub since: Timestamp,
 }
 
+/// Everything at one instant, stamped with the event it is current as of.
+/// Without the stamp a client resyncing after a gap would have to guess which
+/// buffered events the snapshot already includes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub seq: u64,
+    pub services: Vec<ServiceStatus>,
+}
+
 /// Owns the service graph and every state change in it. Cheap to clone: the
 /// GUI, the CLI and the MCP server all hold the same engine.
 #[derive(Clone)]
@@ -209,6 +218,17 @@ impl Engine {
             .values()
             .map(Instance::status)
             .collect()
+    }
+
+    /// Everything at once, stamped with the last event emitted.
+    pub async fn snapshot(&self) -> Snapshot {
+        // Read under the lock, so the stamp cannot describe a different
+        // instant from the services beside it.
+        let instances = self.inner.instances.read().await;
+        Snapshot {
+            seq: self.inner.seq.load(Ordering::Relaxed),
+            services: instances.values().map(Instance::status).collect(),
+        }
     }
 
     pub async fn status_of(&self, id: &InstanceId) -> Result<ServiceStatus> {

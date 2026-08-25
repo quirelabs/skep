@@ -529,7 +529,9 @@ mod tests {
             .map(|_| {
                 let (local, paths, release) =
                     (local.clone(), fixture.paths.clone(), release.clone());
-                tokio::spawn(async move { install(&*local, &paths, "mailpit", &release, None).await })
+                tokio::spawn(
+                    async move { install(&*local, &paths, "mailpit", &release, None).await },
+                )
             })
             .collect();
         for attempt in attempts {

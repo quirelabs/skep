@@ -5,12 +5,14 @@ use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::watch;
 
-use crate::engine::{Engine, ServiceStatus};
+use crate::engine::{Engine, Snapshot};
 use crate::error::{Error, Result};
 use crate::event::LogLine;
 use crate::id::InstanceId;
@@ -52,6 +54,9 @@ enum Greeting {
 #[serde(tag = "request", rename_all = "snake_case")]
 pub enum Request {
     Status,
+    /// Asks the host to stop its services and exit, which is how a new host
+    /// takes over: by asking, never by fighting for the lock.
+    Quit,
     /// Teaches the host about a service, or updates a stopped one. Clients own
     /// the catalog; the host owns the processes.
     Register {
@@ -75,7 +80,7 @@ pub enum Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "response", rename_all = "snake_case")]
 pub enum Response {
-    Status { services: Vec<ServiceStatus> },
+    Status { snapshot: Box<Snapshot> },
     Logs { lines: Vec<LogLine> },
     Done,
     Failed { message: String },
@@ -124,6 +129,7 @@ pub struct Host {
     engine: Engine,
     listener: UnixListener,
     socket: PathBuf,
+    quit: watch::Sender<bool>,
     _lock: Lock,
 }
 
@@ -144,8 +150,37 @@ impl Host {
             engine,
             listener,
             socket,
+            quit: watch::channel(false).0,
             _lock: lock,
         })
+    }
+
+    /// Claims the machine, asking whoever holds it to stand down first. The
+    /// previous host stops its own services on the way out, so nothing is left
+    /// running without an owner.
+    pub async fn take_over(engine: Engine, patience: Duration) -> Result<Self> {
+        let paths = engine.paths().clone();
+        match Self::claim(engine.clone()).await {
+            Err(Error::AlreadyHosted { .. }) => {}
+            other => return other,
+        }
+
+        if let Ok(mut client) = Client::connect(&paths).await {
+            let _ = client.send(&Request::Quit).await;
+        }
+
+        // Wait for the lock to come free rather than trying to break it: the
+        // previous host is stopping services and that takes as long as it takes.
+        let deadline = Instant::now() + patience;
+        loop {
+            match Self::claim(engine.clone()).await {
+                Err(Error::AlreadyHosted { pid }) if Instant::now() < deadline => {
+                    let _ = pid;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                other => return other,
+            }
+        }
     }
 
     pub fn engine(&self) -> &Engine {
@@ -157,17 +192,20 @@ impl Host {
     /// an accident of shutdown.
     pub async fn serve(self, until: impl Future<Output = ()>) -> Result<()> {
         tokio::pin!(until);
+        let mut asked = self.quit.subscribe();
         loop {
             tokio::select! {
                 accepted = self.listener.accept() => {
                     if let Ok((stream, _)) = accepted {
                         let engine = self.engine.clone();
+                        let quit = self.quit.clone();
                         tokio::spawn(async move {
-                            let _ = talk(engine, stream).await;
+                            let _ = talk(engine, stream, quit).await;
                         });
                     }
                 }
                 _ = &mut until => break,
+                _ = asked.changed() => break,
             }
         }
 
@@ -177,7 +215,7 @@ impl Host {
     }
 }
 
-async fn talk(engine: Engine, stream: UnixStream) -> Result<()> {
+async fn talk(engine: Engine, stream: UnixStream, quit: watch::Sender<bool>) -> Result<()> {
     let mut stream = BufReader::new(stream);
     let mut line = String::new();
 
@@ -210,6 +248,12 @@ async fn talk(engine: Engine, stream: UnixStream) -> Result<()> {
             return Ok(());
         }
         let response = match serde_json::from_str::<Request>(&line) {
+            Ok(Request::Quit) => {
+                // Answer before winding down, so the asker learns it was heard.
+                send(&mut stream, &Response::Done).await?;
+                let _ = quit.send(true);
+                return Ok(());
+            }
             Ok(request) => answer(&engine, request).await,
             Err(error) => Response::Failed {
                 message: format!("unintelligible request: {error}"),
@@ -223,7 +267,7 @@ async fn answer(engine: &Engine, request: Request) -> Response {
     let outcome = match request {
         Request::Status => {
             return Response::Status {
-                services: engine.status().await,
+                snapshot: Box::new(engine.snapshot().await),
             };
         }
         Request::Logs { instance, lines } => {
@@ -234,6 +278,8 @@ async fn answer(engine: &Engine, request: Request) -> Response {
                 },
             };
         }
+        // Handled before it reaches here, where the connection is in scope.
+        Request::Quit => Ok(()),
         Request::Register { spec } => engine.upsert(*spec).await,
         Request::Start { instance } => engine.start(&instance).await,
         Request::Stop { instance } => engine.stop(&instance).await,

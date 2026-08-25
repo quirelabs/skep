@@ -126,11 +126,11 @@ async fn a_client_drives_the_hosted_engine() {
         engine.status_of(&id).await.unwrap().state,
         ServiceState::Ready
     );
-    let Response::Status { services } = client.send(&Request::Status).await.unwrap() else {
+    let Response::Status { snapshot } = client.send(&Request::Status).await.unwrap() else {
         panic!("expected a status")
     };
-    assert_eq!(services.len(), 1);
-    assert_eq!(services[0].state, ServiceState::Ready);
+    assert_eq!(snapshot.services.len(), 1);
+    assert_eq!(snapshot.services[0].state, ServiceState::Ready);
 
     let _ = stop.send(());
     serving.await.unwrap();
@@ -214,4 +214,83 @@ async fn services_stop_with_their_host() {
         .status()
         .unwrap();
     assert!(!alive.success(), "the child outlived its host");
+}
+
+#[tokio::test]
+async fn a_new_host_takes_over_by_asking_rather_than_by_force() {
+    let home = TestHome::new();
+    let (leaving, paths) = engine_for(&home);
+    let spec = fake_spec(&home, "valkey@8", &[]);
+    let id = spec.id.clone();
+    leaving.register(spec).await.unwrap();
+    leaving.start(&id).await.unwrap();
+    let pid = leaving.status_of(&id).await.unwrap().pid.unwrap();
+
+    let host = Host::claim(leaving.clone()).await.unwrap();
+    let serving = tokio::spawn(async move { host.serve(std::future::pending()).await });
+
+    // The arriving host asks; it never touches the lock file itself.
+    let arriving = Engine::with_paths(paths.clone());
+    let taken = Host::take_over(arriving.clone(), Duration::from_secs(10))
+        .await
+        .expect("the machine should change hands");
+
+    // The host that left took its services with it, as the handover requires.
+    let _ = tokio::time::timeout(Duration::from_secs(10), serving).await;
+    assert_eq!(
+        leaving.status_of(&id).await.unwrap().state,
+        ServiceState::Stopped
+    );
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(
+        !alive.success(),
+        "the old host's child outlived the handover"
+    );
+
+    // And the new host really holds the machine now.
+    let (stop, serving) = {
+        let (stop, stopped) = oneshot::channel();
+        let serving = tokio::spawn(async move {
+            let _ = taken
+                .serve(async {
+                    let _ = stopped.await;
+                })
+                .await;
+        });
+        (stop, serving)
+    };
+    Client::connect(&paths).await.expect("the new host answers");
+    assert!(matches!(
+        Host::claim(Engine::with_paths(paths)).await,
+        Err(Error::AlreadyHosted { .. })
+    ));
+
+    let _ = stop.send(());
+    serving.await.unwrap();
+}
+
+#[tokio::test]
+async fn taking_over_an_empty_machine_is_just_claiming_it() {
+    let home = TestHome::new();
+    let (engine, paths) = engine_for(&home);
+
+    let host = Host::take_over(engine, Duration::from_secs(5))
+        .await
+        .expect("nothing to take over from");
+    let (stop, stopped) = oneshot::channel();
+    let serving = tokio::spawn(async move {
+        let _ = host
+            .serve(async {
+                let _ = stopped.await;
+            })
+            .await;
+    });
+
+    Client::connect(&paths).await.expect("it is serving");
+    let _ = stop.send(());
+    serving.await.unwrap();
 }
