@@ -576,7 +576,21 @@ impl Engine {
         // Build output goes to the service's own history, so a failed compile
         // is diagnosable exactly where everything else about it is.
         let sink = self.sink_of(id).await?;
-        crate::acquire::ensure_reported(&self.inner.paths, name, release, &sink).await?;
+        let progress = {
+            let engine = self.clone();
+            let (instance, phase) = (id.clone(), step.clone());
+            move |done: u64, total: u64| engine.note_progress(&instance, &phase, done, total)
+        };
+        crate::acquire::ensure_reported(
+            &self.inner.paths,
+            name,
+            release,
+            crate::acquire::Report {
+                sink: &sink,
+                progress: &progress,
+            },
+        )
+        .await?;
 
         self.inner.emit(
             Some(id.clone()),
@@ -711,6 +725,22 @@ impl Engine {
         } else {
             Err(failed(platform::describe_exit(&status)))
         }
+    }
+
+    /// Progress is a courtesy, so it never waits: if the state is busy being
+    /// changed, this frame of it is simply skipped.
+    fn note_progress(&self, id: &InstanceId, step: &str, done: u64, total: u64) {
+        if total == 0 {
+            return;
+        }
+        let text = format!("{step} {}%", done.saturating_mul(100) / total);
+        if let Ok(mut instances) = self.inner.instances.try_write()
+            && let Some(instance) = instances.get_mut(id)
+        {
+            instance.activity = Some(text.clone());
+        }
+        self.inner
+            .emit(Some(id.clone()), EventKind::Progress { step: text });
     }
 
     async fn ensure_data_dir(&self, id: &InstanceId, spec: &ServiceSpec) -> Result<()> {

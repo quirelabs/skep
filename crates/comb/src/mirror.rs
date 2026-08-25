@@ -73,7 +73,7 @@ impl Mirror {
                 // The stream carries no pid, so claiming one would be a guess.
                 service.pid = None;
             }
-            (Some(id), EventKind::Preparing { step }) => {
+            (Some(id), EventKind::Preparing { step } | EventKind::Progress { step }) => {
                 if let Some(service) = self.services.get_mut(id) {
                     service.activity = Some(step.clone());
                 }
@@ -287,6 +287,38 @@ mod tests {
             },
         ));
         assert_eq!(mirror.get(&id).unwrap().activity, None);
+    }
+
+    #[test]
+    fn progress_rewords_the_phase_without_disturbing_the_state() {
+        let mut mirror = seeded();
+        let id = "valkey@9".parse().unwrap();
+
+        mirror.apply(&event(
+            11,
+            "valkey@9",
+            EventKind::Preparing {
+                step: "download valkey 9.1.1".to_string(),
+            },
+        ));
+        mirror.apply(&event(
+            12,
+            "valkey@9",
+            EventKind::Progress {
+                step: "download valkey 9.1.1 42%".to_string(),
+            },
+        ));
+
+        let service = mirror.get(&id).unwrap();
+        assert_eq!(
+            service.activity.as_deref(),
+            Some("download valkey 9.1.1 42%")
+        );
+        assert_eq!(
+            service.state,
+            ServiceState::Stopped,
+            "progress is not a state"
+        );
     }
 
     #[test]

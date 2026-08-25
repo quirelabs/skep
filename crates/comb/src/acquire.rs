@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, LazyLock, Mutex as Registry};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
@@ -82,9 +83,16 @@ pub(crate) async fn ensure_reported(
     paths: &Paths,
     name: &str,
     release: &Release,
-    sink: &LogSink,
+    report: Report<'_>,
 ) -> Result<PathBuf> {
-    install(&Curl, paths, name, release, Some(sink)).await
+    install(&Curl, paths, name, release, Some(report)).await
+}
+
+/// Where an install's output and progress go. Only the engine supplies one;
+/// the public entry point installs quietly.
+pub(crate) struct Report<'a> {
+    pub(crate) sink: &'a LogSink,
+    pub(crate) progress: &'a (dyn Fn(u64, u64) + Send + Sync),
 }
 
 trait Fetch {
@@ -133,7 +141,7 @@ async fn install<F: Fetch>(
     paths: &Paths,
     name: &str,
     release: &Release,
-    sink: Option<&LogSink>,
+    report: Option<Report<'_>>,
 ) -> Result<PathBuf> {
     let current = Platform::current();
     if current != Some(release.platform) {
@@ -179,22 +187,30 @@ async fn install<F: Fetch>(
         .await
         .map_err(|error| failed("preparing", name, release, error))?;
 
-    fetch
-        .fetch(&release.url, &archive)
-        .await
-        .map_err(|reason| Error::Acquire {
-            step: "download",
-            name: name.to_string(),
-            version: release.version.clone(),
-            reason,
-        })?;
+    match &report {
+        Some(report) => watched(fetch, release, &archive, report.progress).await,
+        None => fetch.fetch(&release.url, &archive).await,
+    }
+    .map_err(|reason| Error::Acquire {
+        step: "download",
+        name: name.to_string(),
+        version: release.version.clone(),
+        reason,
+    })?;
 
     verify(&archive, name, release).await?;
     unpack(&archive, &unpacked, name, release).await?;
 
     let finished = match &release.build {
         Some(build) => {
-            compile(&unpacked, name, release, build, sink).await?;
+            compile(
+                &unpacked,
+                name,
+                release,
+                build,
+                report.as_ref().map(|r| r.sink),
+            )
+            .await?;
             let kept = scratch.join("kept");
             harvest(&unpacked, &kept, name, release, build).await?;
             kept
@@ -274,6 +290,31 @@ async fn unpack(archive: &Path, into: &Path, name: &str, release: &Release) -> R
             version: release.version.clone(),
             reason: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         })
+    }
+}
+
+/// Watches the file grow while curl fills it. The pinned size is the
+/// denominator, so progress never depends on a server being honest about
+/// Content-Length.
+async fn watched<F: Fetch>(
+    fetch: &F,
+    release: &Release,
+    archive: &Path,
+    progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> std::result::Result<(), String> {
+    let fetching = fetch.fetch(&release.url, archive);
+    tokio::pin!(fetching);
+    loop {
+        tokio::select! {
+            outcome = &mut fetching => return outcome,
+            _ = tokio::time::sleep(Duration::from_millis(400)) => {
+                let done = tokio::fs::metadata(archive)
+                    .await
+                    .map(|file| file.len())
+                    .unwrap_or(0);
+                progress(done, release.size);
+            }
+        }
     }
 }
 

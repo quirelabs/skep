@@ -29,6 +29,11 @@ pub enum EventKind {
     Preparing {
         step: String,
     },
+    /// The current phase, reworded as it advances. Carries the whole text so
+    /// a replica never has to compose one.
+    Progress {
+        step: String,
+    },
     Prepared {
         step: String,
         #[serde(rename = "took_ms", with = "crate::serde_ms")]

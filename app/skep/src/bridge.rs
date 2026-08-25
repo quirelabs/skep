@@ -76,7 +76,12 @@ async fn run(
         tokio::select! {
             order = orders.recv() => {
                 let Some(order) = order else { return };
-                act(&engine, order, &reports).await;
+                // Never awaited here. A start that has to download a hundred
+                // megabytes takes a minute, and running it inline would stop
+                // this loop forwarding the very events that say so.
+                let engine = engine.clone();
+                let reports = reports.clone();
+                tokio::spawn(async move { act(&engine, order, &reports).await });
             }
             event = events.recv() => match event {
                 Ok(event) => {
