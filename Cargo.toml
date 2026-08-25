@@ -25,6 +25,16 @@ license = "Apache-2.0 OR MIT"
 repository = "https://github.com/quirelabs/skep"
 
 [workspace.dependencies]
+# Pinned to Zed v1.15.0, the same revision quirelabs/browser uses.
+# See docs/decisions/gpui-rev.md before changing. Never Zed's `ui` crate: it is
+# GPL and this workspace is Apache-2.0 OR MIT.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "e17dc4f9d50db73a458b64dcce50ecd4878b98a3", default-features = false, features = [
+    "font-kit",
+] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "e17dc4f9d50db73a458b64dcce50ecd4878b98a3", default-features = false, features = [
+    "font-kit",
+] }
+
 # crates.io has no namespaces, so the published names carry the prefix while
 # the libraries keep their own.
 comb = { package = "quire-comb", path = "crates/comb" }

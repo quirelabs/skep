@@ -68,12 +68,12 @@ impl Skep {
     async fn status(&self) -> Result<CallToolResult, ErrorData> {
         let mut client = match connect().await {
             Ok(client) => client,
-            Err(problem) => return Ok(problem),
+            Err(problem) => return Ok(*problem),
         };
         match ask(&mut client, Request::Status).await {
             Ok(Response::Status { snapshot }) => json(&view::Report::of(&snapshot.services)),
             Ok(other) => Ok(confused(other)),
-            Err(problem) => Ok(problem),
+            Err(problem) => Ok(*problem),
         }
     }
 
@@ -101,7 +101,7 @@ impl Skep {
 
         let mut client = match connect().await {
             Ok(client) => client,
-            Err(problem) => return Ok(problem),
+            Err(problem) => return Ok(*problem),
         };
         for request in [
             Request::Register {
@@ -114,7 +114,7 @@ impl Skep {
             match ask(&mut client, request).await {
                 Ok(Response::Done) => {}
                 Ok(other) => return Ok(confused(other)),
-                Err(problem) => return Ok(problem),
+                Err(problem) => return Ok(*problem),
             }
         }
         self.report_on(&mut client, &instance.to_string()).await
@@ -161,7 +161,7 @@ impl Skep {
         };
         let mut client = match connect().await {
             Ok(client) => client,
-            Err(problem) => return Ok(problem),
+            Err(problem) => return Ok(*problem),
         };
         let request = Request::Logs {
             instance: instance.clone(),
@@ -173,7 +173,7 @@ impl Skep {
                 lines: lines.into_iter().map(|line| line.text).collect(),
             }),
             Ok(other) => Ok(confused(other)),
-            Err(problem) => Ok(problem),
+            Err(problem) => Ok(*problem),
         }
     }
 
@@ -209,12 +209,12 @@ impl Skep {
 
         let mut client = match connect().await {
             Ok(client) => client,
-            Err(problem) => return Ok(problem),
+            Err(problem) => return Ok(*problem),
         };
         let running = match ask(&mut client, Request::Status).await {
             Ok(Response::Status { snapshot }) => snapshot.services,
             Ok(other) => return Ok(confused(other)),
-            Err(problem) => return Ok(problem),
+            Err(problem) => return Ok(*problem),
         };
 
         let report = view::project(
@@ -239,12 +239,12 @@ impl Skep {
         };
         let mut client = match connect().await {
             Ok(client) => client,
-            Err(problem) => return Ok(problem),
+            Err(problem) => return Ok(*problem),
         };
         match ask(&mut client, request(instance.clone())).await {
             Ok(Response::Done) => self.report_on(&mut client, &instance.to_string()).await,
             Ok(other) => Ok(confused(other)),
-            Err(problem) => Ok(problem),
+            Err(problem) => Ok(*problem),
         }
     }
 
@@ -263,7 +263,7 @@ impl Skep {
                 }
             }
             Ok(other) => Ok(confused(other)),
-            Err(problem) => Ok(problem),
+            Err(problem) => Ok(*problem),
         }
     }
 }
@@ -286,17 +286,17 @@ impl ServerHandler for Skep {
 /// Connects, or hands back the same sentence a person would see. Nothing here
 /// panics: an agent calling with no engine running is ordinary, not an error
 /// worth taking the server down for.
-async fn connect() -> Result<Client, CallToolResult> {
+async fn connect() -> Result<Client, Box<CallToolResult>> {
     Client::connect(&Paths::from_env())
         .await
-        .map_err(|error| sentence(error.to_string()))
+        .map_err(|error| Box::new(sentence(error.to_string())))
 }
 
-async fn ask(client: &mut Client, request: Request) -> Result<Response, CallToolResult> {
+async fn ask(client: &mut Client, request: Request) -> Result<Response, Box<CallToolResult>> {
     match client.send(&request).await {
-        Ok(Response::Failed { message }) => Err(sentence(message)),
+        Ok(Response::Failed { message }) => Err(Box::new(sentence(message))),
         Ok(response) => Ok(response),
-        Err(error) => Err(sentence(error.to_string())),
+        Err(error) => Err(Box::new(sentence(error.to_string()))),
     }
 }
 
