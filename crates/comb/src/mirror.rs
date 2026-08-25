@@ -70,12 +70,18 @@ impl Mirror {
                 };
                 service.state = to.clone();
                 service.activity = None;
+                service.blocked = None;
                 // The stream carries no pid, so claiming one would be a guess.
                 service.pid = None;
             }
             (Some(id), EventKind::Preparing { step } | EventKind::Progress { step }) => {
                 if let Some(service) = self.services.get_mut(id) {
                     service.activity = Some(step.clone());
+                }
+            }
+            (Some(id), EventKind::Blocked { by }) => {
+                if let Some(service) = self.services.get_mut(id) {
+                    service.blocked = by.clone();
                 }
             }
             (Some(id), EventKind::Prepared { .. }) => {
@@ -170,6 +176,7 @@ mod tests {
             ports: BTreeMap::new(),
             pid: Some(42),
             activity: None,
+            blocked: None,
             since: Timestamp::from_millis(0),
         }
     }
@@ -319,6 +326,26 @@ mod tests {
             ServiceState::Stopped,
             "progress is not a state"
         );
+    }
+
+    #[test]
+    fn what_is_in_the_way_arrives_and_clears() {
+        let mut mirror = seeded();
+        let id = "valkey@9".parse().unwrap();
+
+        mirror.apply(&event(
+            11,
+            "valkey@9",
+            EventKind::Blocked {
+                by: Some("port 6379 is held by redis-server".to_string()),
+            },
+        ));
+        assert!(mirror.get(&id).unwrap().blocked.is_some());
+
+        // Starting settles it: a service in motion is not blocked, and the
+        // next survey says so again if it still is.
+        mirror.apply(&event(12, "valkey@9", changed(ServiceState::Starting)));
+        assert_eq!(mirror.get(&id).unwrap().blocked, None);
     }
 
     #[test]

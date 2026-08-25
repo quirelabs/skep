@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use comb::{Applied, InstanceId, LogLine, Mirror, ServiceState, ServiceStatus};
 use gpui::{
-    AnyElement, Animation, AnimationExt, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, ease_in_out, px,
-    pulsating_between,
+    Animation, AnimationExt, AnyElement, Context, Hsla, InteractiveElement, IntoElement,
+    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    ease_in_out, pulsating_between, px,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -167,8 +167,8 @@ fn faded(color: Hsla, alpha: f32) -> Hsla {
     Hsla { a: alpha, ..color }
 }
 
-/// What the row says it is doing. A failure says whatever the engine said,
-/// word for word, because that sentence usually contains the fix.
+/// What the row says it is doing. The row gets one line of it; the whole
+/// sentence, which usually contains the fix, is in the expansion.
 fn line(status: &ServiceStatus) -> SharedString {
     if let Some(activity) = &status.activity {
         return activity.clone().into();
@@ -177,7 +177,17 @@ fn line(status: &ServiceStatus) -> SharedString {
         ServiceState::Ready => "running".into(),
         ServiceState::Failed { reason } => reason.clone().into(),
         ServiceState::Restarting { attempt } => format!("restarting, attempt {attempt}").into(),
+        // Worth saying before anyone clicks: this one cannot start.
+        _ if status.blocked.is_some() => "stopped, port in use".into(),
         other => other.name().to_string().into(),
+    }
+}
+
+/// The whole of whatever is wrong, if anything is.
+fn note(status: &ServiceStatus) -> Option<SharedString> {
+    match &status.state {
+        ServiceState::Failed { reason } => Some(reason.clone().into()),
+        _ => status.blocked.clone().map(Into::into),
     }
 }
 
@@ -351,8 +361,12 @@ impl Skep {
                     .child(ports(&status)),
             )
             .child(
+                // Truncated on purpose: a port conflict's remedy is a whole
+                // sentence, and it belongs in the expansion rather than
+                // pushing the buttons off the window.
                 div()
                     .flex_1()
+                    .truncate()
                     .text_xs()
                     .text_color(if failed { theme.failed } else { theme.muted })
                     .child(line(&status)),
@@ -365,7 +379,7 @@ impl Skep {
             .border_b_1()
             .border_color(theme.border)
             .child(head)
-            .children(open.then(|| self.output(index)))
+            .children(open.then(|| self.output(index, note(&status))))
             .into_any_element()
     }
 
@@ -391,7 +405,7 @@ impl Skep {
 
     /// The row grows in place. Nothing that needs attention appears anywhere
     /// the eye was not already looking.
-    fn output(&self, index: usize) -> AnyElement {
+    fn output(&self, index: usize, note: Option<SharedString>) -> AnyElement {
         let theme = &self.theme;
         // Copied out: the closure below outlives this borrow.
         let muted = theme.muted;
@@ -406,6 +420,14 @@ impl Skep {
             .border_t_1()
             .border_color(theme.border)
             .overflow_y_scroll()
+            .children(note.map(|note| {
+                div()
+                    .px_6()
+                    .py_3()
+                    .text_xs()
+                    .text_color(theme.failed)
+                    .child(note)
+            }))
             .children(lines.into_iter().map(|(seq, line)| {
                 div()
                     .px_6()

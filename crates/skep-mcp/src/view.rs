@@ -31,6 +31,10 @@ pub struct Service {
     /// The phase of a long start, such as a download or an initialisation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doing: Option<String>,
+    /// Set when something outside skep holds this service's port, so it cannot
+    /// start until that is dealt with. Carries the remedy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub ports: BTreeMap<String, u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -49,6 +53,7 @@ impl Service {
                 _ => None,
             },
             doing: status.activity.clone(),
+            blocked: status.blocked.clone(),
             ports: status.ports.clone(),
             pid: status.pid,
             action: None,
@@ -138,6 +143,7 @@ pub async fn project(
                     state: "stopped",
                     reason: None,
                     doing: None,
+                    blocked: None,
                     ports: BTreeMap::new(),
                     pid: None,
                     action: None,

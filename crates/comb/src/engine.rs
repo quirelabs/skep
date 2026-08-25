@@ -21,7 +21,8 @@ use crate::platform;
 use crate::probe;
 use crate::scratch::ScratchDir;
 use crate::spec::{
-    BinarySpec, HealthCheck, PrepareStep, RestartPolicy, ServiceSpec, ShutdownSpec, StopSignal,
+    BinarySpec, HealthCheck, Port, PrepareStep, RestartPolicy, ServiceSpec, ShutdownSpec,
+    StopSignal,
 };
 use crate::state::ServiceState;
 use crate::time::Timestamp;
@@ -45,6 +46,10 @@ pub struct ServiceStatus {
     /// no explanation for ten seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity: Option<String>,
+    /// Why this service could not start even if asked: something else holds
+    /// its port. Known by looking, rather than only by failing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
     /// When the current state was entered.
     pub since: Timestamp,
 }
@@ -80,6 +85,7 @@ struct Instance {
     logs: broadcast::Sender<LogLine>,
     history: Arc<Mutex<RingBuffer>>,
     activity: Option<String>,
+    blocked: Option<String>,
     running: Option<Running>,
     /// Restart attempts since the last deliberate start.
     attempt: u32,
@@ -162,6 +168,7 @@ impl Engine {
                 logs,
                 history: Arc::new(Mutex::new(RingBuffer::new(LOG_HISTORY))),
                 activity: None,
+                blocked: None,
                 running: None,
                 attempt: 0,
             },
@@ -727,6 +734,42 @@ impl Engine {
         }
     }
 
+    /// Looks at whether anything else holds the ports of services that are not
+    /// running. "Stopped" and "stopped, and cannot start" are different things,
+    /// and a person should not have to click to learn which one they have.
+    pub async fn survey(&self) {
+        let idle: Vec<(InstanceId, Vec<Port>)> = self
+            .inner
+            .instances
+            .read()
+            .await
+            .values()
+            .filter(|instance| !instance.state.is_running() && !instance.state.is_transitional())
+            .map(|instance| (instance.spec.id.clone(), instance.spec.ports.clone()))
+            .collect();
+
+        for (id, ports) in idle {
+            let mut held = None;
+            for port in &ports {
+                if let Some(listener) = platform::listener_on(port.number).await {
+                    held = Some(crate::ports::describe(port.number, &listener));
+                    break;
+                }
+            }
+
+            let mut instances = self.inner.instances.write().await;
+            let Some(instance) = instances.get_mut(&id) else {
+                continue;
+            };
+            if instance.blocked == held {
+                continue;
+            }
+            instance.blocked = held.clone();
+            self.inner
+                .emit(Some(id.clone()), EventKind::Blocked { by: held });
+        }
+    }
+
     /// Progress is a courtesy, so it never waits: if the state is busy being
     /// changed, this frame of it is simply skipped.
     fn note_progress(&self, id: &InstanceId, step: &str, done: u64, total: u64) {
@@ -900,8 +943,11 @@ impl Engine {
         }
         let from = std::mem::replace(&mut instance.state, to.clone());
         instance.since = Timestamp::now();
-        // Any state change ends whatever phase was being reported.
+        // Any state change ends whatever phase was being reported, and settles
+        // the question of what is in the way: a service that is moving is not
+        // blocked, and the next survey will say so again if it still is.
         instance.activity = None;
+        instance.blocked = None;
         if !to.is_running() {
             instance.pid = None;
         }
@@ -1018,6 +1064,7 @@ impl Instance {
                 .collect(),
             pid: self.pid,
             activity: self.activity.clone(),
+            blocked: self.blocked.clone(),
             since: self.since,
         }
     }

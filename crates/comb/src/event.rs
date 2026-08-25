@@ -29,6 +29,11 @@ pub enum EventKind {
     Preparing {
         step: String,
     },
+    /// Something else is holding a port this service needs, or is no longer.
+    /// Noticed by looking, not by failing to start.
+    Blocked {
+        by: Option<String>,
+    },
     /// The current phase, reworded as it advances. Carries the whole text so
     /// a replica never has to compose one.
     Progress {

@@ -25,6 +25,8 @@ pub const PROTOCOL: u32 = 1;
 
 /// The socket carries the right to drive every service on the machine.
 const SOCKET_MODE: u32 = 0o600;
+/// How often a host looks for anything else holding the ports it wants.
+const SURVEY: Duration = Duration::from_secs(10);
 const RUN_DIR_MODE: u32 = 0o700;
 
 /// The first line each side sends. Its shape must never change, or a version
@@ -193,8 +195,21 @@ impl Host {
     pub async fn serve(self, until: impl Future<Output = ()>) -> Result<()> {
         tokio::pin!(until);
         let mut asked = self.quit.subscribe();
+        // Whoever hosts, surveys. Otherwise an agent talking to a terminal
+        // host would never learn what a window-hosted one would have told it.
+        // The first tick is immediate.
+        let mut sweep = tokio::time::interval(SURVEY);
+        let mut surveying: Option<tokio::task::JoinHandle<()>> = None;
         loop {
             tokio::select! {
+                _ = sweep.tick() => {
+                    // Spawned, and never twice at once: looking up who holds a
+                    // port shells out, and must not stall this loop.
+                    if surveying.as_ref().is_none_or(|survey| survey.is_finished()) {
+                        let engine = self.engine.clone();
+                        surveying = Some(tokio::spawn(async move { engine.survey().await }));
+                    }
+                }
                 accepted = self.listener.accept() => {
                     if let Ok((stream, _)) = accepted {
                         let engine = self.engine.clone();
