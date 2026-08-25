@@ -1,10 +1,15 @@
 [package]
-name = "comb-services"
+name = "quire-comb-services"
 description = "Built-in service adapters for the comb engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+# Published under the Quire Labs prefix; the library keeps its own name, so
+# every dependent still writes `use comb_services::...`.
+[lib]
+name = "comb_services"
 
 [dependencies]
 comb = { workspace = true }

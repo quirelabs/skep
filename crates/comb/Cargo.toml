@@ -1,10 +1,15 @@
 [package]
-name = "comb"
+name = "quire-comb"
 description = "Supervision and orchestration engine for local development services"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+# Published under the Quire Labs prefix; the library keeps its own name, so
+# every dependent still writes `use comb::...`.
+[lib]
+name = "comb"
 
 [dependencies]
 tokio = { workspace = true }

@@ -152,30 +152,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "comb"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "libc",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "comb-services"
-version = "0.0.0"
-dependencies = [
- "comb",
- "serde",
- "tokio",
- "toml",
-]
-
-[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -644,6 +620,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "quire-comb"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "quire-comb-services"
+version = "0.0.0"
+dependencies = [
+ "quire-comb",
+ "serde",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -897,7 +897,7 @@ dependencies = [
 name = "skep-app"
 version = "0.0.0"
 dependencies = [
- "comb",
+ "quire-comb",
 ]
 
 [[package]]
@@ -905,9 +905,9 @@ name = "skep-cli"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "comb",
- "comb-services",
  "libc",
+ "quire-comb",
+ "quire-comb-services",
  "serde",
  "tokio",
  "toml",
@@ -918,8 +918,8 @@ name = "skep-mcp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "comb",
- "comb-services",
+ "quire-comb",
+ "quire-comb-services",
  "rmcp",
  "serde",
  "serde_json",
