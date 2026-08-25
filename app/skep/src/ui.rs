@@ -2,12 +2,14 @@
 //! derives from the event stream, so the interface cannot show a state the
 //! engine never reported.
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
-use comb::{Applied, InstanceId, Mirror, ServiceState, ServiceStatus};
+use comb::{Applied, InstanceId, LogLine, Mirror, ServiceState, ServiceStatus};
 use gpui::{
-    Context, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, Animation, AnimationExt, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Render,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, ease_in_out, px,
+    pulsating_between,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -23,6 +25,13 @@ const RAIL: &[(&str, bool)] = &[
     ("Agent", false),
 ];
 
+/// Every motion in the interface is shorter than this. Anything slower reads
+/// as the machine being slow rather than as the interface being alive.
+const MOTION: Duration = Duration::from_millis(180);
+const BREATH: Duration = Duration::from_millis(1100);
+const LOG_HEIGHT: f32 = 208.;
+const LOG_LIMIT: usize = 400;
+
 enum Connection {
     Waiting,
     Hosting,
@@ -36,6 +45,11 @@ pub struct Skep {
     mirror: Mirror,
     connection: Connection,
     problem: Option<SharedString>,
+    expanded: Option<InstanceId>,
+    /// Numbered so a line keeps its identity as older ones fall off the end,
+    /// which is what stops finished fades from replaying.
+    logs: VecDeque<(u64, LogLine)>,
+    next_line: u64,
     commands: UnboundedSender<Command>,
     updates: UnboundedReceiver<Update>,
 }
@@ -63,11 +77,19 @@ impl Skep {
             mirror: Mirror::new(),
             connection: Connection::Waiting,
             problem: None,
+            expanded: None,
+            logs: VecDeque::new(),
+            next_line: 0,
             commands: bridge.commands,
             updates: bridge.updates,
         };
         skep.reflect();
         skep
+    }
+
+    pub fn stopping(&mut self, cx: &mut Context<Self>) {
+        self.connection = Connection::Stopping;
+        cx.notify();
     }
 
     /// The menubar says the same thing the window does, from the same replica.
@@ -76,11 +98,6 @@ impl Skep {
             let services: Vec<_> = self.mirror.services().cloned().collect();
             menubar.show(self.mirror.summary().glyph(), &services);
         }
-    }
-
-    pub fn stopping(&mut self, cx: &mut Context<Self>) {
-        self.connection = Connection::Stopping;
-        cx.notify();
     }
 
     fn drain(&mut self, cx: &mut Context<Self>) {
@@ -101,6 +118,13 @@ impl Skep {
                 }
                 Update::Blocked { pid } => self.connection = Connection::Blocked { pid },
                 Update::Failed(message) => self.problem = Some(message.into()),
+                Update::Logs(tail) => {
+                    self.logs.clear();
+                    for line in tail {
+                        self.remember(line);
+                    }
+                }
+                Update::Log(line) => self.remember(*line),
             }
         }
         if moved {
@@ -108,6 +132,39 @@ impl Skep {
             cx.notify();
         }
     }
+
+    fn remember(&mut self, line: LogLine) {
+        // Subscribing before reading the tail can repeat one line. Dropping a
+        // repeat is cheaper than dropping a line.
+        if self
+            .logs
+            .back()
+            .is_some_and(|(_, last)| last.at == line.at && last.text == line.text)
+        {
+            return;
+        }
+        self.logs.push_back((self.next_line, line));
+        self.next_line += 1;
+        while self.logs.len() > LOG_LIMIT {
+            self.logs.pop_front();
+        }
+    }
+
+    fn toggle(&mut self, id: InstanceId, cx: &mut Context<Self>) {
+        self.logs.clear();
+        self.expanded = if self.expanded.as_ref() == Some(&id) {
+            let _ = self.commands.send(Command::Watch(None));
+            None
+        } else {
+            let _ = self.commands.send(Command::Watch(Some(id.clone())));
+            Some(id)
+        };
+        cx.notify();
+    }
+}
+
+fn faded(color: Hsla, alpha: f32) -> Hsla {
+    Hsla { a: alpha, ..color }
 }
 
 /// What the row says it is doing. A failure says whatever the engine said,
@@ -135,7 +192,7 @@ fn ports(status: &ServiceStatus) -> SharedString {
 }
 
 impl Render for Skep {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .size_full()
@@ -143,7 +200,7 @@ impl Render for Skep {
             .text_color(self.theme.text)
             .text_sm()
             .child(self.rail())
-            .child(self.content())
+            .child(self.content(cx))
     }
 }
 
@@ -153,22 +210,29 @@ impl Skep {
         div()
             .flex()
             .flex_col()
-            .w(px(168.))
+            .w(px(164.))
             .h_full()
             .border_r_1()
             .border_color(theme.border)
-            .py_3()
+            .pt_5()
+            .gap_0p5()
             .children(RAIL.iter().map(|(name, built)| {
                 div()
-                    .px_4()
-                    .py_1p5()
+                    .px_5()
+                    .py_1()
                     .text_color(if *built { theme.text } else { theme.idle })
                     .child(SharedString::from(*name))
             }))
     }
 
-    fn content(&self) -> impl IntoElement {
+    fn content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let services: Vec<_> = self.mirror.services().cloned().collect();
+        let empty = services.is_empty();
+        let mut rows = Vec::with_capacity(services.len());
+        for (index, status) in services.into_iter().enumerate() {
+            rows.push(self.row(index, status, cx));
+        }
+
         div()
             .flex()
             .flex_col()
@@ -183,8 +247,23 @@ impl Skep {
                     .flex_col()
                     .flex_1()
                     .overflow_y_scroll()
-                    .children(services.into_iter().map(|status| self.row(status))),
+                    .children(rows)
+                    .children(empty.then(|| self.nothing("no services yet"))),
             )
+    }
+
+    /// Empty states say what would be here, quietly, and never fill the space
+    /// with something to look at.
+    fn nothing(&self, what: &'static str) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .py_10()
+            .text_xs()
+            .text_color(self.theme.idle)
+            .child(SharedString::from(what))
     }
 
     fn header(&self) -> impl IntoElement {
@@ -193,8 +272,8 @@ impl Skep {
             .flex()
             .items_center()
             .justify_between()
-            .px_5()
-            .py_3()
+            .px_6()
+            .py_4()
             .border_b_1()
             .border_color(self.theme.border)
             .child(SharedString::from("Services"))
@@ -229,8 +308,8 @@ impl Skep {
                 .flex()
                 .items_center()
                 .justify_between()
-                .px_5()
-                .py_2()
+                .px_6()
+                .py_2p5()
                 .bg(self.theme.raised)
                 .border_b_1()
                 .border_color(self.theme.border)
@@ -241,35 +320,32 @@ impl Skep {
         )
     }
 
-    fn row(&self, status: ServiceStatus) -> impl IntoElement {
+    fn row(&self, index: usize, status: ServiceStatus, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
-        let working = status.activity.is_some();
+        let working = status.activity.is_some() || status.state.is_transitional();
         let failed = matches!(status.state, ServiceState::Failed { .. });
         let id = status.id.clone();
+        let open = self.expanded.as_ref() == Some(&id);
+        let key = SharedString::from(id.to_string());
 
-        div()
+        let head = div()
+            .id(("row", index))
             .flex()
             .items_center()
             .gap_3()
-            .px_5()
-            .py_3()
-            .border_b_1()
-            .border_color(theme.border)
+            .px_6()
+            .py_3p5()
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.raised))
+            .on_click(cx.listener({
+                let id = id.clone();
+                move |skep, _, _, cx| skep.toggle(id.clone(), cx)
+            }))
+            .child(self.dot(&status, working, index))
+            .child(div().w(px(186.)).child(key.clone()))
             .child(
                 div()
-                    .w(px(7.))
-                    .h(px(7.))
-                    .rounded_full()
-                    .bg(theme.dot(&status.state, working)),
-            )
-            .child(
-                div()
-                    .w(px(190.))
-                    .child(SharedString::from(status.id.to_string())),
-            )
-            .child(
-                div()
-                    .w(px(110.))
+                    .w(px(104.))
                     .text_xs()
                     .text_color(theme.muted)
                     .child(ports(&status)),
@@ -281,7 +357,76 @@ impl Skep {
                     .text_color(if failed { theme.failed } else { theme.muted })
                     .child(line(&status)),
             )
-            .child(self.actions(&status, id))
+            .child(self.actions(&status, id));
+
+        div()
+            .flex()
+            .flex_col()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(head)
+            .children(open.then(|| self.output(index)))
+            .into_any_element()
+    }
+
+    /// Status colour lives here and nowhere else. Orange means motion: while a
+    /// service is working the dot breathes, which is the only thing in the
+    /// interface that repeats.
+    fn dot(&self, status: &ServiceStatus, working: bool, index: usize) -> AnyElement {
+        let colour = self.theme.dot(&status.state, working);
+        let dot = div().w(px(7.)).h(px(7.)).rounded_full().bg(colour);
+
+        if !working {
+            return dot.into_any_element();
+        }
+        dot.with_animation(
+            ("breath", index),
+            Animation::new(BREATH)
+                .repeat()
+                .with_easing(pulsating_between(0.35, 1.0)),
+            move |dot, delta| dot.bg(faded(colour, delta)),
+        )
+        .into_any_element()
+    }
+
+    /// The row grows in place. Nothing that needs attention appears anywhere
+    /// the eye was not already looking.
+    fn output(&self, index: usize) -> AnyElement {
+        let theme = &self.theme;
+        // Copied out: the closure below outlives this borrow.
+        let muted = theme.muted;
+        let lines: Vec<_> = self.logs.iter().cloned().collect();
+        let empty = lines.is_empty();
+
+        div()
+            .id(("output", index))
+            .flex()
+            .flex_col()
+            .bg(self.theme.raised)
+            .border_t_1()
+            .border_color(theme.border)
+            .overflow_y_scroll()
+            .children(lines.into_iter().map(|(seq, line)| {
+                div()
+                    .px_6()
+                    .py_0p5()
+                    .text_xs()
+                    .font_family("monospace")
+                    .text_color(muted)
+                    .child(SharedString::from(line.text))
+                    .with_animation(
+                        ("line", seq),
+                        Animation::new(MOTION).with_easing(ease_in_out),
+                        move |line, delta| line.text_color(faded(muted, delta)),
+                    )
+            }))
+            .children(empty.then(|| self.nothing("no output yet")))
+            .with_animation(
+                ("open", index),
+                Animation::new(MOTION).with_easing(ease_in_out),
+                |body, delta| body.h(px(LOG_HEIGHT * delta)),
+            )
+            .into_any_element()
     }
 
     fn actions(&self, status: &ServiceStatus, id: InstanceId) -> impl IntoElement {
@@ -297,7 +442,7 @@ impl Skep {
         row
     }
 
-    /// Orange lives here and on transient dots. Nowhere else.
+    /// Orange lives here and on a breathing dot. Nowhere else.
     fn button(&self, label: &'static str, command: Command) -> impl IntoElement {
         let commands = self.commands.clone();
         div()
@@ -311,7 +456,8 @@ impl Skep {
             .rounded_sm()
             .cursor_pointer()
             .hover(|style| style.border_color(self.theme.accent))
-            .on_click(move |_, _, _| {
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
                 let _ = commands.send(command.clone());
             })
             .child(SharedString::from(label))
