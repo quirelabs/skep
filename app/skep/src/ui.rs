@@ -354,6 +354,7 @@ impl Skep {
         let head = div()
             .id(("row", index))
             .flex()
+            .w_full()
             .items_center()
             .gap_3()
             .px_6()
@@ -389,6 +390,8 @@ impl Skep {
         div()
             .flex()
             .flex_col()
+            .w_full()
+            .overflow_hidden()
             .border_b_1()
             .border_color(theme.border)
             .child(head)
@@ -401,7 +404,12 @@ impl Skep {
     /// interface that repeats.
     fn dot(&self, status: &ServiceStatus, working: bool, index: usize) -> AnyElement {
         let colour = self.theme.dot(&status.state, working);
-        let dot = div().w(px(7.)).h(px(7.)).rounded_full().bg(colour);
+        let dot = div()
+            .w(px(7.))
+            .h(px(7.))
+            .flex_shrink_0()
+            .rounded_full()
+            .bg(colour);
 
         if !working {
             return dot.into_any_element();
@@ -429,24 +437,32 @@ impl Skep {
             .id(("output", index))
             .flex()
             .flex_col()
+            .w_full()
             .bg(self.theme.raised)
             .border_t_1()
             .border_color(theme.border)
             .overflow_y_scroll()
             .children(note.map(|note| {
                 div()
+                    .w_full()
                     .px_6()
                     .py_3()
                     .text_xs()
+                    .line_height(px(17.))
+                    // Wraps to whatever width the window has, and stops after
+                    // a few lines rather than growing without end.
+                    .line_clamp(4)
                     .text_color(theme.failed)
                     .child(note)
             }))
             .children(lines.into_iter().map(|(seq, line)| {
                 div()
+                    .w_full()
                     .px_6()
                     .py_0p5()
                     .text_xs()
                     .line_height(px(17.))
+                    .line_clamp(3)
                     .font_family(MONO)
                     .text_color(muted)
                     .child(SharedString::from(line.text))
@@ -467,7 +483,9 @@ impl Skep {
 
     fn actions(&self, status: &ServiceStatus, id: InstanceId) -> impl IntoElement {
         let live = status.state.is_running() || status.state.is_transitional();
-        let mut row = div().flex().items_center().gap_2();
+        // Everything else in the row compresses before the buttons do: a
+        // control you cannot reach is worse than a name you cannot finish.
+        let mut row = div().flex().flex_shrink_0().items_center().gap_2();
         if live {
             row = row
                 .child(self.button("Stop", Command::Stop(id.clone())))
