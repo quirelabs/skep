@@ -330,7 +330,6 @@ impl Skep {
                     .py_3()
                     .text_xs()
                     .line_height(px(17.))
-                    .line_clamp(3)
                     .text_color(theme.muted)
                     .child(SharedString::from(
                         "Ports and versions live in config.toml. A project's skep.toml wins \
@@ -613,6 +612,7 @@ impl Skep {
             .flex()
             .flex_col()
             .w_full()
+            .overflow_x_hidden()
             .bg(self.theme.raised)
             .border_t_1()
             .border_color(theme.border)
@@ -625,9 +625,8 @@ impl Skep {
                     .py_3()
                     .text_xs()
                     .line_height(px(17.))
-                    // Wraps to whatever width the window has, and stops after
-                    // a few lines rather than growing without end.
-                    .line_clamp(4)
+                    // Wraps to whatever width the window has. No clamp: that
+                    // brings overflow_hidden, which clips rather than wraps.
                     .text_color(theme.failed)
                     .child(note)
             }))
@@ -639,7 +638,6 @@ impl Skep {
                     .py_0p5()
                     .text_xs()
                     .line_height(px(17.))
-                    .line_clamp(3)
                     .font_family(MONO)
                     .text_color(muted)
                     .child(SharedString::from(line.text))
