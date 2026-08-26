@@ -343,6 +343,7 @@ impl Skep {
                     .flex_col()
                     .flex_1()
                     .w_full()
+                    .min_w_0()
                     .overflow_y_scroll()
                     .children(services.into_iter().map(|status| {
                         let chosen = !status.ports_from.is_empty();
@@ -429,6 +430,7 @@ impl Skep {
             .flex()
             .flex_col()
             .flex_1()
+            .min_w_0()
             .h_full()
             .child(self.header())
             .children(self.banner())
@@ -438,6 +440,7 @@ impl Skep {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_w_0()
                     .overflow_y_scroll()
                     .children(rows)
                     .children(empty.then(|| self.nothing("no services yet"))),
@@ -529,6 +532,7 @@ impl Skep {
             .id(("row", index))
             .flex()
             .w_full()
+            .min_w_0()
             .items_center()
             .gap_3()
             .px_6()
