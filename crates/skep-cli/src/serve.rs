@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use comb::{Engine, Host, Paths};
-use comb_services::{Request, catalog};
+use comb_services::catalog;
 
 pub async fn run() -> Result<()> {
     let engine = Engine::with_paths(Paths::from_env());
@@ -11,8 +11,7 @@ pub async fn run() -> Result<()> {
     // Every known service is registered, stopped. Starting one is then a
     // question for the engine rather than a registration dance per command.
     for adapter in catalog() {
-        let spec = adapter
-            .spec(&Request::new(), engine.paths())
+        let spec = comb_services::spec_default(adapter.name(), None, engine.paths())
             .with_context(|| format!("building the {} service", adapter.name()))?;
         engine.register(spec).await?;
     }

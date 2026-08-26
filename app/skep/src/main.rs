@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use comb::{Engine, Paths};
-use comb_services::{Request, catalog};
+use comb_services::catalog;
 use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use tokio::runtime::Runtime;
 use tokio::signal::unix::{SignalKind, signal};
@@ -23,8 +23,7 @@ fn main() -> Result<()> {
     // question for the engine rather than a registration dance per click.
     runtime.block_on(async {
         for adapter in catalog() {
-            let spec = adapter
-                .spec(&Request::new(), engine.paths())
+            let spec = comb_services::spec_default(adapter.name(), None, engine.paths())
                 .with_context(|| format!("building the {} service", adapter.name()))?;
             engine.register(spec).await?;
         }

@@ -9,6 +9,8 @@ use comb::{Error, Result};
 use serde::Deserialize;
 
 pub const FILE: &str = "skep.toml";
+/// Skep's own settings, which a project file overrides.
+pub const SETTINGS: &str = "config.toml";
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +37,17 @@ pub fn find(start: &Path) -> Option<PathBuf> {
         let candidate = directory.join(FILE);
         candidate.is_file().then_some(candidate)
     })
+}
+
+/// Skep's own settings. A machine with no settings has defaults, which is not
+/// an error worth reporting.
+pub fn settings(paths: &comb::Paths) -> Result<Project> {
+    let path = paths.config_file();
+    if path.is_file() {
+        load(&path)
+    } else {
+        Ok(Project::default())
+    }
 }
 
 pub fn load(path: &Path) -> Result<Project> {

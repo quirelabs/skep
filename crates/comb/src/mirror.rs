@@ -174,6 +174,7 @@ mod tests {
             display_name: id.to_string(),
             state,
             ports: BTreeMap::new(),
+            ports_from: BTreeMap::new(),
             pid: Some(42),
             activity: None,
             blocked: None,

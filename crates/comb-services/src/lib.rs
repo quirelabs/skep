@@ -202,27 +202,67 @@ pub fn instance(service: &str, version: Option<&str>) -> Result<InstanceId> {
     })
 }
 
-/// The spec for a service as a caller asked for it, ports included.
+/// The spec for a service with nothing asked of it beyond skep's own settings.
+pub fn spec_default(service: &str, version: Option<&str>, paths: &Paths) -> Result<ServiceSpec> {
+    spec_for(service, version, &BTreeMap::new(), "", paths)
+}
+
+/// The spec for a service, layering what skep is configured to do under what
+/// the caller asked for. A project file always wins over skep's own settings,
+/// because the repository knows what it needs and the machine only has a
+/// preference.
 pub fn spec_for(
     service: &str,
     version: Option<&str>,
     ports: &BTreeMap<String, u16>,
+    source: &str,
     paths: &Paths,
 ) -> Result<ServiceSpec> {
-    let (adapter, version) = lookup(service, version)?;
+    let settings = project::settings(paths)?;
+    let (name, _) = service.split_once('@').unwrap_or((service, ""));
+    let configured = settings.services.get(name);
+
+    // An explicit version beats a configured one, which beats the newest pin.
+    let wanted = version.or(configured.and_then(|entry| entry.version.as_deref()));
+    let (adapter, version) = lookup(service, wanted)?;
+
+    let mut chosen: BTreeMap<String, (u16, String)> = BTreeMap::new();
+    if let Some(entry) = configured {
+        if let Some(port) = entry.port {
+            chosen.insert(
+                main_port(service)?.to_string(),
+                (port, project::SETTINGS.to_string()),
+            );
+        }
+        for (port, number) in &entry.ports {
+            chosen.insert(port.clone(), (*number, project::SETTINGS.to_string()));
+        }
+    }
+    for (port, number) in ports {
+        chosen.insert(port.clone(), (*number, source.to_string()));
+    }
+
+    let known: Vec<&str> = adapter.default_ports().iter().map(|(n, _)| *n).collect();
     let mut request = Request::new().with_version(version);
-    for (name, number) in ports {
-        let known: Vec<&str> = adapter.default_ports().iter().map(|(n, _)| *n).collect();
-        if !known.contains(&name.as_str()) {
+    for (port, (number, _)) in &chosen {
+        if !known.contains(&port.as_str()) {
             return Err(Error::UnknownPort {
                 service: adapter.name().to_string(),
-                port: name.clone(),
+                port: port.clone(),
                 known: known.join(", "),
             });
         }
-        request = request.with_port(name.clone(), *number);
+        request = request.with_port(port.clone(), *number);
     }
-    adapter.spec(&request, paths)
+
+    // Annotated afterwards, in one place, so no adapter has to remember to.
+    let mut spec = adapter.spec(&request, paths)?;
+    for port in &mut spec.ports {
+        if let Some((_, source)) = chosen.get(&port.name) {
+            port.source = Some(source.clone());
+        }
+    }
+    Ok(spec)
 }
 
 fn lookup(service: &str, version: Option<&str>) -> Result<(&'static dyn ServiceAdapter, Version)> {
@@ -258,8 +298,14 @@ pub async fn bring_up(
             port,
         );
     }
-    let spec = spec_for(name, wanted.version.as_deref(), &ports, paths)
-        .map_err(|error| error.to_string())?;
+    let spec = spec_for(
+        name,
+        wanted.version.as_deref(),
+        &ports,
+        project::FILE,
+        paths,
+    )
+    .map_err(|error| error.to_string())?;
     let id = spec.id.clone();
 
     if let Some(status) = running.iter().find(|status| status.id == id) {
@@ -318,6 +364,96 @@ pub fn find(name: &str) -> Option<&'static dyn ServiceAdapter> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A throwaway skep home with the given config.toml in it.
+    fn home_with(label: &str, config: &str) -> Paths {
+        let root =
+            std::env::temp_dir().join(format!("skep-settings-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        if !config.is_empty() {
+            std::fs::write(root.join(project::SETTINGS), config).unwrap();
+        }
+        Paths::new(root)
+    }
+
+    #[test]
+    fn settings_move_a_port_and_say_so() {
+        let paths = home_with("moved", "[services.postgres]\nport = 15432\n");
+
+        let spec = spec_default("postgres", None, &paths).unwrap();
+
+        assert_eq!(spec.primary_port(), Some(15432));
+        assert_eq!(
+            spec.ports[0].source.as_deref(),
+            Some("config.toml"),
+            "a chosen port should name the file that chose it"
+        );
+    }
+
+    #[test]
+    fn a_project_wins_over_skep_settings() {
+        let paths = home_with("contested", "[services.postgres]\nport = 15432\n");
+        let asked = BTreeMap::from([("postgres".to_string(), 25432)]);
+
+        let spec = spec_for("postgres", None, &asked, "skep.toml", &paths).unwrap();
+
+        // The repository knows what it needs; the machine only has a
+        // preference.
+        assert_eq!(spec.primary_port(), Some(25432));
+        assert_eq!(spec.ports[0].source.as_deref(), Some("skep.toml"));
+    }
+
+    #[test]
+    fn a_default_port_has_nothing_to_explain() {
+        let paths = home_with("plain", "");
+
+        let spec = spec_default("postgres", None, &paths).unwrap();
+
+        assert_eq!(spec.primary_port(), Some(5432));
+        assert_eq!(spec.ports[0].source, None);
+    }
+
+    #[test]
+    fn settings_can_pin_a_version_and_a_project_can_override_it() {
+        let paths = home_with("versioned", "[services.postgres]\nversion = \"16\"\n");
+
+        assert_eq!(
+            spec_default("postgres", None, &paths)
+                .unwrap()
+                .id
+                .to_string(),
+            "postgres@16.10.0"
+        );
+        assert_eq!(
+            spec_for(
+                "postgres",
+                Some("15"),
+                &BTreeMap::new(),
+                "skep.toml",
+                &paths
+            )
+            .unwrap()
+            .id
+            .to_string(),
+            "postgres@15.14.0"
+        );
+    }
+
+    #[test]
+    fn a_port_the_service_does_not_have_is_refused() {
+        let paths = home_with(
+            "wrong-port",
+            "[services.postgres]\nports = { gopher = 70 }\n",
+        );
+
+        let error = spec_default("postgres", None, &paths).unwrap_err();
+
+        assert!(
+            error.to_string().contains("no port named gopher"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn the_catalog_is_consistent() {

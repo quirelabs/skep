@@ -40,6 +40,10 @@ pub struct ServiceStatus {
     #[serde(flatten)]
     pub state: ServiceState,
     pub ports: BTreeMap<String, u16>,
+    /// Only the ports somebody chose, and which file chose them. Empty when
+    /// everything is at its default, which is the usual case.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ports_from: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     /// The named phase of a long start, so a caller never sees Starting with
@@ -1061,6 +1065,16 @@ impl Instance {
                 .ports
                 .iter()
                 .map(|port| (port.name.clone(), port.number))
+                .collect(),
+            ports_from: self
+                .spec
+                .ports
+                .iter()
+                .filter_map(|port| {
+                    port.source
+                        .as_ref()
+                        .map(|source| (port.name.clone(), source.clone()))
+                })
                 .collect(),
             pid: self.pid,
             activity: self.activity.clone(),

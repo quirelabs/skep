@@ -88,15 +88,11 @@ impl Skep {
         &self,
         Parameters(Service { service, version }): Parameters<Service>,
     ) -> Result<CallToolResult, ErrorData> {
-        let spec = match comb_services::spec_for(
-            &service,
-            version.as_deref(),
-            &Default::default(),
-            &Paths::from_env(),
-        ) {
-            Ok(spec) => spec,
-            Err(error) => return Ok(sentence(error.to_string())),
-        };
+        let spec =
+            match comb_services::spec_default(&service, version.as_deref(), &Paths::from_env()) {
+                Ok(spec) => spec,
+                Err(error) => return Ok(sentence(error.to_string())),
+            };
         let instance = spec.id.clone();
 
         let mut client = match connect().await {

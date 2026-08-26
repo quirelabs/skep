@@ -201,10 +201,16 @@ fn render(services: &[ServiceStatus]) -> String {
     let rows: Vec<[String; 4]> = services
         .iter()
         .map(|service| {
+            // A number nobody chose needs no explanation. One that was chosen
+            // says which file chose it, so a surprising port is never a
+            // mystery.
             let ports = service
                 .ports
-                .values()
-                .map(ToString::to_string)
+                .iter()
+                .map(|(name, number)| match service.ports_from.get(name) {
+                    Some(source) => format!("{number} ({source})"),
+                    None => number.to_string(),
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             // The phase matters more than the bare state during a long start.

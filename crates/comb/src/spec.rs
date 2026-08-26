@@ -220,6 +220,10 @@ impl PrepareStep {
 pub struct Port {
     pub name: String,
     pub number: u16,
+    /// Which file asked for this number, when it was not the default. A port
+    /// nobody chose has nothing to explain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 impl Port {
@@ -227,7 +231,13 @@ impl Port {
         Self {
             name: name.into(),
             number,
+            source: None,
         }
+    }
+
+    pub fn from(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
+        self
     }
 }
 
