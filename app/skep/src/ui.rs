@@ -17,12 +17,20 @@ use crate::bridge::{Bridge, Command, Update};
 use crate::platform::Menubar;
 use crate::theme::Theme;
 
-const RAIL: &[(&str, bool)] = &[
-    ("Services", true),
-    ("Projects", false),
-    ("Logs", false),
-    ("Mail", false),
-    ("Agent", false),
+#[derive(Clone, Copy, PartialEq)]
+enum Page {
+    Services,
+    Settings,
+}
+
+/// The rail shows what skep is designed to have, dimmed where it does not have
+/// it yet. Settings sits apart at the bottom, where settings go.
+const RAIL: &[(&str, Option<Page>)] = &[
+    ("Services", Some(Page::Services)),
+    ("Projects", None),
+    ("Logs", None),
+    ("Mail", None),
+    ("Agent", None),
 ];
 
 /// Every motion in the interface is shorter than this. Anything slower reads
@@ -43,6 +51,7 @@ enum Connection {
 }
 
 pub struct Skep {
+    page: Page,
     menubar: Option<Menubar>,
     theme: Theme,
     mirror: Mirror,
@@ -75,6 +84,7 @@ impl Skep {
         .detach();
 
         let mut skep = Self {
+            page: Page::Services,
             menubar,
             theme: Theme::dark(),
             mirror: Mirror::new(),
@@ -213,38 +223,202 @@ impl Render for Skep {
             .text_color(self.theme.text)
             .text_sm()
             .line_height(px(20.))
-            .child(self.rail())
-            .child(self.content(cx))
+            .child(self.rail(cx))
+            .child(match self.page {
+                Page::Services => self.content(cx),
+                Page::Settings => self.settings(cx),
+            })
     }
 }
 
 impl Skep {
-    fn rail(&self) -> impl IntoElement {
-        let theme = &self.theme;
+    fn rail(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut items = Vec::with_capacity(RAIL.len());
+        for (index, (name, page)) in RAIL.iter().enumerate() {
+            items.push(self.rail_item(index, name, *page, cx));
+        }
+
         div()
             .flex()
             .flex_col()
             .w(px(164.))
             .h_full()
+            .flex_shrink_0()
             .border_r_1()
-            .border_color(theme.border)
+            .border_color(self.theme.border)
             .pt_5()
+            .pb_4()
             .gap_0p5()
-            .children(RAIL.iter().map(|(name, built)| {
-                div()
-                    .px_6()
-                    .py_1()
-                    .text_color(if *built { theme.text } else { theme.idle })
-                    .font_weight(if *built {
-                        FontWeight::MEDIUM
-                    } else {
-                        FontWeight::NORMAL
-                    })
-                    .child(SharedString::from(*name))
-            }))
+            .children(items)
+            .child(div().flex_1())
+            .child(self.rail_item(RAIL.len(), "Settings", Some(Page::Settings), cx))
+            .into_any_element()
     }
 
-    fn content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn rail_item(
+        &self,
+        index: usize,
+        name: &'static str,
+        page: Option<Page>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let built = page.is_some();
+        let here = page == Some(self.page);
+        let item = div()
+            .id(("rail", index))
+            .px_6()
+            .py_1()
+            .text_color(if here {
+                self.theme.text
+            } else if built {
+                self.theme.muted
+            } else {
+                self.theme.idle
+            })
+            .font_weight(if here {
+                FontWeight::MEDIUM
+            } else {
+                FontWeight::NORMAL
+            })
+            .child(SharedString::from(name));
+
+        match page {
+            Some(page) => item
+                .cursor_pointer()
+                .on_click(cx.listener(move |skep, _, _, cx| {
+                    skep.page = page;
+                    cx.notify();
+                }))
+                .into_any_element(),
+            None => item.into_any_element(),
+        }
+    }
+
+    /// Read only on purpose. The file is the interface; this explains what it
+    /// currently means and opens it.
+    fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let services: Vec<_> = self.mirror.services().cloned().collect();
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .h_full()
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .px_6()
+                    .py_4()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(SharedString::from("Settings")),
+                    )
+                    .child(self.open_settings(cx)),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .px_6()
+                    .py_3()
+                    .text_xs()
+                    .line_height(px(17.))
+                    .line_clamp(3)
+                    .text_color(theme.muted)
+                    .child(SharedString::from(
+                        "Ports and versions live in config.toml. A project's skep.toml wins \
+                         wherever both speak, so a repository always gets what it asks for.",
+                    )),
+            )
+            .child(
+                div()
+                    .id("settings-list")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .w_full()
+                    .overflow_y_scroll()
+                    .children(services.into_iter().map(|status| {
+                        let chosen = !status.ports_from.is_empty();
+                        let ports: Vec<String> = status
+                            .ports
+                            .iter()
+                            .map(|(name, number)| match status.ports_from.get(name) {
+                                Some(source) => format!("{name} {number} ({source})"),
+                                None => format!("{name} {number}"),
+                            })
+                            .collect();
+
+                        div()
+                            .flex()
+                            .w_full()
+                            .items_center()
+                            .gap_3()
+                            .px_6()
+                            .py_3()
+                            .border_b_1()
+                            .border_color(theme.border)
+                            .child(
+                                div()
+                                    .w(px(186.))
+                                    .truncate()
+                                    .child(SharedString::from(status.id.to_string())),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(if chosen { theme.text } else { theme.muted })
+                                    .child(SharedString::from(ports.join(",  "))),
+                            )
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn open_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("open-settings")
+            .px_2p5()
+            .py_1()
+            .text_xs()
+            .text_color(self.theme.accent)
+            .border_1()
+            .border_color(self.theme.border)
+            .rounded_sm()
+            .cursor_pointer()
+            .hover(|style| style.border_color(self.theme.accent))
+            .on_click(cx.listener(|skep, _, _, cx| {
+                skep.reveal_settings();
+                cx.notify();
+            }))
+            .child(SharedString::from("Open config.toml"))
+            .into_any_element()
+    }
+
+    /// Writes a commented starting point if there is nothing there, then hands
+    /// the file to whatever the machine opens .toml with.
+    fn reveal_settings(&mut self) {
+        match comb_services::project::ensure_settings(&comb::Paths::from_env()) {
+            Ok(path) => {
+                if let Err(error) = std::process::Command::new("open").arg(&path).spawn() {
+                    self.problem =
+                        Some(format!("could not open {}: {error}", path.display()).into());
+                }
+            }
+            Err(error) => self.problem = Some(error.to_string().into()),
+        }
+    }
+
+    fn content(&self, cx: &mut Context<Self>) -> AnyElement {
         let services: Vec<_> = self.mirror.services().cloned().collect();
         let empty = services.is_empty();
         let mut rows = Vec::with_capacity(services.len());
@@ -269,6 +443,7 @@ impl Skep {
                     .children(rows)
                     .children(empty.then(|| self.nothing("no services yet"))),
             )
+            .into_any_element()
     }
 
     /// Empty states say what would be here, quietly, and never fill the space

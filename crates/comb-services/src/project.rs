@@ -39,6 +39,39 @@ pub fn find(start: &Path) -> Option<PathBuf> {
     })
 }
 
+/// Writes a commented starting point if there is nothing there yet, and
+/// returns the path either way. Editing beats inventing a form.
+pub fn ensure_settings(paths: &comb::Paths) -> Result<PathBuf> {
+    let path = paths.config_file();
+    if path.is_file() {
+        return Ok(path);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(Error::Io)?;
+    }
+    std::fs::write(&path, TEMPLATE).map_err(Error::Io)?;
+    Ok(path)
+}
+
+const TEMPLATE: &str = "\
+# Skep's own settings. A project's skep.toml wins wherever both speak.
+#
+# Move a service that clashes with something already on this machine:
+#
+#   [services.postgres]
+#   port = 15432
+#
+# Or pin the version skep should use:
+#
+#   [services.postgres]
+#   version = \"16\"
+#
+# Services with more than one port name them:
+#
+#   [services.mailpit]
+#   ports = { http = 8025, smtp = 1025 }
+";
+
 /// Skep's own settings. A machine with no settings has defaults, which is not
 /// an error worth reporting.
 pub fn settings(paths: &comb::Paths) -> Result<Project> {
