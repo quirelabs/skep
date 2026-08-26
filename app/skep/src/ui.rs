@@ -620,6 +620,7 @@ impl Skep {
             .children(note.map(|note| {
                 div()
                     .w_full()
+                    .flex_shrink_0()
                     .px_6()
                     .py_3()
                     .text_xs()
@@ -633,6 +634,7 @@ impl Skep {
             .children(lines.into_iter().map(|(seq, line)| {
                 div()
                     .w_full()
+                    .flex_shrink_0()
                     .px_6()
                     .py_0p5()
                     .text_xs()
