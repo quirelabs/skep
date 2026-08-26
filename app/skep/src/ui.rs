@@ -3,13 +3,13 @@
 //! engine never reported.
 
 use std::collections::VecDeque;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use comb::{Applied, InstanceId, LogLine, Mirror, ServiceState, ServiceStatus};
 use gpui::{
-    Animation, AnimationExt, AnyElement, Context, FontWeight, Hsla, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
-    div, ease_in_out, pulsating_between, px,
+    Animation, AnimationExt, AnyElement, ClipboardItem, Context, FontWeight, Hsla,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, ease_in_out, pulsating_between, px,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -42,6 +42,16 @@ const LOG_HEIGHT: f32 = 208.;
 /// will not resolve.
 const MONO: &str = "Menlo";
 const LOG_LIMIT: usize = 400;
+/// How long a copied line stays marked.
+const ACKNOWLEDGED: Duration = Duration::from_millis(900);
+/// Wide enough for four digits, which is more lines than are kept.
+const GUTTER: f32 = 34.;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Copied {
+    Line(u64),
+    Everything,
+}
 
 enum Connection {
     Waiting,
@@ -62,6 +72,8 @@ pub struct Skep {
     /// which is what stops finished fades from replaying.
     logs: VecDeque<(u64, LogLine)>,
     next_line: u64,
+    /// What was just copied, and when, so the acknowledgement clears itself.
+    copied: Option<(Copied, Instant)>,
     commands: UnboundedSender<Command>,
     updates: UnboundedReceiver<Update>,
 }
@@ -93,6 +105,7 @@ impl Skep {
             expanded: None,
             logs: VecDeque::new(),
             next_line: 0,
+            copied: None,
             commands: bridge.commands,
             updates: bridge.updates,
         };
@@ -140,6 +153,14 @@ impl Skep {
                 Update::Log(line) => self.remember(*line),
             }
         }
+        // The acknowledgement clears itself on the same beat as everything else.
+        if self
+            .copied
+            .is_some_and(|(_, at)| at.elapsed() > ACKNOWLEDGED)
+        {
+            self.copied = None;
+            moved = true;
+        }
         if moved {
             self.reflect();
             cx.notify();
@@ -165,6 +186,11 @@ impl Skep {
 
     fn toggle(&mut self, id: InstanceId, cx: &mut Context<Self>) {
         self.logs.clear();
+        // Numbering restarts with each watch, so a line's number means its
+        // place in what is on screen rather than a running total nobody asked
+        // for.
+        self.next_line = 0;
+        self.copied = None;
         self.expanded = if self.expanded.as_ref() == Some(&id) {
             let _ = self.commands.send(Command::Watch(None));
             None
@@ -573,7 +599,7 @@ impl Skep {
             .border_b_1()
             .border_color(theme.border)
             .child(head)
-            .children(open.then(|| self.output(index, note(&status))))
+            .children(open.then(|| self.output(index, note(&status), cx)))
             .into_any_element()
     }
 
@@ -604,18 +630,76 @@ impl Skep {
 
     /// The row grows in place. Nothing that needs attention appears anywhere
     /// the eye was not already looking.
-    fn output(&self, index: usize, note: Option<SharedString>) -> AnyElement {
+    fn output(
+        &self,
+        index: usize,
+        note: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = &self.theme;
-        // Copied out: the closure below outlives this borrow.
         let muted = theme.muted;
+        let text = theme.text;
+        let accent = theme.accent;
+        let idle = theme.idle;
         let lines: Vec<_> = self.logs.iter().cloned().collect();
         let empty = lines.is_empty();
+
+        let mut rendered = Vec::with_capacity(lines.len());
+        for (seq, line) in lines {
+            let marked = self
+                .copied
+                .is_some_and(|(what, _)| what == Copied::Line(seq));
+            rendered.push(
+                div()
+                    .id(("line", seq as usize))
+                    .flex()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .gap_3()
+                    .px_6()
+                    .py_0p5()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.base))
+                    .on_click(cx.listener(move |skep, _, _, cx| skep.copy_line(seq, cx)))
+                    // The number is the quiet part: it exists to be referred
+                    // to, not to be read.
+                    .child(
+                        div()
+                            .w(px(GUTTER))
+                            .flex_shrink_0()
+                            .text_right()
+                            .text_xs()
+                            .line_height(px(17.))
+                            .font_family(MONO)
+                            .text_color(if marked { accent } else { idle })
+                            .child(SharedString::from((seq + 1).to_string())),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .line_height(px(17.))
+                            .font_family(MONO)
+                            .text_color(if marked { text } else { muted })
+                            .child(SharedString::from(line.text))
+                            .with_animation(
+                                ("fade", seq as usize),
+                                Animation::new(MOTION).with_easing(ease_in_out),
+                                move |line, delta| line.text_color(faded(muted, delta)),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
 
         div()
             .id(("output", index))
             .flex()
             .flex_col()
             .w_full()
+            .min_w_0()
             .overflow_x_hidden()
             .bg(self.theme.raised)
             .border_t_1()
@@ -629,28 +713,20 @@ impl Skep {
                     .py_3()
                     .text_xs()
                     .line_height(px(17.))
-                    // Wraps to whatever width the window has. No clamp: that
-                    // brings overflow_hidden, which clips rather than wraps.
                     .text_color(theme.failed)
                     .child(note)
             }))
-            .children(lines.into_iter().map(|(seq, line)| {
+            .children((!empty).then(|| {
                 div()
+                    .flex()
                     .w_full()
                     .flex_shrink_0()
+                    .justify_end()
                     .px_6()
-                    .py_0p5()
-                    .text_xs()
-                    .line_height(px(17.))
-                    .font_family(MONO)
-                    .text_color(muted)
-                    .child(SharedString::from(line.text))
-                    .with_animation(
-                        ("line", seq),
-                        Animation::new(MOTION).with_easing(ease_in_out),
-                        move |line, delta| line.text_color(faded(muted, delta)),
-                    )
+                    .pt_2()
+                    .child(self.copy_all(cx))
             }))
+            .children(rendered)
             .children(empty.then(|| self.nothing("no output yet")))
             .with_animation(
                 ("open", index),
@@ -658,6 +734,43 @@ impl Skep {
                 |body, delta| body.h(px(LOG_HEIGHT * delta)),
             )
             .into_any_element()
+    }
+
+    fn copy_all(&self, cx: &mut Context<Self>) -> AnyElement {
+        let done = self
+            .copied
+            .is_some_and(|(what, _)| what == Copied::Everything);
+        div()
+            .id("copy-all")
+            .text_xs()
+            .text_color(if done {
+                self.theme.text
+            } else {
+                self.theme.accent
+            })
+            .cursor_pointer()
+            .on_click(cx.listener(|skep, _, _, cx| {
+                let text: Vec<&str> = skep
+                    .logs
+                    .iter()
+                    .map(|(_, line)| line.text.as_str())
+                    .collect();
+                cx.write_to_clipboard(ClipboardItem::new_string(text.join("\n")));
+                skep.copied = Some((Copied::Everything, Instant::now()));
+                cx.notify();
+            }))
+            .child(SharedString::from(if done { "copied" } else { "copy all" }))
+            .into_any_element()
+    }
+
+    /// One line, because that is usually the one being pasted into a search.
+    fn copy_line(&mut self, seq: u64, cx: &mut Context<Self>) {
+        let Some((_, line)) = self.logs.iter().find(|(number, _)| *number == seq) else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(line.text.clone()));
+        self.copied = Some((Copied::Line(seq), Instant::now()));
+        cx.notify();
     }
 
     fn actions(&self, status: &ServiceStatus, id: InstanceId) -> impl IntoElement {
