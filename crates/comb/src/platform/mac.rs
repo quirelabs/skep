@@ -8,7 +8,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::ExitStatus;
+use std::process::{Command, ExitStatus};
 
 use std::time::Duration;
 
@@ -183,6 +183,73 @@ pub fn clone_directory(from: &Path, into: &Path) -> io::Result<()> {
     } else {
         Err(io::Error::last_os_error())
     }
+}
+
+/// The system trust store. Writing to it is what needs an administrator, and
+/// why trusting the root is a step a person takes on purpose.
+const SYSTEM_KEYCHAIN: &str = "/Library/Keychains/System.keychain";
+
+/// Writes a file only its owner can read. The mode is set as the file is
+/// created, so a secret is never briefly readable by anyone else.
+pub fn write_private(path: &Path, contents: &str) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    // A file that already existed keeps its old mode, so say it again.
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(contents.as_bytes())
+}
+
+pub fn trust_root(certificate: &Path) -> io::Result<()> {
+    security(
+        &[
+            "add-trusted-cert",
+            "-d",
+            "-r",
+            "trustRoot",
+            "-k",
+            SYSTEM_KEYCHAIN,
+        ],
+        certificate,
+    )
+}
+
+pub fn untrust_root(certificate: &Path) -> io::Result<()> {
+    security(&["remove-trusted-cert", "-d"], certificate)
+}
+
+/// Whether this machine would accept what the root signs.
+pub fn root_is_trusted(certificate: &Path) -> bool {
+    Command::new("security")
+        .args(["verify-cert", "-c"])
+        .arg(certificate)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// Blocking on purpose: these prompt for a password, and the caller is a person
+/// waiting for that prompt rather than the event loop.
+fn security(args: &[&str], certificate: &Path) -> io::Result<()> {
+    let output = Command::new("security")
+        .args(args)
+        .arg(certificate)
+        .output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(io::Error::other(if reason.is_empty() {
+        "the keychain refused the certificate".to_string()
+    } else {
+        reason
+    }))
 }
 
 #[cfg(test)]

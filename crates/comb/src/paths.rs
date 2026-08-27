@@ -77,6 +77,11 @@ impl Paths {
         self.run_dir().join("engine.sock")
     }
 
+    /// The local certificate authority behind `.test` domains.
+    pub fn ca_dir(&self) -> PathBuf {
+        self.root.join("ca")
+    }
+
     pub fn config_file(&self) -> PathBuf {
         self.root.join("config.toml")
     }

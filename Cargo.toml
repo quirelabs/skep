@@ -80,6 +80,11 @@ objc2-foundation = { version = "0.3", features = [
     "NSDictionary",
 ] }
 sha2 = "0.10"
+# Certificates for local domains. Defaults to the ring provider, which keeps
+# cargo build free of cmake and a C toolchain.
+# Already in the tree through rcgen, whose own API speaks these types.
+time = { version = "0.3", default-features = false, features = ["std"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"

@@ -2,6 +2,7 @@
 //! instance, and the event stream that every frontend renders.
 
 mod acquire;
+mod certs;
 mod engine;
 mod error;
 mod event;
@@ -22,6 +23,7 @@ mod state;
 mod time;
 
 pub use acquire::{Build, Release, ensure};
+pub use certs::{Authority, Issued};
 pub use engine::{Engine, Overview, ServiceStatus, Snapshot};
 pub use error::{Error, Result};
 pub use event::{Event, EventKind, LogLine, LogStream};

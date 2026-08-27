@@ -12,7 +12,7 @@ mod mac;
 #[cfg(target_os = "macos")]
 pub(crate) use mac::{
     build_tools_missing, can_clone, clone_directory, describe_exit, listener_on, restrict,
-    terminate, try_lock_exclusive,
+    root_is_trusted, terminate, trust_root, try_lock_exclusive, untrust_root, write_private,
 };
 
 #[cfg(not(target_os = "macos"))]

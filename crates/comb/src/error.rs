@@ -9,6 +9,12 @@ pub enum Error {
     #[error("invalid id: {0}")]
     InvalidId(String),
 
+    #[error("could not issue a certificate: {0}")]
+    Certificate(String),
+
+    #[error("{host} is not a hostname a certificate can be issued for")]
+    InvalidHost { host: String },
+
     #[error("unknown service {name}, try one of: {known}")]
     UnknownService { name: String, known: String },
 

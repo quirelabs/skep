@@ -21,6 +21,10 @@ usage:
   skep logs <service> [-n N]  show the most recent output
   skep help                   show this
 
+  skep trust                  trust skep's certificate authority, so local
+                              domains can serve real https (asks for a password)
+  skep untrust                stop trusting it
+
   skep snapshot <service> <name>          keep a copy of a service's data
   skep snapshots <service>                list the copies kept
   skep branch <service> <label> [--from <name>]
@@ -71,6 +75,8 @@ async fn dispatch() -> Result<()> {
             .await
         }
         "logs" => logs(&rest).await,
+        "trust" => trust(),
+        "untrust" => untrust(),
         "snapshot" => snapshot(&rest).await,
         "snapshots" => snapshots(&rest).await,
         "branch" => branch(&rest).await,
@@ -89,6 +95,33 @@ async fn dispatch() -> Result<()> {
 }
 
 /// Turns `postgres` or `postgres@16` into the instance the engine knows.
+/// Local work by design, so it needs no engine: the authority can be set up
+/// before anything is running, and it outlives any particular host.
+fn trust() -> Result<()> {
+    let authority = comb::Authority::open(&Paths::from_env())?;
+    let file = authority.root_file();
+    if authority.is_trusted() {
+        println!("already trusted: {}", file.display());
+        return Ok(());
+    }
+    println!("trusting {}", file.display());
+    println!("macOS will ask for your password, because this writes to the system keychain");
+    authority.trust()?;
+    println!("done, browsers on this machine will accept what skep issues");
+    Ok(())
+}
+
+fn untrust() -> Result<()> {
+    let authority = comb::Authority::open(&Paths::from_env())?;
+    if !authority.is_trusted() {
+        println!("not trusted, so there is nothing to remove");
+        return Ok(());
+    }
+    authority.untrust()?;
+    println!("removed, browsers will warn about local domains again");
+    Ok(())
+}
+
 fn resolve(name: &str) -> Result<InstanceId> {
     Ok(resolve_instance(name, None)?)
 }
