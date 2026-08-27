@@ -44,25 +44,32 @@ writes.
 ### One tool call instead of four shell commands
 
 Asking "what dev services are running, and is the database ready?" costs an
-agent about 1,945 tokens of shell output. Asking skep costs about 167.
+agent 4,431 tokens of shell output. Asking skep costs 387.
 
 ```
-shell, 4 commands     1945   bench/manual.txt
-skep, one call         167   bench/skep.txt
+tokens, counted by claude-sonnet-5
 
-11.6x cheaper
+  shell, 4 commands     4431   bench/manual.txt
+  skep, one call          387   bench/skep.txt
+
+  11.4x cheaper
 ```
 
-Both transcripts are real command output rather than an invented baseline.
-[`scripts/token-benchmark.sh`](scripts/token-benchmark.sh) regenerates them and
-writes them to `bench/`, where they are committed once counted with a real
-tokeniser, so the number can be checked rather than believed.
+Both transcripts are real command output rather than an invented baseline, and
+they are in [`bench/`](bench/) so the number can be checked rather than
+believed. Identifying details are replaced before the file is written: the
+username, the machine's name, and any address outside loopback. Each file says
+at the top exactly what was substituted and how many times. The process list
+itself is untouched, because that is the thing an agent would have to read.
+[`scripts/token-benchmark.sh`](scripts/token-benchmark.sh) regenerates both.
 
 Three caveats, because the number is only worth what its method is worth:
 
-1. Counted by character estimate (4 characters per token) on a MacBook Pro
-   (M1 Pro, macOS 27). Set `ANTHROPIC_API_KEY` and the script counts for real
-   instead.
+1. Counted by Anthropic's `count_tokens` endpoint against claude-sonnet-5, on a
+   MacBook Pro (M1 Pro, macOS 27). Run the script without `ANTHROPIC_API_KEY`
+   and it prints a rough character estimate instead, clearly labelled: that
+   estimate understates shell output badly, since process lists and port tables
+   tokenise far worse than four characters per token.
 2. The two sides do not survey the same scope: `skep_status` answers for the
    services skep manages, the shell commands survey the whole machine. An
    agent cannot narrow the shell search without already knowing the answer,

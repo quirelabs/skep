@@ -1,0 +1,91 @@
+# Real output from the four commands below, with identifying details
+# replaced before publishing:
+#   username -> you (68)
+#   hostname -> this-mac (2)
+#   addresses outside loopback -> [redacted] (1)
+#   v6 addresses outside loopback -> [redacted] (11)
+# The list of processes itself is unchanged: it is the point of the
+# comparison, and it is what an agent would actually have to read.
+$ brew services list
+Name          Status User          File
+mysql@8.4     started         you ~/Library/LaunchAgents/homebrew.mxcl.mysql@8.4.plist
+php           none                          
+php@8.4       none                          
+postgresql@14 none                          
+postgresql@15 none                          
+postgresql@17 started         you ~/Library/LaunchAgents/homebrew.mxcl.postgresql@17.plist
+redis         started         you ~/Library/LaunchAgents/homebrew.mxcl.redis.plist
+
+$ ps aux | grep -E 'postgres|redis|valkey|mysql|mariadb|mongod|mailpit' | grep -v grep
+you     2505   0,1  0,0 488806096   1488   ??  S    ma06p.m.   3:43.67 /opt/homebrew/opt/redis/bin/redis-server 127.0.0.1:6379 
+you     2765   0,0  0,0 489393264   6112   ??  S    ma06p.m.   4:12.13 /opt/homebrew/opt/mysql@8.4/bin/mysqld --basedir=/opt/homebrew/opt/mysql@8.4 --datadir=/opt/homebrew/var/mysql --plugin-dir=/opt/homebrew/opt/mysql@8.4/lib/plugin --log-error=this-mac.local.err --pid-file=this-mac.local.pid
+you     2720   0,0  0,0 488979568   1856   ??  Ss   ma06p.m.   0:00.16 postgres: logical replication launcher   
+you     2718   0,0  0,0 488979568   2112   ??  Ss   ma06p.m.   0:00.51 postgres: autovacuum launcher   
+you     2717   0,0  0,0 488978544    704   ??  Ss   ma06p.m.   0:01.02 postgres: walwriter   
+you     2712   0,0  0,0 488978544    832   ??  Ss   ma06p.m.   0:01.00 postgres: background writer   
+you     2711   0,0  0,0 488978544    912   ??  Ss   ma06p.m.   0:00.05 postgres: checkpointer   
+you     2517   0,0  0,0 488982736   3792   ??  S    ma06p.m.   0:01.09 /opt/homebrew/opt/postgresql@17/bin/postgres -D /opt/homebrew/var/postgresql@17
+you     2512   0,0  0,0 488781568    672   ??  S    ma06p.m.   0:00.04 /bin/sh /opt/homebrew/opt/mysql@8.4/bin/mysqld_safe --datadir=/opt/homebrew/var/mysql
+you    52715   0,0  0,1 490078496  28800 s001  SN    1:27p.m.   0:00.06 /tmp/skep-bench/bin/mailpit/1.31.0/mailpit --listen 127.0.0.1:8025 --smtp 127.0.0.1:1025 --database /tmp/skep-bench/data/mailpit/1.31.0/main/mailpit.db
+
+$ lsof -nP -iTCP -sTCP:LISTEN
+COMMAND     PID          USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+rapportd   1021 you   14u  IPv4 0xc85bb6e1b381808f      0t0  TCP *:54009 (LISTEN)
+rapportd   1021 you   16u  IPv6 0xdb1248e58643e4c0      0t0  TCP *:54009 (LISTEN)
+rapportd   1021 you   19u  IPv6 0x3746e878f08cf6a6      0t0  TCP *:53892 (LISTEN)
+rapportd   1021 you   21u  IPv6 0x4188d193cfbe7246      0t0  TCP *:53893 (LISTEN)
+qbittorre  1353 you   17u  IPv4 0xba269a7b4c8819e5      0t0  TCP 127.0.0.1:52875 (LISTEN)
+qbittorre  1353 you   19u  IPv4 0x821c07751fe63d33      0t0  TCP [redacted]:52875 (LISTEN)
+qbittorre  1353 you   21u  IPv6 0x9aafe6f2af4f772c      0t0  TCP [::1]:52875 (LISTEN)
+qbittorre  1353 you   23u  IPv6 0xde52c6b430b6ec69      0t0  TCP [redacted]:52875 (LISTEN)
+qbittorre  1353 you   25u  IPv6 0x573e0c5ace4bb833      0t0  TCP [redacted]:52875 (LISTEN)
+qbittorre  1353 you   27u  IPv6 0xa8b13d43bd921268      0t0  TCP [redacted]:52875 (LISTEN)
+qbittorre  1353 you   29u  IPv6 0x721d7661d507cd26      0t0  TCP [redacted]:52875 (LISTEN)
+qbittorre  1353 you   31u  IPv6 0x53d633cd9504fed3      0t0  TCP [redacted]:52875 (LISTEN)
+qbittorre  1353 you   33u  IPv6 0x5ef2f46bd7c5f675      0t0  TCP [redacted]:52875 (LISTEN)
+qbittorre  1353 you   35u  IPv6 0x69bdb0f6fc40f1cb      0t0  TCP [redacted]:52875 (LISTEN)
+qbittorre  1353 you   37u  IPv6 0xf526033e95ed2826      0t0  TCP [redacted]:52875 (LISTEN)
+qbittorre  1353 you   39u  IPv6 0xebcf6bf2a0819440      0t0  TCP [redacted]:52875 (LISTEN)
+qbittorre  1353 you   41u  IPv6 0xebf990e6e4e49c74      0t0  TCP [redacted]:52875 (LISTEN)
+qbittorre  1353 you   47u  IPv6 0x8aaf2883358ab911      0t0  TCP [redacted]:52875 (LISTEN)
+qbittorre  1353 you   78u  IPv6 0x8b521160ef2a1601      0t0  TCP *:8080 (LISTEN)
+ControlCe  1372 you    9u  IPv4 0x8185986bc5ba7d27      0t0  TCP *:7000 (LISTEN)
+ControlCe  1372 you   10u  IPv6 0xbf5f50096d042393      0t0  TCP *:7000 (LISTEN)
+ControlCe  1372 you   11u  IPv4 0x2469aa71a9af0538      0t0  TCP *:5000 (LISTEN)
+ControlCe  1372 you   12u  IPv6  0x37e6ef75d63959c      0t0  TCP *:5000 (LISTEN)
+Spotify    1678 you   46u  IPv4 0x7c665e09fbd582c1      0t0  TCP *:54023 (LISTEN)
+Spotify    1678 you   80u  IPv4 0x3b3e9d900bd5ecd1      0t0  TCP 127.0.0.1:7768 (LISTEN)
+Spotify    1678 you   93u  IPv4 0x57000b2a51dba26a      0t0  TCP *:57621 (LISTEN)
+T3\x20Cod  1821 you   19u  IPv4 0x480992603f0e4b75      0t0  TCP 127.0.0.1:3773 (LISTEN)
+redis-ser  2505 you    6u  IPv4 0xad90e2af76900e71      0t0  TCP 127.0.0.1:6379 (LISTEN)
+redis-ser  2505 you    7u  IPv6 0xe5367b3ffc16e13a      0t0  TCP [::1]:6379 (LISTEN)
+postgres   2517 you    7u  IPv6 0x2d10461baa73bb1a      0t0  TCP [::1]:5432 (LISTEN)
+postgres   2517 you    8u  IPv4 0x9d9ef91e0a944ba0      0t0  TCP 127.0.0.1:5432 (LISTEN)
+mysqld     2765 you   19u  IPv4 0x786b149fe082c56b      0t0  TCP 127.0.0.1:33060 (LISTEN)
+mysqld     2765 you   21u  IPv4 0x226d8609e2cccea5      0t0  TCP 127.0.0.1:3306 (LISTEN)
+Adobe\x20  2905 you   32u  IPv4 0xcdf4582acf7275e0      0t0  TCP 127.0.0.1:15292 (LISTEN)
+Adobe\x20  2905 you   45u  IPv4 0x46af08dfb8521432      0t0  TCP 127.0.0.1:15393 (LISTEN)
+Adobe\x20  2905 you   48u  IPv4 0x8c7f5520f4567f2c      0t0  TCP 127.0.0.1:16494 (LISTEN)
+OneDrive   3650 you   35u  IPv6 0x308019f04bbb9bd8      0t0  TCP [::1]:42050 (LISTEN)
+node      32255 you   28u  IPv6 0x56cb45ef73cb35c2      0t0  TCP [::1]:5173 (LISTEN)
+node      32255 you   30u  IPv4 0xee5d56a8ab10397e      0t0  TCP 127.0.0.1:59466 (LISTEN)
+workerd   32276 you   24u  IPv4 0xed449279f0e7037e      0t0  TCP 127.0.0.1:59467 (LISTEN)
+workerd   32276 you   25u  IPv4 0x94c0d193c4af5849      0t0  TCP 127.0.0.1:59468 (LISTEN)
+Herd      41987 you   22u  IPv6 0x84983659599985b9      0t0  TCP *:2304 (LISTEN)
+nginx-arm 42248 you    4u  IPv4 0x2778cbfe5b522c3a      0t0  TCP 127.0.0.1:80 (LISTEN)
+nginx-arm 42249 you    4u  IPv4 0x2778cbfe5b522c3a      0t0  TCP 127.0.0.1:80 (LISTEN)
+nginx-arm 42250 you    4u  IPv4 0x2778cbfe5b522c3a      0t0  TCP 127.0.0.1:80 (LISTEN)
+nginx-arm 42251 you    4u  IPv4 0x2778cbfe5b522c3a      0t0  TCP 127.0.0.1:80 (LISTEN)
+nginx-arm 42252 you    4u  IPv4 0x2778cbfe5b522c3a      0t0  TCP 127.0.0.1:80 (LISTEN)
+nginx-arm 42253 you    4u  IPv4 0x2778cbfe5b522c3a      0t0  TCP 127.0.0.1:80 (LISTEN)
+nginx-arm 42254 you    4u  IPv4 0x2778cbfe5b522c3a      0t0  TCP 127.0.0.1:80 (LISTEN)
+nginx-arm 42255 you    4u  IPv4 0x2778cbfe5b522c3a      0t0  TCP 127.0.0.1:80 (LISTEN)
+nginx-arm 42256 you    4u  IPv4 0x2778cbfe5b522c3a      0t0  TCP 127.0.0.1:80 (LISTEN)
+nginx-arm 42257 you    4u  IPv4 0x2778cbfe5b522c3a      0t0  TCP 127.0.0.1:80 (LISTEN)
+mailpit   52715 you    9u  IPv4 0x83cd0a0c9b2e1764      0t0  TCP 127.0.0.1:1025 (LISTEN)
+mailpit   52715 you   10u  IPv4 0xb92fa4bfb041fc6a      0t0  TCP 127.0.0.1:8025 (LISTEN)
+zed       55628 you   16u  IPv4 0x72497e706ae70fa1      0t0  TCP 127.0.0.1:44438 (LISTEN)
+
+$ pg_isready -h 127.0.0.1 -p 5432
+127.0.0.1:5432 - accepting connections
+
