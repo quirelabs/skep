@@ -62,6 +62,16 @@ impl Service {
 }
 
 #[derive(Serialize)]
+pub struct Kept {
+    pub snapshots: Vec<comb::Snapshot>,
+}
+
+#[derive(Serialize)]
+pub struct Gone {
+    pub deleted: bool,
+}
+
+#[derive(Serialize)]
 pub struct Logs {
     pub id: String,
     pub lines: Vec<String>,

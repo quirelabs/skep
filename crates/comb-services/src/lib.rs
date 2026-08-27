@@ -194,11 +194,16 @@ pub async fn install(adapter: &dyn ServiceAdapter, version: &Version, paths: &Pa
 /// Turns what a person or an agent typed into the instance the engine knows.
 /// Accepts `postgres`, `postgres@16`, or a name and version given separately.
 pub fn instance(service: &str, version: Option<&str>) -> Result<InstanceId> {
+    // A branch is named the way it prints: postgres:experiment.
+    let (service, label) = match service.split_once(':') {
+        Some((service, label)) => (service, Some(Label::new(label)?)),
+        None => (service, None),
+    };
     let (adapter, version) = lookup(service, version)?;
     Ok(InstanceId {
         service: adapter.name().parse()?,
         version,
-        label: None,
+        label,
     })
 }
 

@@ -20,6 +20,17 @@ usage:
   skep restart <service>      restart a service
   skep logs <service> [-n N]  show the most recent output
 
+  skep snapshot <service> <name>          keep a copy of a service's data
+  skep snapshots <service>                list the copies kept
+  skep branch <service> <label> [--from <name>]
+                                          run a second copy on its own port
+  skep branches                           list running branches
+  skep delete branch <service>:<label>    remove a branch and its data
+  skep delete snapshot <service> <name>   remove a kept copy
+
+A branch is a sibling, not a child: it belongs to the service and version it
+was copied from, so branching a branch gives another sibling.
+
 A service is a name, or a name and a version: postgres, or postgres@16.10.0.
 ";
 
@@ -59,6 +70,11 @@ async fn dispatch() -> Result<()> {
             .await
         }
         "logs" => logs(&rest).await,
+        "snapshot" => snapshot(&rest).await,
+        "snapshots" => snapshots(&rest).await,
+        "branch" => branch(&rest).await,
+        "branches" => branches().await,
+        "delete" => delete(&rest).await,
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
             Ok(())
@@ -197,6 +213,174 @@ async fn logs(args: &[String]) -> Result<()> {
     }
 }
 
+async fn snapshot(args: &[String]) -> Result<()> {
+    let (Some(service), Some(name)) = (args.first(), args.get(1)) else {
+        bail!("which service, and what should the copy be called?\n\n{USAGE}");
+    };
+    let instance = resolve(service)?;
+    // Taking a copy stops the service and starts it again, so say so rather
+    // than appearing to hang.
+    println!("stopping {instance} to copy its data");
+    reply(
+        connect()
+            .await?
+            .send(&Request::Snapshot {
+                instance: instance.clone(),
+                name: name.clone(),
+            })
+            .await?,
+    )?;
+    println!("{instance} snapshot {name}");
+    Ok(())
+}
+
+async fn snapshots(args: &[String]) -> Result<()> {
+    let instance = one(args)?;
+    let Response::Snapshots { snapshots } = connect()
+        .await?
+        .send(&Request::Snapshots {
+            instance: instance.clone(),
+        })
+        .await?
+    else {
+        bail!("unexpected reply");
+    };
+    if snapshots.is_empty() {
+        println!("{instance} has no snapshots");
+        return Ok(());
+    }
+    for kept in snapshots {
+        println!("  {}", kept.name);
+    }
+    Ok(())
+}
+
+/// Creates a branch and starts it, because a branch nobody can connect to is
+/// not much of a branch.
+async fn branch(args: &[String]) -> Result<()> {
+    let (Some(service), Some(label)) = (args.first(), args.get(1)) else {
+        bail!("which service, and what should the branch be called?\n\n{USAGE}");
+    };
+    let from = resolve(service)?;
+    let label = comb::Label::new(label.as_str())?;
+    let source = args
+        .iter()
+        .position(|arg| arg == "--from")
+        .map(|at| {
+            args.get(at + 1)
+                .cloned()
+                .ok_or_else(|| anyhow!("--from needs the name of a snapshot"))
+        })
+        .transpose()?;
+
+    let paths = Paths::from_env();
+    let spec = comb_services::branch_spec(&from, &label, &paths)?;
+    let id = spec.id.clone();
+    let mut client = connect().await?;
+
+    if source.is_none() {
+        println!("stopping {from} to copy its data");
+    }
+    reply(
+        client
+            .send(&Request::Branch {
+                from,
+                spec: Box::new(spec),
+                snapshot: source,
+            })
+            .await?,
+    )?;
+    reply(
+        client
+            .send(&Request::Start {
+                instance: id.clone(),
+            })
+            .await?,
+    )?;
+
+    let Response::Status { overview } = client.send(&Request::Status).await? else {
+        bail!("unexpected reply");
+    };
+    match overview.services.iter().find(|status| status.id == id) {
+        Some(status) => println!("{id} {}", render_ports(status)),
+        None => println!("{id}"),
+    }
+    Ok(())
+}
+
+async fn branches() -> Result<()> {
+    let Response::Status { overview } = connect().await?.send(&Request::Status).await? else {
+        bail!("unexpected reply");
+    };
+    let branches: Vec<ServiceStatus> = overview
+        .services
+        .into_iter()
+        .filter(|status| status.id.is_branch())
+        .collect();
+    if branches.is_empty() {
+        println!("no branches");
+        return Ok(());
+    }
+    print!("{}", render(&branches));
+    Ok(())
+}
+
+async fn delete(args: &[String]) -> Result<()> {
+    match args.first().map(String::as_str) {
+        Some("branch") => {
+            let instance = one(&args[1..])?;
+            reply(
+                connect()
+                    .await?
+                    .send(&Request::RemoveBranch {
+                        instance: instance.clone(),
+                    })
+                    .await?,
+            )?;
+            println!("deleted {instance}");
+            Ok(())
+        }
+        Some("snapshot") => {
+            let (Some(service), Some(name)) = (args.get(1), args.get(2)) else {
+                bail!("which service, and which snapshot?\n\n{USAGE}");
+            };
+            let instance = resolve(service)?;
+            reply(
+                connect()
+                    .await?
+                    .send(&Request::RemoveSnapshot {
+                        instance,
+                        name: name.clone(),
+                    })
+                    .await?,
+            )?;
+            println!("deleted snapshot {name}");
+            Ok(())
+        }
+        _ => bail!("delete what? a branch or a snapshot\n\n{USAGE}"),
+    }
+}
+
+fn reply(response: Response) -> Result<()> {
+    match response {
+        Response::Done => Ok(()),
+        Response::Failed { message } => bail!(message),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+fn render_ports(service: &ServiceStatus) -> String {
+    service
+        .ports
+        .iter()
+        .map(|(name, number)| match service.ports_from.get(name) {
+            Some(source) => format!("{number} ({source})"),
+            None => number.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn render(services: &[ServiceStatus]) -> String {
     let rows: Vec<[String; 4]> = services
         .iter()
@@ -204,15 +388,7 @@ fn render(services: &[ServiceStatus]) -> String {
             // A number nobody chose needs no explanation. One that was chosen
             // says which file chose it, so a surprising port is never a
             // mystery.
-            let ports = service
-                .ports
-                .iter()
-                .map(|(name, number)| match service.ports_from.get(name) {
-                    Some(source) => format!("{number} ({source})"),
-                    None => number.to_string(),
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
+            let ports = render_ports(service);
             // The phase matters more than the bare state during a long start.
             let state = match &service.activity {
                 Some(activity) => format!("{} ({activity})", service.state),

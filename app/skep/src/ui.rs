@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use comb::{Applied, InstanceId, LogLine, Mirror, ServiceState, ServiceStatus};
+use comb::{Applied, InstanceId, Label, LogLine, Mirror, ServiceState, ServiceStatus, Snapshot};
 use gpui::{
     Animation, AnimationExt, AnyElement, ClipboardItem, Context, FontWeight, Hsla,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
@@ -74,6 +74,8 @@ pub struct Skep {
     next_line: u64,
     /// What was just copied, and when, so the acknowledgement clears itself.
     copied: Option<(Copied, Instant)>,
+    /// The copies kept for whichever service is open.
+    kept: Vec<Snapshot>,
     commands: UnboundedSender<Command>,
     updates: UnboundedReceiver<Update>,
 }
@@ -106,6 +108,7 @@ impl Skep {
             logs: VecDeque::new(),
             next_line: 0,
             copied: None,
+            kept: Vec::new(),
             commands: bridge.commands,
             updates: bridge.updates,
         };
@@ -151,6 +154,7 @@ impl Skep {
                     }
                 }
                 Update::Log(line) => self.remember(*line),
+                Update::Kept(kept) => self.kept = kept,
             }
         }
         // The acknowledgement clears itself on the same beat as everything else.
@@ -191,11 +195,13 @@ impl Skep {
         // for.
         self.next_line = 0;
         self.copied = None;
+        self.kept.clear();
         self.expanded = if self.expanded.as_ref() == Some(&id) {
             let _ = self.commands.send(Command::Watch(None));
             None
         } else {
             let _ = self.commands.send(Command::Watch(Some(id.clone())));
+            let _ = self.commands.send(Command::Snapshots(id.clone()));
             Some(id)
         };
         cx.notify();
@@ -561,7 +567,8 @@ impl Skep {
             .min_w_0()
             .items_center()
             .gap_3()
-            .px_6()
+            .pl(px(if status.id.is_branch() { 44. } else { 24. }))
+            .pr_6()
             .py_3()
             .cursor_pointer()
             .hover(|style| style.bg(theme.raised))
@@ -705,6 +712,7 @@ impl Skep {
             .border_t_1()
             .border_color(theme.border)
             .overflow_y_scroll()
+            .children((!self.kept.is_empty() || true).then(|| self.keeping(cx)))
             .children(note.map(|note| {
                 div()
                     .w_full()
@@ -733,6 +741,188 @@ impl Skep {
                 Animation::new(MOTION).with_easing(ease_in_out),
                 |body, delta| body.h(px(LOG_HEIGHT * delta)),
             )
+            .into_any_element()
+    }
+
+    /// Snapshots and branches, where stopping and restarting already are:
+    /// more of the same list rather than a mode to enter.
+    fn keeping(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(id) = self.expanded.clone() else {
+            return div().into_any_element();
+        };
+        let theme = &self.theme;
+        let taking = id.clone();
+        let sprouting = id.clone();
+
+        let mut strip = div()
+            .flex()
+            .w_full()
+            .flex_shrink_0()
+            .items_center()
+            .gap_2()
+            .px_6()
+            .py_3()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(if self.kept.is_empty() {
+                        "no copies kept".to_string()
+                    } else {
+                        format!("{} kept", self.kept.len())
+                    })),
+            )
+            .child(self.act(
+                "Snapshot",
+                move |skep, cx| {
+                    let name = skep.next_name("snapshot", |kept| kept.name.clone());
+                    let _ = skep.commands.send(Command::Snapshot(taking.clone(), name));
+                    cx.notify();
+                },
+                cx,
+            ))
+            .child(self.act(
+                "Branch",
+                move |skep, cx| {
+                    let label = skep.next_name("branch", |kept| kept.name.clone());
+                    if let Ok(label) = Label::new(label) {
+                        let _ = skep
+                            .commands
+                            .send(Command::Branch(sprouting.clone(), label, None));
+                    }
+                    cx.notify();
+                },
+                cx,
+            ));
+
+        if id.is_branch() {
+            let doomed = id.clone();
+            strip = strip.child(self.act(
+                "Delete",
+                move |skep, cx| {
+                    let _ = skep.commands.send(Command::RemoveBranch(doomed.clone()));
+                    cx.notify();
+                },
+                cx,
+            ));
+        }
+
+        let kept: Vec<AnyElement> = self
+            .kept
+            .iter()
+            .enumerate()
+            .map(|(index, snapshot)| {
+                let (from, name) = (id.clone(), snapshot.name.clone());
+                let (dropping, dropped) = (id.clone(), snapshot.name.clone());
+                div()
+                    .flex()
+                    .w_full()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap_2()
+                    .px_6()
+                    .py_1p5()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child(SharedString::from(snapshot.name.clone())),
+                    )
+                    .child(self.act_at(
+                        ("branch-from", index),
+                        "Branch from",
+                        move |skep, cx| {
+                            let label = skep.next_name("branch", |kept| kept.name.clone());
+                            if let Ok(label) = Label::new(label) {
+                                let _ = skep.commands.send(Command::Branch(
+                                    from.clone(),
+                                    label,
+                                    Some(name.clone()),
+                                ));
+                            }
+                            cx.notify();
+                        },
+                        cx,
+                    ))
+                    .child(self.act_at(
+                        ("drop-snapshot", index),
+                        "Delete",
+                        move |skep, cx| {
+                            let _ = skep
+                                .commands
+                                .send(Command::RemoveSnapshot(dropping.clone(), dropped.clone()));
+                            cx.notify();
+                        },
+                        cx,
+                    ))
+                    .into_any_element()
+            })
+            .collect();
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .flex_shrink_0()
+            .child(strip)
+            .children(kept)
+            .into_any_element()
+    }
+
+    /// A name nobody is using yet, since there is nowhere to type one.
+    fn next_name(&self, stem: &str, of: impl Fn(&Snapshot) -> String) -> String {
+        let taken: Vec<String> = self
+            .kept
+            .iter()
+            .map(&of)
+            .chain(
+                self.mirror
+                    .services()
+                    .filter_map(|service| service.id.label.as_ref().map(ToString::to_string)),
+            )
+            .collect();
+        (1..)
+            .map(|n| format!("{stem}-{n}"))
+            .find(|name| !taken.contains(name))
+            .unwrap_or_else(|| format!("{stem}-1"))
+    }
+
+    fn act(
+        &self,
+        label: &'static str,
+        run: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.act_at((label, 0), label, run, cx)
+    }
+
+    fn act_at(
+        &self,
+        id: (&'static str, usize),
+        label: &'static str,
+        run: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id(id)
+            .flex_shrink_0()
+            .px_2p5()
+            .py_1()
+            .text_xs()
+            .text_color(self.theme.accent)
+            .border_1()
+            .border_color(self.theme.border)
+            .rounded_sm()
+            .cursor_pointer()
+            .hover(|style| style.border_color(self.theme.accent))
+            .on_click(cx.listener(move |skep, _, _, cx| run(skep, cx)))
+            .child(SharedString::from(label))
             .into_any_element()
     }
 

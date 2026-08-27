@@ -40,6 +40,24 @@ struct Tail {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct Keep {
+    /// Service name, optionally with a version or a branch label.
+    service: String,
+    /// What to call the copy. Lowercase letters, digits, - and _.
+    name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct Sprout {
+    /// Service to branch from, optionally with a version.
+    service: String,
+    /// What to call the branch. Lowercase letters, digits, - and _.
+    label: String,
+    /// Branch from this snapshot instead of from the service as it stands.
+    from: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct Project {
     /// Directory to search from. Defaults to the working directory. skep.toml
     /// is looked for here and in every parent.
@@ -168,6 +186,139 @@ impl Skep {
                 id: instance.to_string(),
                 lines: lines.into_iter().map(|line| line.text).collect(),
             }),
+            Ok(other) => Ok(confused(other)),
+            Err(problem) => Ok(*problem),
+        }
+    }
+
+    #[tool(
+        name = "skep_snapshot",
+        description = "Keep a copy of a service's data under a name. The service is stopped for \
+                       the copy and started again afterwards, which is what makes the copy \
+                       consistent, so expect a pause rather than an instant answer. Returns the \
+                       service's status afterwards, in the same shape as skep_status."
+    )]
+    async fn snapshot(
+        &self,
+        Parameters(Keep { service, name }): Parameters<Keep>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let instance = match comb_services::instance(&service, None) {
+            Ok(instance) => instance,
+            Err(error) => return Ok(sentence(error.to_string())),
+        };
+        let mut client = match connect().await {
+            Ok(client) => client,
+            Err(problem) => return Ok(*problem),
+        };
+        let request = Request::Snapshot {
+            instance: instance.clone(),
+            name,
+        };
+        match ask(&mut client, request).await {
+            Ok(Response::Done) => self.report_on(&mut client, &instance.to_string()).await,
+            Ok(other) => Ok(confused(other)),
+            Err(problem) => Ok(*problem),
+        }
+    }
+
+    #[tool(
+        name = "skep_snapshots",
+        description = "The copies kept for a service, newest name last. Returns \
+                       {\"snapshots\":[{\"name\":\"...\",\"taken\":1700000000000}]}. Use a name \
+                       from here as skep_branch's from argument."
+    )]
+    async fn snapshots(
+        &self,
+        Parameters(Named { service }): Parameters<Named>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let instance = match comb_services::instance(&service, None) {
+            Ok(instance) => instance,
+            Err(error) => return Ok(sentence(error.to_string())),
+        };
+        let mut client = match connect().await {
+            Ok(client) => client,
+            Err(problem) => return Ok(*problem),
+        };
+        match ask(&mut client, Request::Snapshots { instance }).await {
+            Ok(Response::Snapshots { snapshots }) => json(&view::Kept { snapshots }),
+            Ok(other) => Ok(confused(other)),
+            Err(problem) => Ok(*problem),
+        }
+    }
+
+    #[tool(
+        name = "skep_branch",
+        description = "Run a second copy of a service on its own data and its own port, started \
+                       and ready to connect to. Branch from a snapshot with from, or omit it to \
+                       branch from the service as it stands, which stops it briefly to copy. \
+                       A branch is a sibling, not a child: it belongs to the service and \
+                       version, so branching a branch gives another sibling rather than a \
+                       nested one. Returns the branch's status, including the port it took."
+    )]
+    async fn branch(
+        &self,
+        Parameters(Sprout {
+            service,
+            label,
+            from,
+        }): Parameters<Sprout>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (parent, label) = match (
+            comb_services::instance(&service, None),
+            comb::Label::new(label),
+        ) {
+            (Ok(parent), Ok(label)) => (parent, label),
+            (Err(error), _) | (_, Err(error)) => return Ok(sentence(error.to_string())),
+        };
+        let spec = match comb_services::branch_spec(&parent, &label, &Paths::from_env()) {
+            Ok(spec) => spec,
+            Err(error) => return Ok(sentence(error.to_string())),
+        };
+        let instance = spec.id.clone();
+
+        let mut client = match connect().await {
+            Ok(client) => client,
+            Err(problem) => return Ok(*problem),
+        };
+        for request in [
+            Request::Branch {
+                from: parent,
+                spec: Box::new(spec),
+                snapshot: from,
+            },
+            Request::Start {
+                instance: instance.clone(),
+            },
+        ] {
+            match ask(&mut client, request).await {
+                Ok(Response::Done) => {}
+                Ok(other) => return Ok(confused(other)),
+                Err(problem) => return Ok(*problem),
+            }
+        }
+        self.report_on(&mut client, &instance.to_string()).await
+    }
+
+    #[tool(
+        name = "skep_delete_branch",
+        description = "Remove a branch and the data it was using. The branch must be stopped \
+                       first, and the error says so if it is not. Name it the way it prints: \
+                       postgres:experiment."
+    )]
+    async fn delete_branch(
+        &self,
+        Parameters(Named { service }): Parameters<Named>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let instance = match comb_services::instance(&service, None) {
+            Ok(instance) => instance,
+            Err(error) => return Ok(sentence(error.to_string())),
+        };
+        let mut client = match connect().await {
+            Ok(client) => client,
+            Err(problem) => return Ok(*problem),
+        };
+        match ask(&mut client, Request::RemoveBranch { instance }).await {
+            Ok(Response::Done) => json(&view::Gone { deleted: true }),
             Ok(other) => Ok(confused(other)),
             Err(problem) => Ok(*problem),
         }

@@ -77,6 +77,27 @@ pub enum Request {
         instance: InstanceId,
         lines: usize,
     },
+    Snapshot {
+        instance: InstanceId,
+        name: String,
+    },
+    Snapshots {
+        instance: InstanceId,
+    },
+    RemoveSnapshot {
+        instance: InstanceId,
+        name: String,
+    },
+    /// The caller builds the branch's spec, because knowing how to run a
+    /// service is the catalog's job and copying its data is the engine's.
+    Branch {
+        from: InstanceId,
+        spec: Box<ServiceSpec>,
+        snapshot: Option<String>,
+    },
+    RemoveBranch {
+        instance: InstanceId,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -84,6 +105,7 @@ pub enum Request {
 pub enum Response {
     Status { overview: Box<Overview> },
     Logs { lines: Vec<LogLine> },
+    Snapshots { snapshots: Vec<crate::Snapshot> },
     Done,
     Failed { message: String },
 }
@@ -295,6 +317,27 @@ async fn answer(engine: &Engine, request: Request) -> Response {
         }
         // Handled before it reaches here, where the connection is in scope.
         Request::Quit => Ok(()),
+        Request::Snapshots { instance } => {
+            return match engine.snapshots(&instance).await {
+                Ok(snapshots) => Response::Snapshots { snapshots },
+                Err(error) => Response::Failed {
+                    message: error.to_string(),
+                },
+            };
+        }
+        Request::Snapshot { instance, name } => engine.snapshot(&instance, &name).await,
+        Request::RemoveSnapshot { instance, name } => {
+            engine.remove_snapshot(&instance, &name).await
+        }
+        Request::Branch {
+            from,
+            spec,
+            snapshot,
+        } => engine
+            .branch(&from, *spec, snapshot.as_deref())
+            .await
+            .map(drop),
+        Request::RemoveBranch { instance } => engine.remove_branch(&instance).await,
         Request::Register { spec } => engine.upsert(*spec).await,
         Request::Start { instance } => engine.start(&instance).await,
         Request::Stop { instance } => engine.stop(&instance).await,

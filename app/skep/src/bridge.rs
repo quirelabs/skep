@@ -2,7 +2,7 @@
 //! interface, which lives on GPUI's main thread. Everything crosses as a
 //! message; neither side reaches into the other.
 
-use comb::{Engine, Event, Host, InstanceId, LogLine, Overview};
+use comb::{Engine, Event, Host, InstanceId, Label, LogLine, Overview, Snapshot};
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -19,6 +19,11 @@ pub enum Command {
     TakeOver,
     /// Follow one service's output, or nothing.
     Watch(Option<InstanceId>),
+    Snapshot(InstanceId, String),
+    Snapshots(InstanceId),
+    RemoveSnapshot(InstanceId, String),
+    Branch(InstanceId, Label, Option<String>),
+    RemoveBranch(InstanceId),
 }
 
 /// What the engine reports.
@@ -37,6 +42,8 @@ pub enum Update {
     Logs(Vec<LogLine>),
     /// One line, as it is written.
     Log(Box<LogLine>),
+    /// What has been kept for the service being looked at.
+    Kept(Vec<Snapshot>),
 }
 
 pub struct Bridge {
@@ -141,6 +148,41 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
             return;
         }
         Command::Watch(_) => return,
+        Command::Snapshot(id, name) => {
+            let taken = engine.snapshot(&id, &name).await;
+            // The list is what the interface shows, so refresh it either way.
+            if let Ok(kept) = engine.snapshots(&id).await {
+                let _ = reports.send(Update::Kept(kept));
+            }
+            taken
+        }
+        Command::Snapshots(id) => {
+            if let Ok(kept) = engine.snapshots(&id).await {
+                let _ = reports.send(Update::Kept(kept));
+            }
+            Ok(())
+        }
+        Command::RemoveSnapshot(id, name) => {
+            let removed = engine.remove_snapshot(&id, &name).await;
+            if let Ok(kept) = engine.snapshots(&id).await {
+                let _ = reports.send(Update::Kept(kept));
+            }
+            removed
+        }
+        Command::Branch(from, label, snapshot) => {
+            match comb_services::branch_spec(&from, &label, engine.paths()) {
+                Ok(spec) => {
+                    let id = spec.id.clone();
+                    match engine.branch(&from, spec, snapshot.as_deref()).await {
+                        // A branch nobody can connect to is not much of a branch.
+                        Ok(_) => engine.start(&id).await,
+                        Err(error) => Err(error),
+                    }
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Command::RemoveBranch(id) => engine.remove_branch(&id).await,
         Command::TakeOver => {
             match Host::take_over(engine.clone(), std::time::Duration::from_secs(30)).await {
                 Ok(host) => {
