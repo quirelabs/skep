@@ -59,3 +59,10 @@ jobs:
       # someone's machine.
       - name: Pinned releases still match their hashes
         run: cargo test --workspace -- --ignored
+
+      # The libraries have to stay publishable. quire-comb-services cannot be
+      # checked this way until quire-comb is actually on crates.io, because a
+      # dry run resolves its dependencies from the registry: add it here on the
+      # day quire-comb is first published.
+      - name: The engine is still publishable
+        run: cargo publish --dry-run -p quire-comb
