@@ -115,11 +115,10 @@ fn it_hosts_answers_and_winds_down() {
         .output()
         .unwrap();
     assert!(!refused.status.success());
-    assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("already hosting"),
-        "{}",
-        String::from_utf8_lossy(&refused.stderr)
-    );
+    let refusal = String::from_utf8_lossy(&refused.stderr);
+    assert!(refusal.contains("running this machine"), "{refusal}");
+    // The refusal has to leave the person a way out, not just a no.
+    assert!(refusal.contains("skep serve --take-over"), "{refusal}");
 
     assert!(
         serving.wind_down().success(),
@@ -172,11 +171,11 @@ fn up_refuses_a_file_it_does_not_understand() {
 fn up_reports_every_service_even_when_one_fails() {
     let home = Home::new("partial");
     let project = Home::new("partial-project");
-    // Two services that cannot start, so nothing is downloaded or bound, and
+    // Neither name is a service skep has, so nothing is downloaded or bound and
     // the point being tested is that the second is still attempted.
     std::fs::write(
         project.0.join("skep.toml"),
-        "[services.redis]\nversion = \"7\"\n\n[services.mysql]\nversion = \"8\"\n",
+        "[services.redis]\nversion = \"7\"\n\n[services.memcached]\nversion = \"1\"\n",
     )
     .unwrap();
 
@@ -191,7 +190,10 @@ fn up_reports_every_service_even_when_one_fails() {
 
     let listed = String::from_utf8_lossy(&output.stdout);
     assert!(listed.contains("redis: unknown service redis"), "{listed}");
-    assert!(listed.contains("mysql: unknown service mysql"), "{listed}");
+    assert!(
+        listed.contains("memcached: unknown service memcached"),
+        "{listed}"
+    );
     assert!(!output.status.success(), "a failure should be a failure");
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("2 of 2"),
