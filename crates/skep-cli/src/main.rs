@@ -12,7 +12,7 @@ const USAGE: &str = "\
 skep, a local dev services manager
 
 usage:
-  skep serve                  host the engine and every service, in the foreground
+  skep serve [--take-over]    host the engine and every service, in the foreground
   skep up                     start everything skep.toml asks for
   skep status                 show every service
   skep start <service>        start a service
@@ -49,7 +49,7 @@ async fn dispatch() -> Result<()> {
     let rest: Vec<String> = args.collect();
 
     match command.as_str() {
-        "serve" => serve::run().await,
+        "serve" => serve::run(rest.iter().any(|arg| arg == "--take-over")).await,
         "up" => up().await,
         "status" => status().await,
         "start" => {

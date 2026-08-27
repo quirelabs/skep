@@ -712,7 +712,7 @@ impl Skep {
             .border_t_1()
             .border_color(theme.border)
             .overflow_y_scroll()
-            .children((!self.kept.is_empty() || true).then(|| self.keeping(cx)))
+            .child(self.keeping(cx))
             .children(note.map(|note| {
                 div()
                     .w_full()
