@@ -55,6 +55,42 @@ async fn only_one_process_can_host() {
     serving.await.unwrap();
 }
 
+/// Everything worth knowing when a lock refuses to come free. flock is held per
+/// open file description, so a process can block itself through a second
+/// descriptor. The question this has to answer is whether the holder is us.
+fn who_holds(path: &std::path::Path) -> String {
+    let mine = std::process::id();
+    let recorded: Option<u32> = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.trim().parse().ok());
+    let inode = std::fs::metadata(path)
+        .map(|meta| std::os::unix::fs::MetadataExt::ino(&meta))
+        .ok();
+    // Every process holding the file, us included, so a self-conflict is
+    // visible rather than inferred.
+    let open_now = std::process::Command::new("lsof")
+        .arg("--")
+        .arg(path)
+        .output()
+        .map(|out| {
+            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if text.is_empty() {
+                "nobody has it open".to_string()
+            } else {
+                text
+            }
+        })
+        .unwrap_or_else(|error| format!("lsof did not run: {error}"));
+
+    format!(
+        "\n  lock file: {path}\n  inode: {inode:?}\n  pid written in the file: {recorded:?}\n  \
+         this process: {mine}\n  the file names this process: {same}\n  \
+         processes holding it now:\n{open_now}",
+        path = path.display(),
+        same = recorded == Some(mine),
+    )
+}
+
 #[tokio::test]
 async fn a_lock_from_a_dead_host_does_not_block_the_machine() {
     let home = TestHome::new();
@@ -69,7 +105,12 @@ async fn a_lock_from_a_dead_host_does_not_block_the_machine() {
     ));
     drop(first);
 
-    Lock::acquire(&paths).expect("a released lock is available again");
+    if let Err(error) = Lock::acquire(&paths) {
+        panic!(
+            "a released lock should be available again, got {error:?}{}",
+            who_holds(&paths.lock_file())
+        );
+    }
     // The file is still on disk. Existence is deliberately not the test.
     assert!(paths.lock_file().exists());
 }
