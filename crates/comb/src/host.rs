@@ -113,6 +113,12 @@ pub enum Response {
 /// Proof that this process owns the machine's services. The kernel releases it
 /// when the process exits, however it exits, so a crash cannot wedge the
 /// machine. The pid written inside is diagnostic; the lock is the truth.
+/// Long enough to outlast the kernel catching up, short enough that a real
+/// refusal still feels immediate. The race resolves in well under a
+/// millisecond.
+const SETTLE: Duration = Duration::from_millis(100);
+const BETWEEN_TRIES: Duration = Duration::from_millis(2);
+
 pub struct Lock {
     _file: File,
 }
@@ -132,7 +138,7 @@ impl Lock {
             .open(&path)
             .map_err(Error::Io)?;
 
-        if !platform::try_lock_exclusive(&file).map_err(Error::Io)? {
+        if !take(&file)? {
             return Err(Error::AlreadyHosted { pid: holder(&path) });
         }
 
@@ -140,6 +146,27 @@ impl Lock {
         let _ = write!(file, "{}", std::process::id());
         let _ = file.flush();
         Ok(Self { _file: file })
+    }
+}
+
+/// A closed descriptor does not always release its flock before the next
+/// attempt sees it. macOS can report the lock taken for a fraction of a
+/// millisecond after the holder let go, so a single refusal is not proof.
+/// Without this, starting a host straight after stopping one names a process
+/// that has already exited.
+///
+/// A lock somebody really holds stays held, so the wait costs nothing except
+/// in the case that was already going to fail.
+fn take(file: &File) -> Result<bool> {
+    let deadline = Instant::now() + SETTLE;
+    loop {
+        if platform::try_lock_exclusive(file).map_err(Error::Io)? {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(BETWEEN_TRIES);
     }
 }
 

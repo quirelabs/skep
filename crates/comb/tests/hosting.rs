@@ -98,6 +98,10 @@ async fn a_lock_from_a_dead_host_does_not_block_the_machine() {
 
     // The kernel drops an flock when the file description closes, which is
     // what happens when a process dies. Dropping the guard is the same event.
+    //
+    // The refused attempt in the middle is not decoration. Release is only
+    // ever late after a refusal, and that lateness is what Lock::acquire now
+    // waits out.
     let first = Lock::acquire(&paths).unwrap();
     assert!(matches!(
         Lock::acquire(&paths),
@@ -111,6 +115,7 @@ async fn a_lock_from_a_dead_host_does_not_block_the_machine() {
             who_holds(&paths.lock_file())
         );
     }
+
     // The file is still on disk. Existence is deliberately not the test.
     assert!(paths.lock_file().exists());
 }
