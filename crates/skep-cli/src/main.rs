@@ -19,6 +19,7 @@ usage:
   skep stop <service>         stop a service
   skep restart <service>      restart a service
   skep logs <service> [-n N]  show the most recent output
+  skep help                   show this
 
   skep snapshot <service> <name>          keep a copy of a service's data
   skep snapshots <service>                list the copies kept
