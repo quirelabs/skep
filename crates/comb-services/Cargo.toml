@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 
 # Published under the Quire Labs prefix; the library keeps its own name, so
 # every dependent still writes `use comb_services::...`.

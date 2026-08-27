@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    # Skep is macOS first and the catalog pins arm64 binaries only, so this
+    # has to be an Apple silicon runner. The step below fails loudly rather
+    # than quietly testing the wrong architecture if that ever changes.
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm the runner is Apple silicon
+        run: |
+          test "$(uname -m)" = "arm64" || {
+            echo "skep pins arm64 releases; this runner is $(uname -m)" >&2
+            exit 1
+          }
+
+      # rustup reads rust-toolchain.toml, so the pinned version is what runs.
+      - name: Toolchain
+        run: rustup show
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # What a laptop checkout runs. The heavy adapters skip here, loudly.
+      - name: Tests
+        run: cargo test --workspace
+
+      # The full reliability story: every adapter boots its real binary,
+      # including the ones whose releases run to hundreds of megabytes.
+      - name: Tests, including the heavy adapters
+        run: cargo test --workspace
+        env:
+          SKEP_TEST_HEAVY: "1"
+
+      # Downloads a pinned release for real and checks it against its hash, so
+      # an upstream artifact changing under us fails here rather than on
+      # someone's machine.
+      - name: Pinned releases still match their hashes
+        run: cargo test --workspace -- --ignored

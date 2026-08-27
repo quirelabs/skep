@@ -23,6 +23,8 @@ version = "0.0.0"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/quirelabs/skep"
+homepage = "https://skep.quirelabs.com"
+readme = "README.md"
 
 [workspace.dependencies]
 # Pinned to Zed v1.15.0, the same revision quirelabs/browser uses.
@@ -37,8 +39,10 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "e17dc4f9
 
 # crates.io has no namespaces, so the published names carry the prefix while
 # the libraries keep their own.
-comb = { package = "quire-comb", path = "crates/comb" }
-comb-services = { package = "quire-comb-services", path = "crates/comb-services" }
+# The version is what makes these publishable: cargo refuses a path
+# dependency without one.
+comb = { package = "quire-comb", version = "0.0.0", path = "crates/comb" }
+comb-services = { package = "quire-comb-services", version = "0.0.0", path = "crates/comb-services" }
 
 tokio = { version = "1", features = [
     "rt-multi-thread",

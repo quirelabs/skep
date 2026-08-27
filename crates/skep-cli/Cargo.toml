@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+# A product, not a dependency. crates.io carries the libraries only.
+publish = false
 
 [[bin]]
 name = "skep"
