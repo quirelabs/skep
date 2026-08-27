@@ -113,7 +113,7 @@ pub async fn project(
     // Read the state after acting, so the report describes the world as it is
     // now rather than as it was before the call.
     let latest = match client.send(&Request::Status).await {
-        Ok(Response::Status { snapshot }) => snapshot.services,
+        Ok(Response::Status { overview }) => overview.services,
         _ => running.to_vec(),
     };
 

@@ -2,7 +2,7 @@
 //! interface, which lives on GPUI's main thread. Everything crosses as a
 //! message; neither side reaches into the other.
 
-use comb::{Engine, Event, Host, InstanceId, LogLine, Snapshot};
+use comb::{Engine, Event, Host, InstanceId, LogLine, Overview};
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -24,7 +24,7 @@ pub enum Command {
 /// What the engine reports.
 pub enum Update {
     /// Everything at an instant, stamped so the replica knows what it covers.
-    Snapshot(Box<Snapshot>),
+    Overview(Box<Overview>),
     Event(Box<Event>),
     /// This process now owns the machine's services.
     Hosting,
@@ -76,7 +76,7 @@ async fn run(
     // two is buffered rather than lost. The replica discards what the snapshot
     // already covers.
     let mut events = engine.subscribe_events();
-    let _ = reports.send(Update::Snapshot(Box::new(engine.snapshot().await)));
+    let _ = reports.send(Update::Overview(Box::new(engine.overview().await)));
     let mut watching: Option<tokio::task::JoinHandle<()>> = None;
 
     loop {
@@ -109,7 +109,7 @@ async fn run(
                 }
                 // Falling behind is answered with the truth, not a guess.
                 Err(RecvError::Lagged(_)) => {
-                    let _ = reports.send(Update::Snapshot(Box::new(engine.snapshot().await)));
+                    let _ = reports.send(Update::Overview(Box::new(engine.overview().await)));
                 }
                 Err(RecvError::Closed) => return,
             },
@@ -137,7 +137,7 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
         Command::Stop(id) => engine.stop(&id).await,
         Command::Restart(id) => engine.restart(&id).await,
         Command::Resync => {
-            let _ = reports.send(Update::Snapshot(Box::new(engine.snapshot().await)));
+            let _ = reports.send(Update::Overview(Box::new(engine.overview().await)));
             return;
         }
         Command::Watch(_) => return,

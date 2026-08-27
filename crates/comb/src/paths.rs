@@ -42,6 +42,20 @@ impl Paths {
         self.root.join("data").join(instance_segments(id))
     }
 
+    /// Snapshots belong to a service and version, not to one instance, so a
+    /// branch and its parent draw on the same shelf.
+    pub fn snapshots_dir(&self, id: &InstanceId) -> PathBuf {
+        self.root
+            .join("data")
+            .join(id.service.as_str())
+            .join(id.version.as_str())
+            .join("snapshots")
+    }
+
+    pub fn snapshot_dir(&self, id: &InstanceId, name: &str) -> PathBuf {
+        self.snapshots_dir(id).join(name)
+    }
+
     pub fn log_file(&self, id: &InstanceId) -> PathBuf {
         self.root
             .join("logs")
@@ -111,5 +125,15 @@ mod tests {
             Path::new("/tmp/skep-test/logs/postgres/16/branches/wip.log")
         );
         assert_eq!(paths.socket(), Path::new("/tmp/skep-test/run/engine.sock"));
+        // A branch draws on the same shelf of snapshots as its parent.
+        assert_eq!(
+            paths.snapshot_dir(&branch, "before-migration"),
+            paths.snapshot_dir(&base, "before-migration")
+        );
+        assert!(
+            paths
+                .snapshot_dir(&base, "before-migration")
+                .ends_with("data/postgres/16/snapshots/before-migration")
+        );
     }
 }

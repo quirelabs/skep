@@ -1,9 +1,11 @@
 //! macOS process control. Linux will get a sibling file rather than cfg blocks
 //! threaded through this one.
 
+use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io;
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::ExitStatus;
@@ -139,4 +141,84 @@ pub async fn build_tools_missing() -> Option<String> {
         return Some("make is not available on this machine".to_string());
     }
     None
+}
+
+/// Whether a copy-on-write clone can apply between these two places. It needs
+/// one APFS volume, so this is checked rather than attempted: the difference
+/// between instant and "copying the whole thing" is worth saying out loud
+/// before it starts, not after.
+pub fn can_clone(from: &Path, into: &Path) -> bool {
+    match (volume(from), volume(into)) {
+        (Some(source), Some(target)) => source == target && source.1 == "apfs",
+        _ => false,
+    }
+}
+
+/// Identity of the filesystem a path sits on, and what kind it is. The device
+/// id answers "same volume"; statfs answers "which kind".
+fn volume(path: &Path) -> Option<(u64, String)> {
+    use std::os::unix::fs::MetadataExt;
+
+    let device = std::fs::metadata(path).ok()?.dev();
+    let name = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut info: libc::statfs = unsafe { std::mem::zeroed() };
+    // Safety: statfs writes into a buffer we own, for a path we own.
+    if unsafe { libc::statfs(name.as_ptr(), &mut info) } != 0 {
+        return None;
+    }
+    // Safety: f_fstypename is a NUL terminated name filled in by the kernel.
+    let kind = unsafe { CStr::from_ptr(info.f_fstypename.as_ptr()) }
+        .to_string_lossy()
+        .to_string();
+    Some((device, kind))
+}
+
+/// A copy-on-write clone. The destination must not exist yet.
+pub fn clone_directory(from: &Path, into: &Path) -> io::Result<()> {
+    let source = CString::new(from.as_os_str().as_bytes())?;
+    let target = CString::new(into.as_os_str().as_bytes())?;
+    // Safety: both paths are NUL terminated and owned for the call.
+    if unsafe { libc::clonefile(source.as_ptr(), target.as_ptr(), 0) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_clone_is_possible_within_one_volume() {
+        let root = std::env::temp_dir();
+        assert!(
+            can_clone(&root, &root),
+            "the temp directory should be APFS on any machine this runs on"
+        );
+    }
+
+    #[test]
+    fn a_path_that_is_not_there_cannot_be_cloned() {
+        assert!(!can_clone(
+            Path::new("/nowhere/at/all"),
+            &std::env::temp_dir()
+        ));
+    }
+
+    #[test]
+    fn cloning_reproduces_a_tree() {
+        let root = std::env::temp_dir().join(format!("skep-clone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("from").join("nested")).unwrap();
+        std::fs::write(root.join("from").join("nested").join("file"), b"data").unwrap();
+
+        clone_directory(&root.join("from"), &root.join("into")).unwrap();
+
+        assert_eq!(
+            std::fs::read(root.join("into").join("nested").join("file")).unwrap(),
+            b"data"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

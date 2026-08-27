@@ -36,3 +36,11 @@ pub async fn listener_on(_port: u16) -> Option<crate::ports::Listener> {
 pub async fn build_tools_missing() -> Option<String> {
     unreachable!("the platform module fails to compile before this is reachable")
 }
+
+pub fn can_clone(_from: &Path, _into: &Path) -> bool {
+    unreachable!("the platform module fails to compile before this is reachable")
+}
+
+pub fn clone_directory(_from: &Path, _into: &Path) -> io::Result<()> {
+    unreachable!("the platform module fails to compile before this is reachable")
+}

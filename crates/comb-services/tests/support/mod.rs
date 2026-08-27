@@ -76,6 +76,21 @@ pub async fn registered_cold(
     (engine, id, chosen)
 }
 
+/// Like `registered`, but with anything left from a previous run removed
+/// first. For tests whose subject is the data itself, where yesterday's rows
+/// would be today's failure.
+pub async fn registered_clean(
+    adapter: &'static dyn ServiceAdapter,
+    label: &str,
+    ports: &[&str],
+) -> (Engine, InstanceId, Vec<u16>) {
+    let paths = Paths::new(shared_home());
+    let version = Version::new(adapter.default_version()).unwrap();
+    let id = InstanceId::branch(adapter.name(), version.as_str(), label).unwrap();
+    let _ = std::fs::remove_dir_all(paths.data_dir(&id));
+    registered(adapter, label, ports).await
+}
+
 /// Installs the pinned release and registers one labelled instance on free
 /// ports, so tests never collide with each other or with the developer's own
 /// services.

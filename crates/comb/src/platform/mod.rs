@@ -11,7 +11,8 @@ use crate::error::{Error, Result};
 mod mac;
 #[cfg(target_os = "macos")]
 pub(crate) use mac::{
-    build_tools_missing, describe_exit, listener_on, restrict, terminate, try_lock_exclusive,
+    build_tools_missing, can_clone, clone_directory, describe_exit, listener_on, restrict,
+    terminate, try_lock_exclusive,
 };
 
 #[cfg(not(target_os = "macos"))]

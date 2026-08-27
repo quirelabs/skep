@@ -3,6 +3,16 @@
 
 use std::path::Path;
 
+/// A port nothing is listening on right now. Racy by nature, which is why the
+/// engine checks again before it spawns.
+pub fn free_port() -> Option<u16> {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .ok()?
+        .local_addr()
+        .ok()
+        .map(|address| address.port())
+}
+
 /// A process listening on a port we wanted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Listener {

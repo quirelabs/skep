@@ -96,10 +96,10 @@ async fn up() -> Result<()> {
     }
 
     let mut client = connect().await?;
-    let Response::Status { snapshot } = client.send(&Request::Status).await? else {
+    let Response::Status { overview } = client.send(&Request::Status).await? else {
         bail!("unexpected reply");
     };
-    let running = snapshot.services;
+    let running = overview.services;
 
     let mut failed = 0;
     for (name, wanted) in &project.services {
@@ -159,10 +159,10 @@ async fn act(request: Request) -> Result<()> {
 }
 
 async fn status() -> Result<()> {
-    let Response::Status { snapshot } = connect().await?.send(&Request::Status).await? else {
+    let Response::Status { overview } = connect().await?.send(&Request::Status).await? else {
         bail!("unexpected reply");
     };
-    let services = snapshot.services;
+    let services = overview.services;
     if services.is_empty() {
         println!("no services are registered");
         return Ok(());

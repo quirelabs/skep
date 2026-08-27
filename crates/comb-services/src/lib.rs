@@ -335,6 +335,31 @@ pub async fn bring_up(
     Ok((id, "started"))
 }
 
+/// A branch's spec: the same service on its own data and its own ports, which
+/// is all a branch is. Ports are allocated here so a branch never has to be
+/// told where to listen.
+pub fn branch_spec(from: &InstanceId, label: &Label, paths: &Paths) -> Result<ServiceSpec> {
+    let adapter = find(from.service.as_str()).ok_or_else(|| Error::UnknownService {
+        name: from.service.to_string(),
+        known: names().join(", "),
+    })?;
+
+    let mut request = Request::new()
+        .with_version(from.version.clone())
+        .with_label(label.clone());
+    for (port, _) in adapter.default_ports() {
+        let free = comb::free_port()
+            .ok_or_else(|| Error::InvalidId("no free port for the branch".to_string()))?;
+        request = request.with_port(*port, free);
+    }
+
+    let mut spec = adapter.spec(&request, paths)?;
+    for port in &mut spec.ports {
+        port.source = Some("branch".to_string());
+    }
+    Ok(spec)
+}
+
 /// The port a service is mainly known by, which the `port` shorthand sets.
 pub fn main_port(service: &str) -> Result<&'static str> {
     let (adapter, _) = lookup(service, None)?;

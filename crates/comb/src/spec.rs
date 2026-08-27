@@ -32,6 +32,11 @@ pub struct ServiceSpec {
     /// initdb. The engine runs these; adapters only describe them.
     #[serde(default)]
     pub prepare: Vec<PrepareStep>,
+    /// Files inside the data directory that describe a running process rather
+    /// than its data. A copied one convinces the next start that a server is
+    /// already up, so they are removed from every copy.
+    #[serde(default)]
+    pub residue: Vec<String>,
     #[serde(default)]
     pub health: HealthCheck,
     #[serde(default)]
@@ -55,6 +60,7 @@ impl ServiceSpec {
             data_dir: data_dir.into(),
             ports: Vec::new(),
             prepare: Vec::new(),
+            residue: Vec::new(),
             health: HealthCheck::default(),
             depends_on: Vec::new(),
             restart: RestartSpec::default(),
@@ -99,6 +105,11 @@ impl ServiceSpec {
 
     pub fn with_prepare<I: IntoIterator<Item = PrepareStep>>(mut self, steps: I) -> Self {
         self.prepare = steps.into_iter().collect();
+        self
+    }
+
+    pub fn with_residue<I: IntoIterator<Item = S>, S: Into<String>>(mut self, files: I) -> Self {
+        self.residue = files.into_iter().map(Into::into).collect();
         self
     }
 

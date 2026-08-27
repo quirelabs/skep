@@ -26,6 +26,21 @@ pub enum Error {
         known: String,
     },
 
+    #[error("{instance} already has a snapshot called {name}")]
+    SnapshotExists { instance: InstanceId, name: String },
+
+    #[error("{instance} has no snapshot called {name}")]
+    NoSuchSnapshot { instance: InstanceId, name: String },
+
+    #[error("could not copy {instance}: {reason}")]
+    Snapshot {
+        instance: InstanceId,
+        reason: String,
+    },
+
+    #[error("{0} is not a branch, so there is nothing to delete")]
+    NotABranch(InstanceId),
+
     #[error("no instance {0} is registered")]
     UnknownInstance(InstanceId),
 

@@ -71,7 +71,7 @@ impl Skep {
             Err(problem) => return Ok(*problem),
         };
         match ask(&mut client, Request::Status).await {
-            Ok(Response::Status { snapshot }) => json(&view::Report::of(&snapshot.services)),
+            Ok(Response::Status { overview }) => json(&view::Report::of(&overview.services)),
             Ok(other) => Ok(confused(other)),
             Err(problem) => Ok(*problem),
         }
@@ -208,7 +208,7 @@ impl Skep {
             Err(problem) => return Ok(*problem),
         };
         let running = match ask(&mut client, Request::Status).await {
-            Ok(Response::Status { snapshot }) => snapshot.services,
+            Ok(Response::Status { overview }) => overview.services,
             Ok(other) => return Ok(confused(other)),
             Err(problem) => return Ok(*problem),
         };
@@ -248,8 +248,8 @@ impl Skep {
     /// has to follow up with skep_status to learn what happened.
     async fn report_on(&self, client: &mut Client, id: &str) -> Result<CallToolResult, ErrorData> {
         match ask(client, Request::Status).await {
-            Ok(Response::Status { snapshot }) => {
-                match snapshot
+            Ok(Response::Status { overview }) => {
+                match overview
                     .services
                     .iter()
                     .find(|status| status.id.to_string() == id)

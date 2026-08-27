@@ -119,6 +119,9 @@ impl ServiceAdapter for Postgres {
             SOCKET_DIR.to_string(),
         ])
         .with_prepare([initialise])
+        // A copied postmaster.pid convinces the next start that a server is
+        // already running on data it cannot see.
+        .with_residue(["postmaster.pid", "postmaster.opts"])
         .with_ports([Port::new("postgres", port)])
         .with_health(HealthCheck::new(Probe::Postgres {
             port,

@@ -126,11 +126,11 @@ async fn a_client_drives_the_hosted_engine() {
         engine.status_of(&id).await.unwrap().state,
         ServiceState::Ready
     );
-    let Response::Status { snapshot } = client.send(&Request::Status).await.unwrap() else {
+    let Response::Status { overview } = client.send(&Request::Status).await.unwrap() else {
         panic!("expected a status")
     };
-    assert_eq!(snapshot.services.len(), 1);
-    assert_eq!(snapshot.services[0].state, ServiceState::Ready);
+    assert_eq!(overview.services.len(), 1);
+    assert_eq!(overview.services[0].state, ServiceState::Ready);
 
     let _ = stop.send(());
     serving.await.unwrap();

@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::engine::{ServiceStatus, Snapshot};
+use crate::engine::{Overview, ServiceStatus};
 use crate::event::{Event, EventKind};
 use crate::id::InstanceId;
 
@@ -34,13 +34,13 @@ impl Mirror {
 
     /// Replaces everything. The snapshot's stamp is what makes it possible to
     /// tell which buffered events it already accounts for.
-    pub fn reset(&mut self, snapshot: Snapshot) {
-        self.services = snapshot
+    pub fn reset(&mut self, overview: Overview) {
+        self.services = overview
             .services
             .into_iter()
             .map(|status| (status.id.clone(), status))
             .collect();
-        self.seq = snapshot.seq;
+        self.seq = overview.seq;
         self.seeded = true;
     }
 
@@ -200,7 +200,7 @@ mod tests {
 
     fn seeded() -> Mirror {
         let mut mirror = Mirror::new();
-        mirror.reset(Snapshot {
+        mirror.reset(Overview {
             seq: 10,
             services: vec![status("valkey@9", ServiceState::Stopped)],
         });
@@ -247,7 +247,7 @@ mod tests {
         );
 
         // And a snapshot puts it right again.
-        mirror.reset(Snapshot {
+        mirror.reset(Overview {
             seq: 13,
             services: vec![status("valkey@9", ServiceState::Ready)],
         });
@@ -368,7 +368,7 @@ mod tests {
     fn trouble_outranks_motion_and_motion_outranks_running() {
         let glyph = |services: Vec<ServiceStatus>| {
             let mut mirror = Mirror::new();
-            mirror.reset(Snapshot { seq: 0, services });
+            mirror.reset(Overview { seq: 0, services });
             mirror.summary().glyph()
         };
 

@@ -12,7 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 
-use crate::engine::{Engine, Snapshot};
+use crate::engine::{Engine, Overview};
 use crate::error::{Error, Result};
 use crate::event::LogLine;
 use crate::id::InstanceId;
@@ -82,7 +82,7 @@ pub enum Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "response", rename_all = "snake_case")]
 pub enum Response {
-    Status { snapshot: Box<Snapshot> },
+    Status { overview: Box<Overview> },
     Logs { lines: Vec<LogLine> },
     Done,
     Failed { message: String },
@@ -282,7 +282,7 @@ async fn answer(engine: &Engine, request: Request) -> Response {
     let outcome = match request {
         Request::Status => {
             return Response::Status {
-                snapshot: Box::new(engine.snapshot().await),
+                overview: Box::new(engine.overview().await),
             };
         }
         Request::Logs { instance, lines } => {

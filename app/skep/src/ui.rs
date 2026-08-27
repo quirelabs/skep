@@ -131,7 +131,7 @@ impl Skep {
         while let Ok(update) = self.updates.try_recv() {
             moved = true;
             match update {
-                Update::Snapshot(snapshot) => self.mirror.reset(*snapshot),
+                Update::Overview(overview) => self.mirror.reset(*overview),
                 Update::Event(event) => {
                     // Falling behind is answered by asking, never by guessing.
                     if self.mirror.apply(&event) == Applied::Resync {

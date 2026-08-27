@@ -59,12 +59,20 @@ pub struct ServiceStatus {
 }
 
 /// Everything at one instant, stamped with the event it is current as of.
+/// Named apart from a data Snapshot, which is a copy of a database.
 /// Without the stamp a client resyncing after a gap would have to guess which
 /// buffered events the snapshot already includes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Snapshot {
+pub struct Overview {
     pub seq: u64,
     pub services: Vec<ServiceStatus>,
+}
+
+/// A copy of a service's data, taken while nothing was writing to it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub name: String,
+    pub taken: Timestamp,
 }
 
 /// Owns the service graph and every state change in it. Cheap to clone: the
@@ -232,11 +240,11 @@ impl Engine {
     }
 
     /// Everything at once, stamped with the last event emitted.
-    pub async fn snapshot(&self) -> Snapshot {
+    pub async fn overview(&self) -> Overview {
         // Read under the lock, so the stamp cannot describe a different
         // instant from the services beside it.
         let instances = self.inner.instances.read().await;
-        Snapshot {
+        Overview {
             seq: self.inner.seq.load(Ordering::Relaxed),
             services: instances.values().map(Instance::status).collect(),
         }
@@ -736,6 +744,206 @@ impl Engine {
         } else {
             Err(failed(platform::describe_exit(&status)))
         }
+    }
+
+    /// Takes a copy of a service's data. Never from under a live server: if it
+    /// is running it is stopped first, which for a database is what makes the
+    /// copy consistent, and started again afterwards whether or not the copy
+    /// worked.
+    pub async fn snapshot(&self, id: &InstanceId, name: &str) -> Result<()> {
+        let name = crate::id::Label::new(name)?;
+        let spec = self.spec_of(id).await?;
+        let into = self.inner.paths.snapshot_dir(id, name.as_str());
+        if into.exists() {
+            return Err(Error::SnapshotExists {
+                instance: id.clone(),
+                name: name.to_string(),
+            });
+        }
+
+        let running = self.status_of(id).await?.state.is_running();
+        if running {
+            self.stop(id).await?;
+        }
+        let taken = self
+            .duplicate(id, &spec.data_dir, &into, &spec.residue)
+            .await;
+        if running {
+            self.start(id).await?;
+        }
+        taken
+    }
+
+    /// What has been kept, oldest name first.
+    pub async fn snapshots(&self, id: &InstanceId) -> Result<Vec<Snapshot>> {
+        let mut found = Vec::new();
+        let Ok(mut entries) = tokio::fs::read_dir(self.inner.paths.snapshots_dir(id)).await else {
+            return Ok(found);
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Scratch from an interrupted copy, which is nobody's snapshot.
+            if name.starts_with('.') {
+                continue;
+            }
+            if !entry
+                .file_type()
+                .await
+                .map(|kind| kind.is_dir())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let taken = entry
+                .metadata()
+                .await
+                .ok()
+                .and_then(|data| data.created().ok())
+                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|since| Timestamp::from_millis(since.as_millis() as u64))
+                .unwrap_or(Timestamp::from_millis(0));
+            found.push(Snapshot { name, taken });
+        }
+        found.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(found)
+    }
+
+    pub async fn remove_snapshot(&self, id: &InstanceId, name: &str) -> Result<()> {
+        let into = self.inner.paths.snapshot_dir(id, name);
+        if !into.is_dir() {
+            return Err(Error::NoSuchSnapshot {
+                instance: id.clone(),
+                name: name.to_string(),
+            });
+        }
+        tokio::fs::remove_dir_all(&into)
+            .await
+            .map_err(|error| Error::Snapshot {
+                instance: id.clone(),
+                reason: error.to_string(),
+            })
+    }
+
+    /// Brings up a second instance of a service on its own data, taken either
+    /// from a snapshot or from the service as it stands. The spec is built by
+    /// the caller, because knowing how to run a service is the catalog's job
+    /// and copying its data is this one's.
+    pub async fn branch(
+        &self,
+        from: &InstanceId,
+        spec: ServiceSpec,
+        snapshot: Option<&str>,
+    ) -> Result<InstanceId> {
+        let id = spec.id.clone();
+        if spec.data_dir.exists() {
+            return Err(Error::AlreadyRegistered(id));
+        }
+        let parent = self.spec_of(from).await?;
+
+        match snapshot {
+            Some(name) => {
+                let source = self.inner.paths.snapshot_dir(from, name);
+                if !source.is_dir() {
+                    return Err(Error::NoSuchSnapshot {
+                        instance: from.clone(),
+                        name: name.to_string(),
+                    });
+                }
+                self.duplicate(from, &source, &spec.data_dir, &parent.residue)
+                    .await?;
+            }
+            None => {
+                let running = self.status_of(from).await?.state.is_running();
+                if running {
+                    self.stop(from).await?;
+                }
+                let copied = self
+                    .duplicate(from, &parent.data_dir, &spec.data_dir, &parent.residue)
+                    .await;
+                if running {
+                    self.start(from).await?;
+                }
+                copied?;
+            }
+        }
+
+        self.upsert(spec).await?;
+        Ok(id)
+    }
+
+    /// A branch is an ordinary instance, so removing one is deregistering it
+    /// and taking its data with it. Only when it is stopped.
+    pub async fn remove_branch(&self, id: &InstanceId) -> Result<()> {
+        if !id.is_branch() {
+            return Err(Error::NotABranch(id.clone()));
+        }
+        let spec = self.spec_of(id).await?;
+        self.deregister(id).await?;
+        tokio::fs::remove_dir_all(&spec.data_dir)
+            .await
+            .map_err(|error| Error::Snapshot {
+                instance: id.clone(),
+                reason: error.to_string(),
+            })
+    }
+
+    /// Copies a data directory, saying which mechanism it is using before it
+    /// starts. Staged and renamed into place, so a half copy never looks like
+    /// a finished one.
+    async fn duplicate(
+        &self,
+        about: &InstanceId,
+        from: &Path,
+        into: &Path,
+        residue: &[String],
+    ) -> Result<()> {
+        let failed = |reason: String| Error::Snapshot {
+            instance: about.clone(),
+            reason,
+        };
+        let parent = into.parent().unwrap_or(Path::new("/")).to_path_buf();
+        tokio::fs::create_dir_all(&parent)
+            .await
+            .map_err(|error| failed(error.to_string()))?;
+
+        let how = crate::snapshot::Method::between(from, &parent);
+        let step = how.phrase().to_string();
+        self.set_activity(about, Some(step.clone())).await;
+        self.inner.emit(
+            Some(about.clone()),
+            EventKind::Preparing { step: step.clone() },
+        );
+        let started = Instant::now();
+
+        let scratch = ScratchDir::beside(into, about.service.as_str())
+            .map_err(|error| failed(error.to_string()))?;
+        let staged = scratch.join("data");
+        let (source, residue) = (from.to_path_buf(), residue.to_vec());
+        let building = staged.clone();
+        // Cloning and copying both block, and neither belongs on the runtime.
+        tokio::task::spawn_blocking(move || {
+            crate::snapshot::duplicate(&source, &building, how)?;
+            crate::snapshot::scrub(&building, &residue);
+            Ok::<_, std::io::Error>(())
+        })
+        .await
+        .map_err(|error| failed(error.to_string()))?
+        .map_err(|error| failed(error.to_string()))?;
+
+        scratch
+            .promote(&staged, into)
+            .await
+            .map_err(|error| failed(error.to_string()))?;
+
+        self.inner.emit(
+            Some(about.clone()),
+            EventKind::Prepared {
+                step,
+                took: started.elapsed(),
+            },
+        );
+        self.set_activity(about, None).await;
+        Ok(())
     }
 
     /// Looks at whether anything else holds the ports of services that are not
