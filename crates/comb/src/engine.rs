@@ -87,6 +87,7 @@ struct Inner {
     events: broadcast::Sender<Event>,
     seq: AtomicU64,
     paths: Paths,
+    sites: crate::proxy::Book,
 }
 
 struct Instance {
@@ -155,12 +156,47 @@ impl Engine {
                 events,
                 seq: AtomicU64::new(0),
                 paths,
+                sites: Default::default(),
             }),
         }
     }
 
     pub fn paths(&self) -> &Paths {
         &self.inner.paths
+    }
+
+    /// The live map the proxy reads. Shared rather than copied, so a project
+    /// adding a site reaches a host that is already serving.
+    pub fn sites(&self) -> crate::proxy::Book {
+        self.inner.sites.clone()
+    }
+
+    /// A snapshot, ordered, because it is shown to people and sent to agents.
+    pub fn site_list(&self) -> std::collections::BTreeMap<String, u16> {
+        self.inner
+            .sites
+            .read()
+            .map(|book| {
+                book.iter()
+                    .map(|(host, port)| (host.clone(), *port))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Adds sites, with later ones winning, and says which are new.
+    pub fn add_sites(&self, more: crate::proxy::Sites) -> Vec<String> {
+        let Ok(mut book) = self.inner.sites.write() else {
+            return Vec::new();
+        };
+        let mut added = Vec::new();
+        for (host, port) in more {
+            if book.insert(host.clone(), port) != Some(port) {
+                added.push(host);
+            }
+        }
+        added.sort();
+        added
     }
 
     pub async fn register(&self, spec: ServiceSpec) -> Result<()> {

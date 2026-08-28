@@ -135,6 +135,27 @@ impl Skep {
     }
 
     #[tool(
+        name = "skep_sites",
+        description = "Every hostname this machine serves over https, and the port each one \
+                       points at. Returns {\"sites\":[{\"url\":\"https://myapp.test:8443\",\
+                       \"host\":\"myapp.test\",\"port\":3000}]}. Skep does not run the app \
+                       behind a site, it puts a name and a certificate browsers trust in \
+                       front of a port something is already listening on. An empty list \
+                       means none are configured, which is not an error."
+    )]
+    async fn sites(&self) -> Result<CallToolResult, ErrorData> {
+        let mut client = match connect().await {
+            Ok(client) => client,
+            Err(problem) => return Ok(*problem),
+        };
+        match ask(&mut client, Request::Sites).await {
+            Ok(Response::Sites { sites }) => json(&view::Sites::of(&sites)),
+            Ok(other) => Ok(confused(other)),
+            Err(problem) => Ok(*problem),
+        }
+    }
+
+    #[tool(
         name = "skep_stop",
         description = "Stop a running service. Returns its status afterwards."
     )]

@@ -169,3 +169,31 @@ pub async fn project(
         services,
     }
 }
+
+/// Sites as an agent wants them: the url to actually use, not just the parts.
+#[derive(Debug, Serialize)]
+pub struct Sites {
+    pub sites: Vec<Site>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Site {
+    pub url: String,
+    pub host: String,
+    pub port: u16,
+}
+
+impl Sites {
+    pub fn of(sites: &std::collections::BTreeMap<String, u16>) -> Self {
+        Self {
+            sites: sites
+                .iter()
+                .map(|(host, port)| Site {
+                    url: format!("https://{host}:{}", comb::HTTPS_PORT),
+                    host: host.clone(),
+                    port: *port,
+                })
+                .collect(),
+        }
+    }
+}

@@ -25,6 +25,7 @@ usage:
   skep trust                  trust skep's certificate authority, so local
                               domains can serve real https (asks for a password)
   skep untrust                stop trusting it
+  skep sites                  every hostname this machine serves
   skep domains status         is local https actually working
   skep domains install        take ports 80 and 443 and route .test here
                               (needs sudo, and refuses to trample another tool)
@@ -81,6 +82,7 @@ async fn dispatch() -> Result<()> {
         }
         "logs" => logs(&rest).await,
         "domains" => domains::run(&rest).await,
+        "sites" => sites().await,
         "trust" => trust(),
         "untrust" => untrust(),
         "snapshot" => snapshot(&rest).await,
@@ -101,6 +103,24 @@ async fn dispatch() -> Result<()> {
 }
 
 /// Turns `postgres` or `postgres@16` into the instance the engine knows.
+/// Every hostname this machine serves, whether it came from settings or from
+/// a project that ran skep up.
+async fn sites() -> Result<()> {
+    let mut client = connect().await?;
+    let Response::Sites { sites } = client.send(&Request::Sites).await? else {
+        bail!("unexpected reply");
+    };
+    if sites.is_empty() {
+        println!("no sites. Add one to skep.toml or config.toml:");
+        println!("\n  [sites]\n  \"myapp.test\" = 3000");
+        return Ok(());
+    }
+    for (host, port) in sites {
+        println!("https://{host}:{}  to port {port}", comb::HTTPS_PORT);
+    }
+    Ok(())
+}
+
 /// Local work by design, so it needs no engine: the authority can be set up
 /// before anything is running, and it outlives any particular host.
 fn trust() -> Result<()> {
@@ -146,7 +166,7 @@ async fn up() -> Result<()> {
     })?;
     let project = project::load(&path)?;
     println!("{}", path.display());
-    if project.services.is_empty() {
+    if project.services.is_empty() && project.sites.is_empty() {
         println!("  nothing to start");
         return Ok(());
     }
@@ -156,6 +176,25 @@ async fn up() -> Result<()> {
         bail!("unexpected reply");
     };
     let running = overview.services;
+
+    // Sites first: they need nothing running, and a name that cannot be served
+    // is better said before a person waits for a database to boot.
+    let wanted_sites = project::sites(&Default::default(), &project)?;
+    if !wanted_sites.is_empty() {
+        let count = wanted_sites.len();
+        match client
+            .send(&Request::AddSites {
+                sites: wanted_sites.into_iter().collect(),
+            })
+            .await?
+        {
+            Response::Sites { .. } => {
+                println!("  {count} site{} served", if count == 1 { "" } else { "s" })
+            }
+            Response::Failed { message } => bail!(message),
+            other => bail!("unexpected reply: {other:?}"),
+        }
+    }
 
     let mut failed = 0;
     for (name, wanted) in &project.services {

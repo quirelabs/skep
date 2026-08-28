@@ -29,8 +29,9 @@ pub use acquire::{Build, Release, ensure};
 pub use certs::{Authority, Issued, valid_hostname};
 pub use dns::{PORT as DNS_PORT, Routing, SUFFIX, reply as dns_reply, routing, serve as serve_dns};
 pub use domains::{
-    Foreign, Forward, HELPER_PROTOCOL, Health, Hello, Layout, Owner, activate, become_user,
-    deactivate, foreign, health, invoking_user, is_root, place, remove,
+    Foreign, Forward, HELPER_PROTOCOL, Health, Hello, Layout, Owner, Serving, activate,
+    become_user, deactivate, foreign, health, invoking_user, is_root, place, remove,
+    serve_alongside,
 };
 pub use engine::{Engine, Overview, ServiceStatus, Snapshot};
 pub use error::{Error, Result};

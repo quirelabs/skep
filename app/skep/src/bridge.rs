@@ -38,6 +38,12 @@ pub enum Update {
         pid: Option<u32>,
     },
     Failed(String),
+    /// Every hostname this machine serves, and anything stopping it.
+    Sites {
+        sites: std::collections::BTreeMap<String, u16>,
+        trouble: Vec<String>,
+        trusted: bool,
+    },
     /// The tail that was already there when watching began.
     Logs(Vec<LogLine>),
     /// One line, as it is written.
@@ -67,6 +73,7 @@ async fn run(
     match Host::claim(engine.clone()).await {
         Ok(host) => {
             let _ = reports.send(Update::Hosting);
+            start_sites(&host, &reports).await;
             tokio::spawn(async move {
                 let _ = host.serve(std::future::pending()).await;
             });
@@ -127,6 +134,29 @@ async fn run(
 /// The tail that exists, then everything written from now on. Subscribing
 /// before reading the tail means a line written in between is repeated rather
 /// than lost, which is the better of the two.
+/// Local domains, started the moment this process owns the machine. The same
+/// call the command line makes, so the two cannot drift apart.
+async fn start_sites(host: &comb::Host, reports: &UnboundedSender<Update>) {
+    let paths = host.engine().paths().clone();
+    if let Ok(settings) = comb_services::project::settings(&paths)
+        && let Ok(wanted) = comb_services::project::sites(&settings, &Default::default())
+    {
+        host.engine().add_sites(wanted);
+    }
+
+    let Ok(authority) = comb::Authority::open(&paths) else {
+        return;
+    };
+    let trusted = authority.is_trusted();
+    let serving = comb::serve_alongside(host, std::sync::Arc::new(authority), comb::SUFFIX).await;
+
+    let _ = reports.send(Update::Sites {
+        sites: host.engine().site_list(),
+        trouble: serving.trouble,
+        trusted,
+    });
+}
+
 async fn follow(engine: Engine, id: InstanceId, reports: UnboundedSender<Update>) {
     let stream = engine.subscribe_logs(&id).await;
     if let Ok(tail) = engine.logs(&id, 300).await {
@@ -187,6 +217,7 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
             match Host::take_over(engine.clone(), std::time::Duration::from_secs(30)).await {
                 Ok(host) => {
                     let _ = reports.send(Update::Hosting);
+                    start_sites(&host, reports).await;
                     tokio::spawn(async move {
                         let _ = host.serve(std::future::pending()).await;
                     });

@@ -68,6 +68,81 @@ pub struct Owner {
     pub gid: u32,
 }
 
+/// What a host managed to start for local domains. Reported rather than
+/// printed, so the command line and the app can each say it their own way.
+#[derive(Debug, Default)]
+pub struct Serving {
+    pub https: Option<u16>,
+    pub http: Option<u16>,
+    pub dns: Option<u16>,
+    /// Anything that did not start, in words worth showing a person.
+    pub trouble: Vec<String>,
+}
+
+/// Starts everything local domains need beside a host, and stops it when the
+/// host stops. Started whether or not any site is configured yet, because a
+/// project running `skep up` adds sites to a host that is already going.
+pub async fn serve_alongside(
+    host: &crate::host::Host,
+    authority: std::sync::Arc<crate::certs::Authority>,
+    suffix: &str,
+) -> Serving {
+    let mut serving = Serving::default();
+
+    match tokio::net::TcpListener::bind(("127.0.0.1", HTTPS_PORT)).await {
+        Ok(listener) => {
+            let mut quitting = host.quitting();
+            let sites = host.engine().sites();
+            tokio::spawn(crate::proxy::serve(
+                listener,
+                sites,
+                authority,
+                async move {
+                    let _ = quitting.changed().await;
+                },
+            ));
+            serving.https = Some(HTTPS_PORT);
+        }
+        Err(error) => serving
+            .trouble
+            .push(format!("port {HTTPS_PORT} is not available: {error}")),
+    }
+
+    match tokio::net::TcpListener::bind(("127.0.0.1", HTTP_PORT)).await {
+        Ok(listener) => {
+            let mut quitting = host.quitting();
+            tokio::spawn(crate::proxy::redirect(listener, HTTPS_PORT, async move {
+                let _ = quitting.changed().await;
+            }));
+            serving.http = Some(HTTP_PORT);
+        }
+        Err(error) => serving
+            .trouble
+            .push(format!("port {HTTP_PORT} is not available: {error}")),
+    }
+
+    match tokio::net::UdpSocket::bind(("127.0.0.1", crate::dns::PORT)).await {
+        Ok(socket) => {
+            let mut quitting = host.quitting();
+            tokio::spawn(crate::dns::serve(socket, suffix.to_string(), async move {
+                let _ = quitting.changed().await;
+            }));
+            serving.dns = Some(crate::dns::PORT);
+        }
+        Err(error) => serving
+            .trouble
+            .push(format!("not answering .{suffix} names: {error}")),
+    }
+
+    if let crate::dns::Routing::Elsewhere { says } = crate::dns::routing(suffix) {
+        serving.trouble.push(format!(
+            "something else routes .{suffix} ({says}), so names will not reach skep"
+        ));
+    }
+
+    serving
+}
+
 /// Whether this process could write to the places an install touches.
 pub fn is_root() -> bool {
     platform::effective_user() == 0

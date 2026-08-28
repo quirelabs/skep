@@ -2,7 +2,7 @@
 //! derives from the event stream, so the interface cannot show a state the
 //! engine never reported.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use comb::{Applied, InstanceId, Label, LogLine, Mirror, ServiceState, ServiceStatus, Snapshot};
@@ -20,6 +20,7 @@ use crate::theme::Theme;
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Services,
+    Sites,
     Settings,
 }
 
@@ -27,6 +28,7 @@ enum Page {
 /// it yet. Settings sits apart at the bottom, where settings go.
 const RAIL: &[(&str, Option<Page>)] = &[
     ("Services", Some(Page::Services)),
+    ("Sites", Some(Page::Sites)),
     ("Projects", None),
     ("Logs", None),
     ("Mail", None),
@@ -76,6 +78,10 @@ pub struct Skep {
     copied: Option<(Copied, Instant)>,
     /// The copies kept for whichever service is open.
     kept: Vec<Snapshot>,
+    /// Every hostname this machine serves, and anything in the way of it.
+    sites: BTreeMap<String, u16>,
+    site_trouble: Vec<String>,
+    authority_trusted: bool,
     commands: UnboundedSender<Command>,
     updates: UnboundedReceiver<Update>,
 }
@@ -109,6 +115,9 @@ impl Skep {
             next_line: 0,
             copied: None,
             kept: Vec::new(),
+            sites: BTreeMap::new(),
+            site_trouble: Vec::new(),
+            authority_trusted: false,
             commands: bridge.commands,
             updates: bridge.updates,
         };
@@ -140,6 +149,15 @@ impl Skep {
                     if self.mirror.apply(&event) == Applied::Resync {
                         let _ = self.commands.send(Command::Resync);
                     }
+                }
+                Update::Sites {
+                    sites,
+                    trouble,
+                    trusted,
+                } => {
+                    self.sites = sites;
+                    self.site_trouble = trouble;
+                    self.authority_trusted = trusted;
                 }
                 Update::Hosting => {
                     self.connection = Connection::Hosting;
@@ -258,6 +276,7 @@ impl Render for Skep {
             .child(self.rail(cx))
             .child(match self.page {
                 Page::Services => self.content(cx),
+                Page::Sites => self.sites_page(cx),
                 Page::Settings => self.settings(cx),
             })
     }
@@ -328,6 +347,97 @@ impl Skep {
 
     /// Read only on purpose. The file is the interface; this explains what it
     /// currently means and opens it.
+    /// Sites are what skep puts in front of an app you already run, so the
+    /// page says the url and the port and nothing else. Anything in the way
+    /// is said plainly rather than left for a person to work out from a
+    /// browser warning.
+    fn sites_page(&self, _cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+
+        let mut rows = div().flex().flex_col().w_full();
+        if self.sites.is_empty() {
+            rows = rows.child(div().px_6().py_4().text_xs().text_color(theme.muted).child(
+                SharedString::from(
+                    "No sites yet. Put one in skep.toml or config.toml, then run skep up:\n\n\
+                         [sites]\n\"myapp.test\" = 3000",
+                ),
+            ));
+        }
+        for (host, port) in &self.sites {
+            rows = rows.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .min_w_0()
+                    .px_6()
+                    .py_3()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(div().min_w_0().child(SharedString::from(format!(
+                        "https://{host}:{}",
+                        comb::HTTPS_PORT
+                    ))))
+                    .child(
+                        div()
+                            .text_xs()
+                            .flex_shrink_0()
+                            .text_color(theme.muted)
+                            .child(SharedString::from(format!("port {port}"))),
+                    ),
+            );
+        }
+
+        let mut notes = div().flex().flex_col().w_full();
+        if !self.authority_trusted && !self.sites.is_empty() {
+            notes = notes.child(
+                self.note("Certificates are not trusted on this machine yet. Run skep trust."),
+            );
+        }
+        for trouble in &self.site_trouble {
+            notes = notes.child(self.note(trouble));
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .h_full()
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .w_full()
+                    .px_6()
+                    .py_4()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(SharedString::from("Sites")),
+                    ),
+            )
+            .child(notes)
+            .child(rows)
+            .into_any_element()
+    }
+
+    fn note(&self, text: &str) -> impl IntoElement {
+        div()
+            .w_full()
+            .min_w_0()
+            .px_6()
+            .py_3()
+            .text_xs()
+            .line_height(px(17.))
+            .text_color(self.theme.muted)
+            .child(SharedString::from(text.to_string()))
+    }
+
     fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
         let services: Vec<_> = self.mirror.services().cloned().collect();

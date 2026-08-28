@@ -34,6 +34,10 @@ use crate::error::{Error, Result};
 /// map means restarting it, which is what a config change already does.
 pub type Sites = HashMap<String, u16>;
 
+/// Shared, so a project can add its sites to a host that is already running
+/// rather than needing one restarted at it.
+pub type Book = Arc<std::sync::RwLock<Sites>>;
+
 /// Where sites are served until a privileged helper can hand over 80 and 443.
 /// A port in the url is the thing that milestone buys back.
 pub const HTTPS_PORT: u16 = 8443;
@@ -44,7 +48,7 @@ type Body = BoxBody<Bytes, hyper::Error>;
 /// Serves https for every configured site until `shutdown` completes.
 pub async fn serve(
     listener: TcpListener,
-    sites: Arc<Sites>,
+    sites: Book,
     authority: Arc<Authority>,
     shutdown: impl Future<Output = ()> + Send,
 ) -> Result<()> {
@@ -138,13 +142,14 @@ pub async fn redirect(
 
 async fn answer(
     request: Request<Incoming>,
-    sites: Arc<Sites>,
+    sites: Book,
     peer: SocketAddr,
 ) -> std::result::Result<Response<Body>, Infallible> {
     let Some(host) = host_of(&request) else {
         return Ok(say(StatusCode::BAD_REQUEST, "no host header"));
     };
-    let Some(&port) = sites.get(&host) else {
+    let found = sites.read().ok().and_then(|book| book.get(&host).copied());
+    let Some(port) = found else {
         return Ok(say(
             StatusCode::NOT_FOUND,
             &format!("{host} is not a site skep serves"),
@@ -211,7 +216,7 @@ async fn forward(
 /// name a client asks for would turn the authority into an oracle.
 struct ByName {
     authority: Arc<Authority>,
-    sites: Arc<Sites>,
+    sites: Book,
     issued: Mutex<HashMap<String, Arc<CertifiedKey>>>,
 }
 
@@ -219,7 +224,14 @@ struct ByName {
 impl std::fmt::Debug for ByName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ByName")
-            .field("sites", &self.sites.keys().collect::<Vec<_>>())
+            .field(
+                "sites",
+                &self
+                    .sites
+                    .read()
+                    .map(|book| book.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            )
             .finish()
     }
 }
@@ -227,7 +239,7 @@ impl std::fmt::Debug for ByName {
 impl ResolvesServerCert for ByName {
     fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         let name = hello.server_name()?.to_string();
-        if !self.sites.contains_key(&name) {
+        if !self.sites.read().ok()?.contains_key(&name) {
             return None;
         }
         if let Some(ready) = self.issued.lock().ok()?.get(&name) {

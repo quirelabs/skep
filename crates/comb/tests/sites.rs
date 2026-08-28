@@ -67,7 +67,7 @@ async fn proxy(home: &TestHome, sites: Sites) -> (Running, Arc<Authority>) {
 
     let serving = authority.clone();
     tokio::spawn(async move {
-        let _ = comb::serve_sites(listener, Arc::new(sites), serving, async {
+        let _ = comb::serve_sites(listener, Arc::new(sites.into()), serving, async {
             let _ = stopped.await;
         })
         .await;

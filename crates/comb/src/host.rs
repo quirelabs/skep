@@ -77,6 +77,12 @@ pub enum Request {
         instance: InstanceId,
         lines: usize,
     },
+    /// What hostnames this machine serves.
+    Sites,
+    /// Teaches a running host about a project's sites.
+    AddSites {
+        sites: std::collections::BTreeMap<String, u16>,
+    },
     Snapshot {
         instance: InstanceId,
         name: String,
@@ -103,11 +109,22 @@ pub enum Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "response", rename_all = "snake_case")]
 pub enum Response {
-    Status { overview: Box<Overview> },
-    Logs { lines: Vec<LogLine> },
-    Snapshots { snapshots: Vec<crate::Snapshot> },
+    Status {
+        overview: Box<Overview>,
+    },
+    Logs {
+        lines: Vec<LogLine>,
+    },
+    Snapshots {
+        snapshots: Vec<crate::Snapshot>,
+    },
+    Sites {
+        sites: std::collections::BTreeMap<String, u16>,
+    },
     Done,
-    Failed { message: String },
+    Failed {
+        message: String,
+    },
 }
 
 /// Proof that this process owns the machine's services. The kernel releases it
@@ -338,6 +355,17 @@ async fn answer(engine: &Engine, request: Request) -> Response {
         Request::Status => {
             return Response::Status {
                 overview: Box::new(engine.overview().await),
+            };
+        }
+        Request::Sites => {
+            return Response::Sites {
+                sites: engine.site_list(),
+            };
+        }
+        Request::AddSites { sites } => {
+            engine.add_sites(sites.into_iter().collect());
+            return Response::Sites {
+                sites: engine.site_list(),
             };
         }
         Request::Logs { instance, lines } => {
