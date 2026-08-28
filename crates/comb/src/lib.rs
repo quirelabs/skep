@@ -3,6 +3,7 @@
 
 mod acquire;
 mod certs;
+mod dns;
 mod engine;
 mod error;
 mod event;
@@ -25,6 +26,7 @@ mod time;
 
 pub use acquire::{Build, Release, ensure};
 pub use certs::{Authority, Issued, valid_hostname};
+pub use dns::{PORT as DNS_PORT, Routing, SUFFIX, reply as dns_reply, routing, serve as serve_dns};
 pub use engine::{Engine, Overview, ServiceStatus, Snapshot};
 pub use error::{Error, Result};
 pub use event::{Event, EventKind, LogLine, LogStream};

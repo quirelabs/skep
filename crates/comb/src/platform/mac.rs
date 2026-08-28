@@ -185,6 +185,13 @@ pub fn clone_directory(from: &Path, into: &Path) -> io::Result<()> {
     }
 }
 
+/// Where macOS looks when it sends a whole domain somewhere other than the
+/// usual resolvers. Writing here needs root, which is why it is the last thing
+/// local domains need and the first thing that asks for a password.
+pub fn resolver_file(suffix: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from("/etc/resolver").join(suffix)
+}
+
 /// The system trust store. Writing to it is what needs an administrator, and
 /// why trusting the root is a step a person takes on purpose.
 const SYSTEM_KEYCHAIN: &str = "/Library/Keychains/System.keychain";

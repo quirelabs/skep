@@ -84,6 +84,8 @@ async fn serve_sites(host: &Host) -> Result<()> {
         println!("  https://{host_name}:{} to port {port}", comb::HTTPS_PORT);
     }
 
+    resolve_names(host).await?;
+
     let mut quitting = host.quitting();
     let sites = Arc::new(sites);
     tokio::spawn(comb::serve_sites(https, sites, authority, async move {
@@ -93,6 +95,44 @@ async fn serve_sites(host: &Host) -> Result<()> {
     tokio::spawn(comb::redirect(http, comb::HTTPS_PORT, async move {
         let _ = quitting.changed().await;
     }));
+    Ok(())
+}
+
+/// Answers for the managed suffix. Unprivileged, because macOS routes a whole
+/// domain to any port once `/etc/resolver` says so. Writing that file is the
+/// part that needs root, and until it exists nothing reaches this.
+async fn resolve_names(host: &Host) -> Result<()> {
+    let socket = match tokio::net::UdpSocket::bind(("127.0.0.1", comb::DNS_PORT)).await {
+        Ok(socket) => socket,
+        Err(error) => {
+            println!("  not answering .{} names: {error}", comb::SUFFIX);
+            return Ok(());
+        }
+    };
+
+    match comb::routing(comb::SUFFIX) {
+        comb::Routing::Ours => {}
+        other => {
+            if let comb::Routing::Elsewhere { says } = &other {
+                println!("  something else already routes .{}: {says}", comb::SUFFIX);
+                println!("  names will not reach skep until that points here.");
+            } else {
+                println!("  .{} names do not resolve yet.", comb::SUFFIX);
+            }
+            println!("  /etc/resolver/{} needs to say:", comb::SUFFIX);
+            println!("    nameserver 127.0.0.1");
+            println!("    port {}", comb::DNS_PORT);
+        }
+    }
+
+    let mut quitting = host.quitting();
+    tokio::spawn(comb::serve_dns(
+        socket,
+        comb::SUFFIX.to_string(),
+        async move {
+            let _ = quitting.changed().await;
+        },
+    ));
     Ok(())
 }
 
