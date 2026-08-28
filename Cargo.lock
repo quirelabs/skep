@@ -5164,6 +5164,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "skep-helper"
+version = "0.0.0"
+dependencies = [
+ "quire-comb",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "skep-mcp"
 version = "0.0.0"
 dependencies = [

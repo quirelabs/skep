@@ -5,6 +5,7 @@ members = [
     "crates/fake-service",
     "crates/comb-services",
     "crates/skep-cli",
+    "crates/skep-helper",
     "crates/skep-mcp",
     "app/skep",
 ]
@@ -14,6 +15,7 @@ default-members = [
     "crates/comb",
     "crates/comb-services",
     "crates/skep-cli",
+    "crates/skep-helper",
     "crates/skep-mcp",
     "app/skep",
 ]

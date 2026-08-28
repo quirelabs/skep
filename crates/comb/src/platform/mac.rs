@@ -185,6 +185,132 @@ pub fn clone_directory(from: &Path, into: &Path) -> io::Result<()> {
     }
 }
 
+/// Who this process is really running as.
+pub fn effective_user() -> u32 {
+    // Safety: geteuid cannot fail and touches nothing.
+    unsafe { libc::geteuid() }
+}
+
+pub fn effective_group() -> u32 {
+    // Safety: getegid cannot fail and touches nothing.
+    unsafe { libc::getegid() }
+}
+
+/// The launchd job that owns the privileged ports.
+pub const HELPER_LABEL: &str = "com.quirelabs.skep.helper";
+
+/// A launchd daemon description. Started at boot and restarted if it dies,
+/// because a forwarder that stays down makes every local domain fail with no
+/// hint as to why.
+pub fn daemon_plist(label: &str, program: &Path, args: &[String]) -> String {
+    let mut arguments = String::new();
+    for value in std::iter::once(program.display().to_string()).chain(args.iter().cloned()) {
+        arguments.push_str(&format!("    <string>{}</string>\n", escaped(&value)));
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n\
+         <dict>\n\
+         \x20 <key>Label</key>\n\
+         \x20 <string>{label}</string>\n\
+         \x20 <key>ProgramArguments</key>\n\
+         \x20 <array>\n{arguments}\x20 </array>\n\
+         \x20 <key>RunAtLoad</key>\n\
+         \x20 <true/>\n\
+         \x20 <key>KeepAlive</key>\n\
+         \x20 <true/>\n\
+         </dict>\n\
+         </plist>\n"
+    )
+}
+
+/// A path with an ampersand in it would otherwise produce a plist launchd
+/// refuses to read.
+fn escaped(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+pub fn load_daemon(plist: &Path) -> io::Result<()> {
+    launchctl(&["bootstrap", "system"], Some(plist))
+}
+
+pub fn unload_daemon(label: &str) -> io::Result<()> {
+    launchctl(&["bootout", &format!("system/{label}")], None)
+}
+
+fn launchctl(args: &[&str], path: Option<&Path>) -> io::Result<()> {
+    let mut command = Command::new("launchctl");
+    command.args(args);
+    if let Some(path) = path {
+        command.arg(path);
+    }
+    let output = command.output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(io::Error::other(if said.is_empty() {
+        format!("launchctl {} failed", args.join(" "))
+    } else {
+        said
+    }))
+}
+
+/// macOS caches resolution, so a file that has been written is not proof that
+/// anything resolves through it yet.
+pub fn flush_dns() -> io::Result<()> {
+    let _ = Command::new("dscacheutil").arg("-flushcache").output()?;
+    let _ = Command::new("killall")
+        .args(["-HUP", "mDNSResponder"])
+        .output()?;
+    Ok(())
+}
+
+/// Asks the system resolver, not our own server, so the answer proves the
+/// whole path works rather than that we can talk to ourselves.
+pub fn resolves_to(name: &str) -> Vec<String> {
+    let Ok(output) = Command::new("dscacheutil")
+        .args(["-q", "host", "-a", "name", name])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix("ip_address: "))
+        .map(|address| address.trim().to_string())
+        .collect()
+}
+
+/// Gives up root for good. The group goes first, because after the user id
+/// changes there is no privilege left to change it with.
+pub fn drop_privileges(uid: u32, gid: u32) -> io::Result<()> {
+    if uid == 0 {
+        return Err(io::Error::other("refusing to drop privileges to root"));
+    }
+    // Safety: both calls only change this process's credentials.
+    unsafe {
+        if libc::setgid(gid) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if libc::setuid(uid) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // If root can be picked back up, it was never really given away.
+        if libc::setuid(0) == 0 {
+            return Err(io::Error::other(
+                "root was still available after dropping it",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Where macOS looks when it sends a whole domain somewhere other than the
 /// usual resolvers. Writing here needs root, which is why it is the last thing
 /// local domains need and the first thing that asks for a password.

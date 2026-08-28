@@ -9,6 +9,15 @@ pub enum Error {
     #[error("invalid id: {0}")]
     InvalidId(String),
 
+    #[error("something else already routes this domain")]
+    ResolverInUse {
+        says: String,
+        likely: Option<String>,
+    },
+
+    #[error("{0}")]
+    Domains(String),
+
     #[error("could not issue a certificate: {0}")]
     Certificate(String),
 

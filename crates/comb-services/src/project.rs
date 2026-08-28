@@ -87,6 +87,15 @@ const TEMPLATE: &str = "\
 #
 #   [services.mailpit]
 #   ports = { http = 8025, smtp = 1025 }
+#
+# Give an app you already run a hostname and real https. Skep does not start
+# the app, only puts a name and a certificate in front of the port:
+#
+#   [sites]
+#   \"myapp.test\" = 3000
+#
+# Names ending in .test resolve on their own. Any other name works too, but
+# nothing routes it to this machine, so it needs your own /etc/hosts entry.
 ";
 
 /// Skep's own settings. A machine with no settings has defaults, which is not

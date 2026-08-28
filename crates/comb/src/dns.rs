@@ -46,13 +46,10 @@ pub enum Routing {
     Ours,
 }
 
-/// Reads what the resolver file currently says.
-pub fn routing(suffix: &str) -> Routing {
-    let path = crate::platform::resolver_file(suffix);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Routing::Missing;
-    };
-
+/// Whether a resolver file sends names to this server. macOS reads an omitted
+/// port as 53, which skep cannot bind, so a file without one is never ours no
+/// matter what nameserver it names.
+pub(crate) fn points_here(text: &str) -> bool {
     let mut nameserver = None;
     let mut port = 53;
     for line in text.lines() {
@@ -63,8 +60,22 @@ pub fn routing(suffix: &str) -> Routing {
             _ => {}
         }
     }
+    nameserver.as_deref() == Some("127.0.0.1") && port == PORT
+}
 
-    if nameserver.as_deref() == Some("127.0.0.1") && port == PORT {
+/// What skep needs that file to say.
+pub fn resolver_text() -> String {
+    format!("nameserver 127.0.0.1\nport {PORT}\n")
+}
+
+/// Reads what the resolver file currently says.
+pub fn routing(suffix: &str) -> Routing {
+    let path = crate::platform::resolver_file(suffix);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Routing::Missing;
+    };
+
+    if points_here(&text) {
         Routing::Ours
     } else {
         Routing::Elsewhere {

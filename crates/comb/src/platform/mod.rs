@@ -11,9 +11,10 @@ use crate::error::{Error, Result};
 mod mac;
 #[cfg(target_os = "macos")]
 pub(crate) use mac::{
-    build_tools_missing, can_clone, clone_directory, describe_exit, listener_on, resolver_file,
-    restrict, root_is_trusted, terminate, trust_root, try_lock_exclusive, untrust_root,
-    write_private,
+    HELPER_LABEL, build_tools_missing, can_clone, clone_directory, daemon_plist, describe_exit,
+    drop_privileges, effective_group, effective_user, flush_dns, listener_on, load_daemon,
+    resolver_file, resolves_to, restrict, root_is_trusted, terminate, trust_root,
+    try_lock_exclusive, unload_daemon, untrust_root, write_private,
 };
 
 #[cfg(not(target_os = "macos"))]

@@ -2,6 +2,7 @@
 //! starts one behind your back, because a background host nobody asked for is
 //! how two of them end up racing.
 
+mod domains;
 mod serve;
 
 use anyhow::{Result, anyhow, bail};
@@ -24,6 +25,10 @@ usage:
   skep trust                  trust skep's certificate authority, so local
                               domains can serve real https (asks for a password)
   skep untrust                stop trusting it
+  skep domains status         is local https actually working
+  skep domains install        take ports 80 and 443 and route .test here
+                              (needs sudo, and refuses to trample another tool)
+  skep domains uninstall      give all of that back
 
   skep snapshot <service> <name>          keep a copy of a service's data
   skep snapshots <service>                list the copies kept
@@ -75,6 +80,7 @@ async fn dispatch() -> Result<()> {
             .await
         }
         "logs" => logs(&rest).await,
+        "domains" => domains::run(&rest).await,
         "trust" => trust(),
         "untrust" => untrust(),
         "snapshot" => snapshot(&rest).await,

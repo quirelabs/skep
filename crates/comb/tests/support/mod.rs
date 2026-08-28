@@ -42,6 +42,20 @@ use comb::{BinarySpec, InstanceId, LogLine, ServiceSpec};
 use tokio::sync::broadcast::Receiver;
 use tokio::time::timeout;
 
+/// libtest captures the print macros, so a notice written with println only
+/// shows up when a test fails. Writing to the real stderr is not captured,
+/// which is what keeps a skip from passing for a green run.
+pub fn shout(message: &str) {
+    use std::io::Write;
+    use std::os::fd::FromRawFd;
+
+    // Safety: fd 2 is the process's stderr, and the handle is forgotten rather
+    // than dropped, so the descriptor is never closed.
+    let mut stderr = unsafe { std::fs::File::from_raw_fd(2) };
+    let _ = stderr.write_all(format!("{message}\n").as_bytes());
+    std::mem::forget(stderr);
+}
+
 /// A throwaway `~/.skep` that cleans itself up.
 pub struct TestHome {
     root: PathBuf,
