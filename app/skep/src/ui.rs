@@ -42,16 +42,24 @@ const RAIL: &[(&str, &str, Option<Page>)] = &[
 /// device pixels only when its size divides by sixteen. At two times that
 /// means 16 or 32 and nothing between, and 16 is the rail's size. Growing it
 /// to 18 or 20 would soften every glyph, so extra room comes from padding.
-const GLYPH: f32 = 16.;
+/// The thin weight is eight units in a 256 unit box, so a glyph sits on whole
+/// device pixels only at sizes that divide by sixteen: at two times that is 16
+/// or 32 and nothing between. 20 is a quarter pixel off and softens very
+/// slightly, which is the price of the presence it buys.
+const GLYPH: f32 = 20.;
 
-/// Wide enough to hold the traffic lights, which sit inside the rail rather
-/// than in a titlebar above it. Collapsing hides the words, not the buttons,
-/// so the narrow width is set by them rather than by the icons.
+const SETTINGS_GLYPH: &str = "sliders-horizontal";
+const COLLAPSE_GLYPH: &str = "sidebar-simple";
+
 const RAIL_WIDE: f32 = 208.;
-const RAIL_NARROW: f32 = 92.;
+/// Just wide enough for a glyph in its own square. The traffic lights live in
+/// the titlebar rather than in here, so nothing else sets this width.
+const RAIL_NARROW: f32 = 56.;
 
-/// The traffic lights occupy the top left corner, so nothing else may.
+/// The strip across the top of the window. The traffic lights sit in its left
+/// and nothing else may, so everything in it starts clear of them.
 const TITLEBAR: f32 = 44.;
+const LIGHTS: f32 = 84.;
 
 /// Every motion in the interface is shorter than this. Anything slower reads
 /// as the machine being slow rather than as the interface being alive.
@@ -312,16 +320,24 @@ impl Render for Skep {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
+            .flex_col()
             .size_full()
             .bg(self.theme.base)
             .text_color(self.theme.text)
             .body()
-            .child(self.rail(cx))
-            .child(match self.page {
-                Page::Services => self.content(cx),
-                Page::Sites => self.sites_page(cx),
-                Page::Settings => self.settings(cx),
-            })
+            .child(self.titlebar(cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.rail(cx))
+                    .child(match self.page {
+                        Page::Services => self.content(cx),
+                        Page::Sites => self.sites_page(cx),
+                        Page::Settings => self.settings(cx),
+                    }),
+            )
     }
 }
 
@@ -345,32 +361,34 @@ impl Skep {
             .border_r_1()
             .border_color(self.theme.border)
             .pb_3()
-            .child(self.titlebar(cx))
+            .pt_2()
             .gap_0p5()
             .children(items)
             .child(div().flex_1())
             .child(self.rail_item(
                 RAIL.len(),
                 "Settings",
-                "sliders-horizontal",
+                SETTINGS_GLYPH,
                 Some(Page::Settings),
                 cx,
             ))
             .into_any_element()
     }
 
-    /// The window has no titlebar of its own, so this row is it: the traffic
-    /// lights sit in its left, and the whole strip drags and zooms the window
-    /// the way a real one would.
+    /// The window has no titlebar of its own, so this strip is it: the traffic
+    /// lights sit in its left, and it drags and zooms the window the way a
+    /// real one would. It spans the window rather than the rail, so the
+    /// control that shuts the rail is still there once it is shut.
     fn titlebar(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id("titlebar")
             .flex()
             .items_center()
-            .justify_end()
             .w_full()
             .h(px(TITLEBAR))
-            .px_3()
+            .flex_shrink_0()
+            .pl(px(LIGHTS))
+            .pr_3()
             .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
                 window.start_window_move();
             })
@@ -388,10 +406,11 @@ impl Skep {
                     .size(px(28.))
                     .rounded_md()
                     .cursor_pointer()
-                    .hover(|style| style.bg(self.theme.raised))
+                    .text_color(self.theme.muted)
+                    .hover(|style| style.bg(self.theme.raised).text_color(self.theme.text))
                     .child(
                         svg()
-                            .path("icons/sidebar-simple.svg")
+                            .path(format!("icons/{COLLAPSE_GLYPH}.svg"))
                             .size(px(GLYPH))
                             .text_color(self.theme.muted),
                     )
@@ -433,7 +452,7 @@ impl Skep {
             .text_color(colour);
 
         if self.collapsed {
-            item = item.justify_center().px_0();
+            item = item.justify_center().size(px(36.)).p_0().mx_auto();
         }
         // The selected row is a surface rather than an accent fill: orange is
         // reserved for what you press and what is moving, and a whole row of
@@ -538,8 +557,7 @@ impl Skep {
                     .items_center()
                     .w_full()
                     .px_6()
-                    .h(px(TITLEBAR))
-                    .flex_shrink_0()
+                    .py_4()
                     .border_b_1()
                     .border_color(theme.border)
                     .child(div().title().child(SharedString::from("Sites"))),
@@ -577,8 +595,7 @@ impl Skep {
                     .justify_between()
                     .w_full()
                     .px_6()
-                    .h(px(TITLEBAR))
-                    .flex_shrink_0()
+                    .py_4()
                     .border_b_1()
                     .border_color(theme.border)
                     .child(div().title().child(SharedString::from("Settings")))
@@ -1226,18 +1243,36 @@ impl Skep {
 mod tests {
     use gpui::AssetSource;
 
-    use super::RAIL;
+    use super::{COLLAPSE_GLYPH, RAIL, SETTINGS_GLYPH};
     use crate::icons::Icons;
 
-    /// A glyph that does not resolve fails silently at runtime: the rail draws
-    /// an empty space and nothing says why. Catching the typo here is the
-    /// difference between compiling and appearing.
+    /// A glyph that does not resolve fails silently at runtime: gpui draws
+    /// nothing and the element stays clickable, so the control is invisible
+    /// but still works. Checking only the rail missed exactly that, because
+    /// the collapse control is not in it.
+    #[test]
+    fn every_icon_on_disk_is_registered() {
+        let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(directory).expect("the icons directory exists") {
+            let path = entry.expect("a readable entry").path();
+            if path.extension().is_none_or(|kind| kind != "svg") {
+                continue;
+            }
+            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            assert!(
+                Icons.load(&format!("icons/{name}.svg")).unwrap().is_some(),
+                "{name}.svg is in the assets directory but not in the icons table, \
+                 so anything asking for it draws nothing"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no icons were found to check");
+    }
+
     #[test]
     fn every_glyph_the_rail_asks_for_exists() {
-        for (name, glyph, _) in RAIL
-            .iter()
-            .chain([&("Settings", "sliders-horizontal", None)])
-        {
+        for (name, glyph, _) in RAIL.iter().chain([&("Settings", SETTINGS_GLYPH, None)]) {
             let found = Icons
                 .load(&format!("icons/{glyph}.svg"))
                 .expect("looking one up cannot fail");
@@ -1247,6 +1282,16 @@ mod tests {
                 "{glyph} does not look like an svg"
             );
         }
+    }
+
+    #[test]
+    fn the_collapse_control_has_a_glyph() {
+        assert!(
+            Icons
+                .load(&format!("icons/{COLLAPSE_GLYPH}.svg"))
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

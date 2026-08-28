@@ -26,6 +26,7 @@ icons! {
     "sparkle" => "sparkle",
     "sliders-horizontal" => "sliders-horizontal",
     "circles-three" => "circles-three",
+    "sidebar-simple" => "sidebar-simple",
 }
 
 /// Compiled in rather than read from disk, so the app is one file and an icon
