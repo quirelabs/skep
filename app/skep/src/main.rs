@@ -2,6 +2,7 @@
 //! is open, and takes them down with it when it closes.
 
 mod bridge;
+mod icons;
 mod platform;
 mod theme;
 mod ui;
@@ -57,47 +58,49 @@ fn main() -> Result<()> {
         });
     }
 
-    gpui_platform::application().run(move |cx: &mut App| {
-        // AppKit only, and only here.
-        let menubar = objc2_foundation::MainThreadMarker::new()
-            .map(|mtm| platform::Menubar::new(mtm, commands.clone()));
+    gpui_platform::application()
+        .with_assets(crate::icons::Icons)
+        .run(move |cx: &mut App| {
+            // AppKit only, and only here.
+            let menubar = objc2_foundation::MainThreadMarker::new()
+                .map(|mtm| platform::Menubar::new(mtm, commands.clone()));
 
-        let bounds = Bounds::centered(None, size(px(860.), px(560.)), cx);
-        let window = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("Skep".into()),
+            let bounds = Bounds::centered(None, size(px(860.), px(560.)), cx);
+            let window = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        titlebar: Some(TitlebarOptions {
+                            title: Some("Skep".into()),
+                            ..Default::default()
+                        }),
                         ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                |window, cx| cx.new(|cx| ui::Skep::new(bridge, menubar, window, cx)),
-            )
-            .expect("a window");
+                    },
+                    |window, cx| cx.new(|cx| ui::Skep::new(bridge, menubar, window, cx)),
+                )
+                .expect("a window");
 
-        // Services live and die with their host, so quitting stops them in
-        // dependency order and waits for that to finish.
-        let stopping = engine.clone();
-        let handle = runtime.clone();
-        cx.on_app_quit(move |cx| {
-            let _ = window.update(cx, |skep, _, cx| skep.stopping(cx));
-            let engine = stopping.clone();
-            let handle = handle.clone();
-            async move {
-                let (finished, waiting) = tokio::sync::oneshot::channel();
-                handle.spawn(async move {
-                    let _ = engine.stop_everything().await;
-                    let _ = finished.send(());
-                });
-                let _ = waiting.await;
-            }
-        })
-        .detach();
+            // Services live and die with their host, so quitting stops them in
+            // dependency order and waits for that to finish.
+            let stopping = engine.clone();
+            let handle = runtime.clone();
+            cx.on_app_quit(move |cx| {
+                let _ = window.update(cx, |skep, _, cx| skep.stopping(cx));
+                let engine = stopping.clone();
+                let handle = handle.clone();
+                async move {
+                    let (finished, waiting) = tokio::sync::oneshot::channel();
+                    handle.spawn(async move {
+                        let _ = engine.stop_everything().await;
+                        let _ = finished.send(());
+                    });
+                    let _ = waiting.await;
+                }
+            })
+            .detach();
 
-        cx.activate(true);
-    });
+            cx.activate(true);
+        });
 
     Ok(())
 }

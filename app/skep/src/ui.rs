@@ -10,7 +10,7 @@ use gpui::{
     Animation, AnimationExt, AnyElement, ClipboardItem, Context, FontWeight, Hsla,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, div, ease_in_out, pulsating_between,
-    px,
+    px, svg,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -27,14 +27,20 @@ enum Page {
 
 /// The rail shows what skep is designed to have, dimmed where it does not have
 /// it yet. Settings sits apart at the bottom, where settings go.
-const RAIL: &[(&str, Option<Page>)] = &[
-    ("Services", Some(Page::Services)),
-    ("Sites", Some(Page::Sites)),
-    ("Projects", None),
-    ("Logs", None),
-    ("Mail", None),
-    ("Agent", None),
+const RAIL: &[(&str, &str, Option<Page>)] = &[
+    // A skep is a straw beehive and the engine inside it is called comb, so
+    // the cell is the app's own shape rather than a borrowed one.
+    ("Services", "hexagon", Some(Page::Services)),
+    ("Sites", "globe-simple", Some(Page::Sites)),
+    ("Projects", "squares-four", None),
+    ("Logs", "list-dashes", None),
+    ("Mail", "envelope-simple", None),
+    ("Agent", "sparkle", None),
 ];
+
+/// Small enough that the thin weight lands on a single device pixel, which is
+/// the whole reason for choosing it.
+const GLYPH: f32 = 16.;
 
 /// Every motion in the interface is shorter than this. Anything slower reads
 /// as the machine being slow rather than as the interface being alive.
@@ -308,8 +314,8 @@ impl Render for Skep {
 impl Skep {
     fn rail(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut items = Vec::with_capacity(RAIL.len());
-        for (index, (name, page)) in RAIL.iter().enumerate() {
-            items.push(self.rail_item(index, name, *page, cx));
+        for (index, (name, glyph, page)) in RAIL.iter().enumerate() {
+            items.push(self.rail_item(index, name, glyph, *page, cx));
         }
 
         div()
@@ -325,7 +331,13 @@ impl Skep {
             .gap_0p5()
             .children(items)
             .child(div().flex_1())
-            .child(self.rail_item(RAIL.len(), "Settings", Some(Page::Settings), cx))
+            .child(self.rail_item(
+                RAIL.len(),
+                "Settings",
+                "sliders-horizontal",
+                Some(Page::Settings),
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -333,15 +345,33 @@ impl Skep {
         &self,
         index: usize,
         name: &'static str,
+        glyph: &'static str,
         page: Option<Page>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let built = page.is_some();
         let here = page == Some(self.page);
+        let colour = if here {
+            self.theme.text
+        } else if built {
+            self.theme.muted
+        } else {
+            self.theme.idle
+        };
         let item = div()
             .id(("rail", index))
+            .flex()
+            .items_center()
+            .gap_2()
             .px_6()
             .py_1()
+            .child(
+                svg()
+                    .path(format!("icons/{glyph}.svg"))
+                    .size(px(GLYPH))
+                    .flex_shrink_0()
+                    .text_color(colour),
+            )
             .text_color(if here {
                 self.theme.text
             } else if built {
@@ -1113,5 +1143,38 @@ impl Skep {
                 let _ = commands.send(command.clone());
             })
             .child(SharedString::from(label))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::AssetSource;
+
+    use super::RAIL;
+    use crate::icons::Icons;
+
+    /// A glyph that does not resolve fails silently at runtime: the rail draws
+    /// an empty space and nothing says why. Catching the typo here is the
+    /// difference between compiling and appearing.
+    #[test]
+    fn every_glyph_the_rail_asks_for_exists() {
+        for (name, glyph, _) in RAIL
+            .iter()
+            .chain([&("Settings", "sliders-horizontal", None)])
+        {
+            let found = Icons
+                .load(&format!("icons/{glyph}.svg"))
+                .expect("looking one up cannot fail");
+            let bytes = found.unwrap_or_else(|| panic!("{name} wants {glyph}, which is not here"));
+            assert!(
+                bytes.starts_with(b"<svg"),
+                "{glyph} does not look like an svg"
+            );
+        }
+    }
+
+    #[test]
+    fn a_glyph_that_is_not_there_is_absent_rather_than_wrong() {
+        assert!(Icons.load("icons/nothing-like-this.svg").unwrap().is_none());
     }
 }
