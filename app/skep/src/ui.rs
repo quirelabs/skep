@@ -52,12 +52,16 @@ const SETTINGS_GLYPH: &str = "sliders-horizontal";
 const COLLAPSE_GLYPH: &str = "sidebar-simple";
 
 const RAIL_WIDE: f32 = 208.;
-/// Just wide enough for a glyph in its own square. The traffic lights live in
-/// the titlebar rather than in here, so nothing else sets this width.
-const RAIL_NARROW: f32 = 56.;
 
-/// The strip across the top of the window. The traffic lights sit in its left
-/// and nothing else may, so everything in it starts clear of them.
+/// How far a page heading must stand clear of the traffic lights: whatever
+/// width the rail is not currently covering for it.
+fn clearance(rail: f32) -> f32 {
+    (LIGHTS - rail).max(0.)
+}
+
+/// The band across the top of the window. The traffic lights sit in its left,
+/// in the rail while the rail is open and over the page header once it is not,
+/// so both have to stand this tall and leave that corner alone.
 const TITLEBAR: f32 = 44.;
 const LIGHTS: f32 = 84.;
 
@@ -110,8 +114,15 @@ pub struct Skep {
     authority_trusted: bool,
     commands: UnboundedSender<Command>,
     updates: UnboundedReceiver<Update>,
-    /// Whether the rail shows words beside its glyphs.
-    collapsed: bool,
+    /// Where the rail is sliding from and to, and when it started. Keeping
+    /// the start rather than a flag is what lets a toggle mid slide begin
+    /// from where the rail actually is instead of jumping.
+    rail_from: f32,
+    rail_to: f32,
+    rail_since: Instant,
+    /// Changing this restarts the slide, which is how the animation is told
+    /// to run again rather than only on first appearance.
+    rail_moves: usize,
     /// Dropping this stops the appearance following the system.
     _following: Subscription,
 }
@@ -170,7 +181,10 @@ impl Skep {
             authority_trusted: false,
             commands: bridge.commands,
             updates: bridge.updates,
-            collapsed: false,
+            rail_from: RAIL_WIDE,
+            rail_to: RAIL_WIDE,
+            rail_since: Instant::now(),
+            rail_moves: 0,
             _following: following,
         };
         skep.reflect();
@@ -320,24 +334,16 @@ impl Render for Skep {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
-            .flex_col()
             .size_full()
             .bg(self.theme.base)
             .text_color(self.theme.text)
             .body()
-            .child(self.titlebar(cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.rail(cx))
-                    .child(match self.page {
-                        Page::Services => self.content(cx),
-                        Page::Sites => self.sites_page(cx),
-                        Page::Settings => self.settings(cx),
-                    }),
-            )
+            .child(self.rail(cx))
+            .child(match self.page {
+                Page::Services => self.content(cx),
+                Page::Sites => self.sites_page(cx),
+                Page::Settings => self.settings(cx),
+            })
     }
 }
 
@@ -348,20 +354,19 @@ impl Skep {
             items.push(self.rail_item(index, name, glyph, *page, cx));
         }
 
+        let (from, to, moves) = (self.rail_from, self.rail_to, self.rail_moves);
+        let edge = self.theme.border;
         div()
             .flex()
             .flex_col()
-            .w(px(if self.collapsed {
-                RAIL_NARROW
-            } else {
-                RAIL_WIDE
-            }))
             .h_full()
             .flex_shrink_0()
+            // Clipped, so the words hold their shape on the way out instead of
+            // rewrapping into a narrower and narrower column.
+            .overflow_hidden()
             .border_r_1()
-            .border_color(self.theme.border)
             .pb_3()
-            .pt_2()
+            .child(self.rail_top())
             .gap_0p5()
             .children(items)
             .child(div().flex_1())
@@ -372,31 +377,67 @@ impl Skep {
                 Some(Page::Settings),
                 cx,
             ))
+            .with_animation(
+                ("rail", moves),
+                Animation::new(MOTION).with_easing(ease_in_out),
+                move |rail, delta| {
+                    let width = from + (to - from) * delta;
+                    // A line with nothing behind it is not an edge.
+                    rail.w(px(width)).border_color(if width < 1. {
+                        gpui::transparent_black()
+                    } else {
+                        edge
+                    })
+                },
+            )
             .into_any_element()
     }
 
-    /// The window has no titlebar of its own, so this strip is it: the traffic
-    /// lights sit in its left, and it drags and zooms the window the way a
-    /// real one would. It spans the window rather than the rail, so the
-    /// control that shuts the rail is still there once it is shut.
-    fn titlebar(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The rail's own top band. Empty on purpose: the traffic lights are
+    /// drawn over it by the window, and it drags the way a titlebar would.
+    fn toggle_rail(&mut self) {
+        let current = self.rail_width();
+        let opening = self.rail_to == 0.;
+        self.rail_from = current;
+        self.rail_to = if opening { RAIL_WIDE } else { 0. };
+        self.rail_since = Instant::now();
+        self.rail_moves += 1;
+    }
+
+    /// Where the rail is at this instant, which is not where it is going. A
+    /// toggle part way through a slide starts from this rather than from the
+    /// width the last slide began at, so reversing does not jump.
+    fn rail_width(&self) -> f32 {
+        let progress =
+            (self.rail_since.elapsed().as_secs_f32() / MOTION.as_secs_f32()).clamp(0., 1.);
+        self.rail_from + (self.rail_to - self.rail_from) * ease_in_out(progress)
+    }
+
+    fn rail_top(&self) -> AnyElement {
         div()
-            .id("titlebar")
-            .flex()
-            .items_center()
+            .id("rail-top")
             .w_full()
             .h(px(TITLEBAR))
             .flex_shrink_0()
-            .pl(px(LIGHTS))
-            .pr_3()
             .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
                 window.start_window_move();
             })
-            .on_click(cx.listener(|_, click: &gpui::ClickEvent, window, _| {
-                if click.click_count() == 2 {
-                    window.titlebar_double_click();
-                }
-            }))
+            .into_any_element()
+    }
+
+    /// A page's heading, with the control that shuts the rail beside it. It
+    /// lives here rather than in the rail because a control that goes away
+    /// when you use it cannot bring back what it took.
+    ///
+    /// The padding grows as the rail shrinks, by exactly as much as the rail
+    /// gives up, so the traffic lights never land on the words.
+    fn page_title(&self, title: &'static str, cx: &mut Context<Self>) -> AnyElement {
+        let (from, to, moves) = (self.rail_from, self.rail_to, self.rail_moves);
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .flex_shrink_0()
             .child(
                 div()
                     .id("collapse")
@@ -404,10 +445,10 @@ impl Skep {
                     .items_center()
                     .justify_center()
                     .size(px(28.))
+                    .flex_shrink_0()
                     .rounded_md()
                     .cursor_pointer()
-                    .text_color(self.theme.muted)
-                    .hover(|style| style.bg(self.theme.raised).text_color(self.theme.text))
+                    .hover(|style| style.bg(self.theme.raised))
                     .child(
                         svg()
                             .path(format!("icons/{COLLAPSE_GLYPH}.svg"))
@@ -415,9 +456,15 @@ impl Skep {
                             .text_color(self.theme.muted),
                     )
                     .on_click(cx.listener(|skep, _, _, cx| {
-                        skep.collapsed = !skep.collapsed;
+                        skep.toggle_rail();
                         cx.notify();
                     })),
+            )
+            .child(div().title().child(SharedString::from(title)))
+            .with_animation(
+                ("title", moves),
+                Animation::new(MOTION).with_easing(ease_in_out),
+                move |title, delta| title.pl(px(clearance(from + (to - from) * delta))),
             )
             .into_any_element()
     }
@@ -444,6 +491,8 @@ impl Skep {
             .id(("rail", index))
             .flex()
             .items_center()
+            .w(px(RAIL_WIDE - 16.))
+            .flex_shrink_0()
             .gap_3()
             .mx_2()
             .px_3()
@@ -451,9 +500,6 @@ impl Skep {
             .rounded_md()
             .text_color(colour);
 
-        if self.collapsed {
-            item = item.justify_center().size(px(36.)).p_0().mx_auto();
-        }
         // The selected row is a surface rather than an accent fill: orange is
         // reserved for what you press and what is moving, and a whole row of
         // it would drown both.
@@ -466,22 +512,20 @@ impl Skep {
                 .path(format!("icons/{glyph}.svg"))
                 .size(px(GLYPH))
                 .flex_shrink_0()
-                .text_color(colour),
+                .text_color(if here { self.theme.accent } else { colour }),
         );
 
-        if !self.collapsed {
-            item = item.child(
-                div()
-                    .body()
-                    .min_w_0()
-                    .font_weight(if here {
-                        FontWeight::MEDIUM
-                    } else {
-                        FontWeight::NORMAL
-                    })
-                    .child(SharedString::from(name)),
-            );
-        }
+        item = item.child(
+            div()
+                .body()
+                .min_w_0()
+                .font_weight(if here {
+                    FontWeight::MEDIUM
+                } else {
+                    FontWeight::NORMAL
+                })
+                .child(SharedString::from(name)),
+        );
 
         match page {
             Some(page) => item
@@ -496,7 +540,7 @@ impl Skep {
         }
     }
 
-    fn sites_page(&self, _cx: &mut Context<Self>) -> AnyElement {
+    fn sites_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
 
         let mut rows = div().flex().flex_col().w_full();
@@ -556,11 +600,13 @@ impl Skep {
                     .flex()
                     .items_center()
                     .w_full()
-                    .px_6()
-                    .py_4()
+                    .pl_4()
+                    .pr_6()
+                    .h(px(TITLEBAR))
+                    .flex_shrink_0()
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(div().title().child(SharedString::from("Sites"))),
+                    .child(self.page_title("Sites", cx)),
             )
             .child(notes)
             .child(rows)
@@ -594,11 +640,13 @@ impl Skep {
                     .items_center()
                     .justify_between()
                     .w_full()
-                    .px_6()
-                    .py_4()
+                    .pl_4()
+                    .pr_6()
+                    .h(px(TITLEBAR))
+                    .flex_shrink_0()
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(div().title().child(SharedString::from("Settings")))
+                    .child(self.page_title("Settings", cx))
                     .child(self.open_settings(cx)),
             )
             .child(
@@ -709,7 +757,7 @@ impl Skep {
             .flex_1()
             .min_w_0()
             .h_full()
-            .child(self.header())
+            .child(self.header(cx))
             .children(self.banner())
             .child(
                 div()
@@ -739,18 +787,19 @@ impl Skep {
             .child(SharedString::from(what))
     }
 
-    fn header(&self) -> impl IntoElement {
+    fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let summary = self.mirror.summary();
         div()
             .flex()
             .items_center()
             .justify_between()
-            .px_6()
+            .pl_4()
+            .pr_6()
             .h(px(TITLEBAR))
             .flex_shrink_0()
             .border_b_1()
             .border_color(self.theme.border)
-            .child(div().title().child(SharedString::from("Services")))
+            .child(self.page_title("Services", cx))
             .child(
                 div()
                     .label()
