@@ -80,6 +80,14 @@ objc2-foundation = { version = "0.3", features = [
     "NSDictionary",
 ] }
 sha2 = "0.10"
+# The proxy behind local domains. rustls is pinned to ring so a clone builds
+# without cmake or a C toolchain.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+
 # Certificates for local domains. Defaults to the ring provider, which keeps
 # cargo build free of cmake and a C toolchain.
 # Already in the tree through rcgen, whose own API speaks these types.

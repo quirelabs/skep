@@ -17,6 +17,11 @@ pub const SETTINGS: &str = "config.toml";
 pub struct Project {
     #[serde(default)]
     pub services: BTreeMap<String, Service>,
+    /// Hostnames this project wants, each pointing at a port it already runs
+    /// something on. Skep gives the app a name and a certificate; it does not
+    /// start the app.
+    #[serde(default)]
+    pub sites: BTreeMap<String, u16>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -29,6 +34,18 @@ pub struct Service {
     /// For services that listen on more than one, by name.
     #[serde(default)]
     pub ports: BTreeMap<String, u16>,
+}
+
+/// The sites a project asks for, with settings underneath and the project
+/// winning where both name the same host. Validated here so a hostname that
+/// could never be issued a certificate fails at config time.
+pub fn sites(settings: &Project, project: &Project) -> Result<comb::Sites> {
+    let mut all = comb::Sites::new();
+    for (host, port) in settings.sites.iter().chain(project.sites.iter()) {
+        let host = comb::valid_hostname(host)?;
+        all.insert(host.to_ascii_lowercase(), *port);
+    }
+    Ok(all)
 }
 
 /// Walks up from `start`, so the command works from any subdirectory.

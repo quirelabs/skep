@@ -241,6 +241,12 @@ impl Host {
     /// Serves until `until` resolves, then stops every service. In v1 services
     /// live and die with their host; a detached daemon is a later feature, not
     /// an accident of shutdown.
+    /// Lets work started alongside the host stop when the host does, so sites
+    /// are not left serving for an engine that has gone.
+    pub fn quitting(&self) -> watch::Receiver<bool> {
+        self.quit.subscribe()
+    }
+
     pub async fn serve(self, until: impl Future<Output = ()>) -> Result<()> {
         tokio::pin!(until);
         let mut asked = self.quit.subscribe();

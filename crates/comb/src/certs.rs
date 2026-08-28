@@ -87,7 +87,7 @@ impl Authority {
 
     /// A certificate for one host, reused until it comes close to expiry.
     pub fn issue(&self, host: &str) -> Result<Issued> {
-        let host = checked_host(host)?;
+        let host = valid_hostname(host)?;
 
         let dir = self.dir.join("hosts");
         fs::create_dir_all(&dir).map_err(Error::Io)?;
@@ -204,8 +204,9 @@ fn still_good(certificate_file: &Path, key_file: &Path, expiry_file: &Path) -> O
 }
 
 /// A hostname becomes a filename, so this is a security boundary and not just
-/// tidiness: no separators, no traversal, no empty labels.
-fn checked_host(host: &str) -> Result<&str> {
+/// tidiness: no separators, no traversal, no empty labels. Config uses the
+/// same rule, so a name that cannot be issued for cannot be configured.
+pub fn valid_hostname(host: &str) -> Result<&str> {
     let refuse = || Error::InvalidHost {
         host: host.to_string(),
     };

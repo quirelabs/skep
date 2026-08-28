@@ -14,7 +14,12 @@ readme.workspace = true
 name = "comb"
 
 [dependencies]
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 rcgen = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
