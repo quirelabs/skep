@@ -5181,6 +5181,7 @@ name = "skep-app"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "block2 0.6.2",
  "gpui",
  "gpui_platform",
  "objc2 0.6.4",

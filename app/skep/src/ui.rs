@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use comb::{Applied, InstanceId, Label, LogLine, Mirror, ServiceState, ServiceStatus, Snapshot};
 use gpui::{
     Animation, AnimationExt, AnyElement, ClipboardItem, Context, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, div, ease_in_out, pulsating_between,
     px, svg,
 };
@@ -68,9 +68,6 @@ fn clearance(rail: f32) -> f32 {
 /// so both have to stand this tall and leave that corner alone.
 const TITLEBAR: f32 = 44.;
 
-/// How much of the window a message gets. Mail is written to be looked at, so
-/// the pane is the larger half of what is left.
-const READING: f32 = 380.;
 const LIGHTS: f32 = 84.;
 
 /// Every motion in the interface is shorter than this. Anything slower reads
@@ -130,6 +127,8 @@ pub struct Skep {
     /// element that knows where the reading pane is has to tell it on every
     /// frame and cannot borrow the view to do so.
     preview: Rc<RefCell<Option<Preview>>>,
+    /// Where the list is scrolled to, so a bar can be drawn showing it.
+    mail_scroll: ScrollHandle,
     /// Every hostname this machine serves, and anything in the way of it.
     sites: BTreeMap<String, u16>,
     site_trouble: Vec<String>,
@@ -203,6 +202,7 @@ impl Skep {
             opened: None,
             mail_trouble: None,
             preview: Rc::new(RefCell::new(None)),
+            mail_scroll: ScrollHandle::new(),
             sites: BTreeMap::new(),
             site_trouble: Vec::new(),
             authority_trusted: false,
@@ -788,18 +788,92 @@ impl Skep {
                             })),
                     ),
             )
+            .child(self.mail_columns())
             .child(
                 div()
-                    .id("mail-list")
+                    .relative()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .child(rows),
+                    .child(
+                        div()
+                            .id("mail-list")
+                            .flex()
+                            .flex_col()
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.mail_scroll)
+                            .child(rows),
+                    )
+                    .children(self.scrollbar()),
             )
             .children(self.opened.as_ref().map(|body| self.reading(body, cx)))
             .into_any_element()
+    }
+
+    /// What each column of the list is. Without these the times read as
+    /// numbers and the sender reads as just another line of text.
+    fn mail_columns(&self) -> AnyElement {
+        let theme = &self.theme;
+        let label = |text: &'static str| {
+            div()
+                .caption()
+                .text_color(theme.muted)
+                .child(SharedString::from(text))
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .w_full()
+            .px_6()
+            .py_1()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(div().size(px(6.)).flex_shrink_0())
+            .child(label("From").w(px(180.)))
+            .child(label("Subject").w(px(220.)))
+            .child(label("Preview").flex_1().min_w_0())
+            .child(label("Time").flex_shrink_0())
+            .into_any_element()
+    }
+
+    /// How far down the list is, drawn. gpui has no scrollbar of its own at
+    /// this revision, so this is the scroll handle's numbers made visible.
+    fn scrollbar(&self) -> Option<AnyElement> {
+        // Worked in plain numbers: pixels do not divide into each other.
+        let viewport = f32::from(self.mail_scroll.bounds().size.height);
+        let hidden = f32::from(self.mail_scroll.max_offset().y);
+        if hidden <= 1. || viewport <= 0. {
+            return None;
+        }
+
+        let content = viewport + hidden;
+        let tall = (viewport / content * viewport).max(28.);
+        let travelled = (-f32::from(self.mail_scroll.offset().y) / hidden).clamp(0., 1.);
+        let top = (viewport - tall) * travelled;
+
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .w(px(10.))
+                .h_full()
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(top))
+                        .right(px(2.))
+                        .w(px(4.))
+                        .h(px(tall))
+                        .rounded_full()
+                        .bg(self.theme.idle),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Where a message is read. A fixed pane rather than a row that grows,
@@ -837,10 +911,14 @@ impl Skep {
             .flex_col()
             .w_full()
             .min_w_0()
-            .h(px(READING))
-            .flex_shrink_0()
-            .border_t_1()
+            .flex_1()
+            .min_h_0()
+            // A message and the list of them get the same room, and the seam
+            // between them is a band rather than a hairline: they are two
+            // different things, not two halves of one.
+            .border_t_2()
             .border_color(theme.border)
+            .bg(theme.raised)
             .child(
                 div()
                     .flex()

@@ -12,18 +12,71 @@
 
 use std::ptr::NonNull;
 
+use block2::Block;
 use gpui::{Bounds, Pixels, Window};
-use objc2::MainThreadMarker;
-use objc2::MainThreadOnly;
 use objc2::rc::Retained;
-use objc2_app_kit::NSView;
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
-use objc2_web_kit::{WKWebView, WKWebViewConfiguration};
+use objc2::runtime::{NSObjectProtocol, ProtocolObject};
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::{NSView, NSWorkspace};
+use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize, NSString};
+use objc2_web_kit::{
+    WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
+    WKWebViewConfiguration,
+};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+define_class!(
+    /// Decides what a click is allowed to do. A message is a document to read,
+    /// not a place to browse: following a link inside the pane would replace
+    /// the message with a web page and there would be no way back to it. The
+    /// browser already does browsing, so links go there.
+    #[unsafe(super(NSObject))]
+    #[name = "SkepMailNavigation"]
+    #[thread_kind = MainThreadOnly]
+    struct Navigation;
+
+    unsafe impl NSObjectProtocol for Navigation {}
+
+    unsafe impl WKNavigationDelegate for Navigation {
+        #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
+        fn decide(
+            &self,
+            _webview: &WKWebView,
+            action: &WKNavigationAction,
+            handler: &Block<dyn Fn(WKNavigationActionPolicy)>,
+        ) {
+            let target = unsafe { action.request().URL() };
+            let scheme = target
+                .as_ref()
+                .and_then(|url| url.scheme())
+                .map(|scheme| scheme.to_string())
+                .unwrap_or_default();
+
+            // Anything that would go out over the network leaves for the
+            // browser. Everything else is the message loading itself.
+            if scheme == "http" || scheme == "https" {
+                if let Some(url) = target {
+                    NSWorkspace::sharedWorkspace().openURL(&url);
+                }
+                (*handler).call((WKNavigationActionPolicy::Cancel,));
+            } else {
+                (*handler).call((WKNavigationActionPolicy::Allow,));
+            }
+        }
+    }
+);
+
+impl Navigation {
+    fn new(marker: MainThreadMarker) -> Retained<Self> {
+        unsafe { msg_send![Self::alloc(marker), init] }
+    }
+}
 
 pub struct Preview {
     view: Retained<WKWebView>,
     parent: Retained<NSView>,
+    /// Held because the webview does not keep its delegate alive.
+    _navigation: Retained<Navigation>,
     showing: bool,
 }
 
@@ -59,12 +112,16 @@ impl Preview {
                 &configuration,
             )
         };
+        let navigation = Navigation::new(marker);
+        unsafe { view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*navigation))) };
+
         view.setHidden(true);
         parent.addSubview(&view);
 
         Some(Self {
             view,
             parent,
+            _navigation: navigation,
             showing: false,
         })
     }
