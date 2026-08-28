@@ -9,13 +9,14 @@ use comb::{Applied, InstanceId, Label, LogLine, Mirror, ServiceState, ServiceSta
 use gpui::{
     Animation, AnimationExt, AnyElement, ClipboardItem, Context, FontWeight, Hsla,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, ease_in_out, pulsating_between, px,
+    StatefulInteractiveElement, Styled, Subscription, Window, div, ease_in_out, pulsating_between,
+    px,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::bridge::{Bridge, Command, Update};
 use crate::platform::Menubar;
-use crate::theme::Theme;
+use crate::theme::{Scale, Theme};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
@@ -84,10 +85,32 @@ pub struct Skep {
     authority_trusted: bool,
     commands: UnboundedSender<Command>,
     updates: UnboundedReceiver<Update>,
+    /// Dropping this stops the appearance following the system.
+    _following: Subscription,
 }
 
 impl Skep {
-    pub fn new(bridge: Bridge, menubar: Option<Menubar>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        bridge: Bridge,
+        menubar: Option<Menubar>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // Light and dark are one system, and the machine already knows which
+        // one a person is in. Following it beats asking them twice.
+        let following = {
+            let this = cx.entity().downgrade();
+            window.observe_window_appearance(move |window, cx| {
+                let appearance = window.appearance();
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |skep, cx| {
+                        skep.theme = Theme::for_appearance(appearance);
+                        cx.notify();
+                    });
+                }
+            })
+        };
+
         // The engine speaks on a tokio runtime, so its messages are collected
         // here rather than delivered. Draining is cheap and keeps every update
         // arriving on GPUI's own thread.
@@ -106,7 +129,7 @@ impl Skep {
         let mut skep = Self {
             page: Page::Services,
             menubar,
-            theme: Theme::dark(),
+            theme: Theme::for_appearance(window.appearance()),
             mirror: Mirror::new(),
             connection: Connection::Waiting,
             problem: None,
@@ -120,6 +143,7 @@ impl Skep {
             authority_trusted: false,
             commands: bridge.commands,
             updates: bridge.updates,
+            _following: following,
         };
         skep.reflect();
         skep
@@ -271,8 +295,7 @@ impl Render for Skep {
             .size_full()
             .bg(self.theme.base)
             .text_color(self.theme.text)
-            .text_sm()
-            .line_height(px(20.))
+            .body()
             .child(self.rail(cx))
             .child(match self.page {
                 Page::Services => self.content(cx),
@@ -356,7 +379,7 @@ impl Skep {
 
         let mut rows = div().flex().flex_col().w_full();
         if self.sites.is_empty() {
-            rows = rows.child(div().px_6().py_4().text_xs().text_color(theme.muted).child(
+            rows = rows.child(div().px_6().py_4().label().text_color(theme.muted).child(
                 SharedString::from(
                     "No sites yet. Put one in skep.toml or config.toml, then run skep up:\n\n\
                          [sites]\n\"myapp.test\" = 3000",
@@ -381,7 +404,7 @@ impl Skep {
                     ))))
                     .child(
                         div()
-                            .text_xs()
+                            .caption()
                             .flex_shrink_0()
                             .text_color(theme.muted)
                             .child(SharedString::from(format!("port {port}"))),
@@ -415,11 +438,7 @@ impl Skep {
                     .py_4()
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(SharedString::from("Sites")),
-                    ),
+                    .child(div().title().child(SharedString::from("Sites"))),
             )
             .child(notes)
             .child(rows)
@@ -432,8 +451,7 @@ impl Skep {
             .min_w_0()
             .px_6()
             .py_3()
-            .text_xs()
-            .line_height(px(17.))
+            .body()
             .text_color(self.theme.muted)
             .child(SharedString::from(text.to_string()))
     }
@@ -458,11 +476,7 @@ impl Skep {
                     .py_4()
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(SharedString::from("Settings")),
-                    )
+                    .child(div().title().child(SharedString::from("Settings")))
                     .child(self.open_settings(cx)),
             )
             .child(
@@ -470,8 +484,7 @@ impl Skep {
                     .w_full()
                     .px_6()
                     .py_3()
-                    .text_xs()
-                    .line_height(px(17.))
+                    .body()
                     .text_color(theme.muted)
                     .child(SharedString::from(
                         "Ports and versions live in config.toml. A project's skep.toml wins \
@@ -517,7 +530,7 @@ impl Skep {
                                 div()
                                     .flex_1()
                                     .truncate()
-                                    .text_xs()
+                                    .label()
                                     .text_color(if chosen { theme.text } else { theme.muted })
                                     .child(SharedString::from(ports.join(",  "))),
                             )
@@ -531,7 +544,7 @@ impl Skep {
             .id("open-settings")
             .px_2p5()
             .py_1()
-            .text_xs()
+            .label()
             .text_color(self.theme.accent)
             .border_1()
             .border_color(self.theme.border)
@@ -599,7 +612,7 @@ impl Skep {
             .items_center()
             .justify_center()
             .py_10()
-            .text_xs()
+            .label()
             .text_color(self.theme.idle)
             .child(SharedString::from(what))
     }
@@ -614,14 +627,10 @@ impl Skep {
             .py_4()
             .border_b_1()
             .border_color(self.theme.border)
+            .child(div().title().child(SharedString::from("Services")))
             .child(
                 div()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(SharedString::from("Services")),
-            )
-            .child(
-                div()
-                    .text_xs()
+                    .label()
                     .text_color(self.theme.muted)
                     .child(SharedString::from(format!(
                         "{} of {} running",
@@ -655,7 +664,7 @@ impl Skep {
                 .bg(self.theme.raised)
                 .border_b_1()
                 .border_color(self.theme.border)
-                .text_xs()
+                .label()
                 .text_color(self.theme.muted)
                 .child(message)
                 .children(blocked.then(|| self.button("Take over", Command::TakeOver))),
@@ -691,7 +700,7 @@ impl Skep {
             .child(
                 div()
                     .w(px(104.))
-                    .text_xs()
+                    .label()
                     .text_color(theme.muted)
                     .child(ports(&status)),
             )
@@ -702,7 +711,7 @@ impl Skep {
                 div()
                     .flex_1()
                     .truncate()
-                    .text_xs()
+                    .label()
                     .text_color(if failed { theme.failed } else { theme.muted })
                     .child(line(&status)),
             )
@@ -786,8 +795,7 @@ impl Skep {
                             .w(px(GUTTER))
                             .flex_shrink_0()
                             .text_right()
-                            .text_xs()
-                            .line_height(px(17.))
+                            .body()
                             .font_family(MONO)
                             .text_color(if marked { accent } else { idle })
                             .child(SharedString::from((seq + 1).to_string())),
@@ -796,8 +804,7 @@ impl Skep {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_xs()
-                            .line_height(px(17.))
+                            .body()
                             .font_family(MONO)
                             .text_color(if marked { text } else { muted })
                             .child(SharedString::from(line.text))
@@ -829,8 +836,7 @@ impl Skep {
                     .flex_shrink_0()
                     .px_6()
                     .py_3()
-                    .text_xs()
-                    .line_height(px(17.))
+                    .body()
                     .text_color(theme.failed)
                     .child(note)
             }))
@@ -878,7 +884,7 @@ impl Skep {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_xs()
+                    .label()
                     .text_color(theme.muted)
                     .child(SharedString::from(if self.kept.is_empty() {
                         "no copies kept".to_string()
@@ -940,7 +946,7 @@ impl Skep {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_xs()
+                            .label()
                             .text_color(theme.muted)
                             .child(SharedString::from(snapshot.name.clone())),
                     )
@@ -1024,7 +1030,7 @@ impl Skep {
             .flex_shrink_0()
             .px_2p5()
             .py_1()
-            .text_xs()
+            .label()
             .text_color(self.theme.accent)
             .border_1()
             .border_color(self.theme.border)
@@ -1042,7 +1048,7 @@ impl Skep {
             .is_some_and(|(what, _)| what == Copied::Everything);
         div()
             .id("copy-all")
-            .text_xs()
+            .label()
             .text_color(if done {
                 self.theme.text
             } else {
@@ -1095,7 +1101,7 @@ impl Skep {
             .id(label)
             .px_2p5()
             .py_1()
-            .text_xs()
+            .label()
             .text_color(self.theme.accent)
             .border_1()
             .border_color(self.theme.border)

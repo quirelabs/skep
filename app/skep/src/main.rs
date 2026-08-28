@@ -73,7 +73,7 @@ fn main() -> Result<()> {
                     }),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|cx| ui::Skep::new(bridge, menubar, cx)),
+                |window, cx| cx.new(|cx| ui::Skep::new(bridge, menubar, window, cx)),
             )
             .expect("a window");
 
