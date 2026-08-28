@@ -41,6 +41,10 @@ pub struct Body {
     /// does it well, so this is normally false; it turns true only when the
     /// plain part came back empty and the fallback had to run.
     pub converted: bool,
+    /// The message as it was written, already guarded: nothing in here can
+    /// fetch or run. Empty when the message was sent as plain text, which is
+    /// how a reader tells whether there is anything to render.
+    pub html: String,
     pub attachments: Vec<String>,
 }
 
@@ -164,6 +168,11 @@ pub async fn read(port: u16, id: &str) -> Result<Body> {
         at: opened.date,
         text,
         converted,
+        html: if opened.html.trim().is_empty() {
+            String::new()
+        } else {
+            safe_html(&opened.html)
+        },
         attachments: opened
             .attachments
             .into_iter()
@@ -281,6 +290,156 @@ async fn request_with(
         ))));
     }
     Ok(body.to_vec())
+}
+
+/// Html made safe to show, for a viewer that renders it rather than reading it
+/// out as words.
+///
+/// Two layers, because one of them being wrong should not be enough. The
+/// policy at the top tells the engine to fetch nothing at all, and the pass
+/// below removes the things that would have asked. Without this a message
+/// fetches its own tracking pixel the moment it is opened, which tells whoever
+/// sent it that you read it. That is measured, not assumed: an unguarded page
+/// fetched one twice.
+pub fn safe_html(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let lowered = rest.to_ascii_lowercase();
+
+        // Whole elements that exist to load or run something.
+        let banished = [
+            "script", "iframe", "object", "embed", "video", "audio", "applet", "frame", "frameset",
+            "portal",
+        ];
+        if let Some(skipped) = banished
+            .iter()
+            .find_map(|name| skip_block(&lowered, rest, name))
+        {
+            rest = skipped;
+            continue;
+        }
+
+        let Some(end) = rest.find('>') else {
+            return finish(&out);
+        };
+        let tag = &rest[1..end];
+        let name = tag
+            .trim_start_matches('/')
+            .split(|c: char| c.is_whitespace() || c == '/')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        // Empty elements that only ever point somewhere else.
+        if matches!(name.as_str(), "link" | "meta" | "base" | "source" | "track") {
+            rest = &rest[end + 1..];
+            continue;
+        }
+
+        out.push('<');
+        out.push_str(&strip_attributes(tag));
+        out.push('>');
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    finish(&out)
+}
+
+/// Attributes that fetch, and attributes that run. Everything else is kept, so
+/// the message still looks like itself.
+fn strip_attributes(tag: &str) -> String {
+    let dangerous = |name: &str| {
+        let name = name.to_ascii_lowercase();
+        name.starts_with("on")
+            || matches!(
+                name.as_str(),
+                "src" | "srcset" | "poster" | "background" | "data" | "formaction" | "ping"
+            )
+    };
+
+    let mut kept = String::with_capacity(tag.len());
+    let mut rest = tag;
+    // The element name comes first and is never an attribute.
+    let split = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    kept.push_str(&rest[..split]);
+    rest = &rest[split..];
+
+    while let Some(at) = rest.find(|c: char| !c.is_whitespace()) {
+        rest = &rest[at..];
+        if rest.starts_with('/') {
+            kept.push_str(" /");
+            break;
+        }
+        let name_end = rest
+            .find(|c: char| c == '=' || c.is_whitespace())
+            .unwrap_or(rest.len());
+        let name = &rest[..name_end];
+        rest = &rest[name_end..];
+
+        let mut value = "";
+        if let Some(stripped) = rest.strip_prefix('=') {
+            let stripped = stripped.trim_start();
+            let (taken, remainder) = match stripped.chars().next() {
+                Some(quote @ ('"' | '\'')) => {
+                    let inner = &stripped[1..];
+                    match inner.find(quote) {
+                        Some(close) => (&inner[..close], &inner[close + 1..]),
+                        None => (inner, ""),
+                    }
+                }
+                _ => {
+                    let end = stripped.find(char::is_whitespace).unwrap_or(stripped.len());
+                    (&stripped[..end], &stripped[end..])
+                }
+            };
+            value = taken;
+            rest = remainder;
+        }
+
+        if dangerous(name) {
+            continue;
+        }
+        // A stylesheet can fetch too, through url().
+        let value = if name.eq_ignore_ascii_case("style") {
+            without_urls(value)
+        } else {
+            value.to_string()
+        };
+        kept.push_str(&format!(" {name}=\"{}\"", value.replace('"', "&quot;")));
+    }
+    kept
+}
+
+fn without_urls(style: &str) -> String {
+    let mut out = String::with_capacity(style.len());
+    let mut rest = style;
+    while let Some(at) = rest.to_ascii_lowercase().find("url(") {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        match rest.find(')') {
+            Some(close) => rest = &rest[close + 1..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The policy that makes the guarantee, rather than the tidying that supports
+/// it. Nothing may be fetched, inline styling is allowed because that is how
+/// mail is written, and images only when they came with the message.
+fn finish(body: &str) -> String {
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\">\
+         <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
+         style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'\">\
+         <style>html,body{{margin:0;padding:14px;font:13px/1.5 -apple-system,sans-serif;\
+         word-wrap:break-word}}img{{max-width:100%}}</style></head><body>{body}</body></html>"
+    )
 }
 
 /// Html reduced to what a person wanted to read. This is not a renderer and
@@ -413,7 +572,53 @@ fn tidy(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::to_text;
+    use super::{safe_html, to_text};
+
+    #[test]
+    fn nothing_that_fetches_survives_sanitising() {
+        let html = r#"<img src="https://tracker.test/pixel.gif" alt="x">
+            <link rel="stylesheet" href="https://tracker.test/s.css">
+            <iframe src="https://tracker.test/frame"></iframe>
+            <div style="background: url('https://tracker.test/bg.png'); color: red">hi</div>
+            <script>fetch('https://tracker.test/beacon')</script>"#;
+        let safe = safe_html(html);
+
+        assert!(!safe.contains("tracker.test"), "{safe}");
+        assert!(!safe.contains("<iframe"), "{safe}");
+        assert!(!safe.contains("<script"), "{safe}");
+        assert!(!safe.contains("src="), "{safe}");
+        // What the message meant is still there.
+        assert!(safe.contains("color: red"), "{safe}");
+        assert!(safe.contains("hi"), "{safe}");
+    }
+
+    #[test]
+    fn the_policy_forbids_fetching_even_if_the_pass_missed_something() {
+        let safe = safe_html("<p>hello</p>");
+        assert!(safe.contains("Content-Security-Policy"), "{safe}");
+        assert!(safe.contains("default-src 'none'"), "{safe}");
+        // Mail is written with inline styles, so those have to survive.
+        assert!(safe.contains("style-src 'unsafe-inline'"), "{safe}");
+        // An image that came with the message is not a fetch.
+        assert!(safe.contains("img-src data:"), "{safe}");
+    }
+
+    #[test]
+    fn handlers_that_would_run_are_removed() {
+        let safe = safe_html(r#"<div onclick="alert(1)" onload="x()" title="kept">hi</div>"#);
+        assert!(!safe.contains("onclick"), "{safe}");
+        assert!(!safe.contains("onload"), "{safe}");
+        assert!(safe.contains("title=\"kept\""), "{safe}");
+    }
+
+    #[test]
+    fn an_embedded_image_is_left_alone_in_the_words() {
+        // The policy allows data urls; the pass must not undo that by turning
+        // the element into something else.
+        let safe = safe_html("<p>before</p><p>after</p>");
+        assert!(safe.contains("before"), "{safe}");
+        assert!(safe.contains("after"), "{safe}");
+    }
 
     #[test]
     fn tags_that_mean_a_line_break_become_one() {

@@ -2,7 +2,9 @@
 //! derives from the event stream, so the interface cannot show a state the
 //! engine never reported.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use comb::{Applied, InstanceId, Label, LogLine, Mirror, ServiceState, ServiceStatus, Snapshot};
@@ -16,6 +18,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::bridge::{Bridge, Command, Update};
 use crate::platform::Menubar;
+use crate::preview::Preview;
 use crate::theme::{Scale, Theme};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -64,6 +67,10 @@ fn clearance(rail: f32) -> f32 {
 /// in the rail while the rail is open and over the page header once it is not,
 /// so both have to stand this tall and leave that corner alone.
 const TITLEBAR: f32 = 44.;
+
+/// How much of the window a message gets. Mail is written to be looked at, so
+/// the pane is the larger half of what is left.
+const READING: f32 = 380.;
 const LIGHTS: f32 = 84.;
 
 /// Every motion in the interface is shorter than this. Anything slower reads
@@ -119,6 +126,10 @@ pub struct Skep {
     unread: usize,
     opened: Option<comb_services::mail::Body>,
     mail_trouble: Option<SharedString>,
+    /// The webview that shows a message as it was written. Shared, because the
+    /// element that knows where the reading pane is has to tell it on every
+    /// frame and cannot borrow the view to do so.
+    preview: Rc<RefCell<Option<Preview>>>,
     /// Every hostname this machine serves, and anything in the way of it.
     sites: BTreeMap<String, u16>,
     site_trouble: Vec<String>,
@@ -191,6 +202,7 @@ impl Skep {
             unread: 0,
             opened: None,
             mail_trouble: None,
+            preview: Rc::new(RefCell::new(None)),
             sites: BTreeMap::new(),
             site_trouble: Vec::new(),
             authority_trusted: false,
@@ -232,11 +244,23 @@ impl Skep {
                     }
                 }
                 Update::Mail { messages, unread } => {
+                    if self.opened.is_none()
+                        && let Some(preview) = self.preview.borrow_mut().as_mut()
+                    {
+                        preview.hide();
+                    }
                     self.mail = messages;
                     self.unread = unread;
                     self.mail_trouble = None;
                 }
                 Update::MailBody(body) => {
+                    if let Some(preview) = self.preview.borrow_mut().as_mut() {
+                        if body.html.is_empty() {
+                            preview.hide();
+                        } else {
+                            preview.show(&body.html);
+                        }
+                    }
                     self.opened = Some(*body);
                     self.mail_trouble = None;
                 }
@@ -394,7 +418,19 @@ fn ports(status: &ServiceStatus) -> SharedString {
 }
 
 impl Render for Skep {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The webview belongs to the window, so it cannot exist before one.
+        if self.preview.borrow().is_none() {
+            *self.preview.borrow_mut() = Preview::attach(window);
+        }
+        // It draws above everything gpui draws, so anywhere but the mail page
+        // it has to be gone rather than merely behind.
+        if self.page != Page::Mail
+            && let Some(preview) = self.preview.borrow_mut().as_mut()
+        {
+            preview.hide();
+        }
+
         div()
             .flex()
             .size_full()
@@ -694,12 +730,11 @@ impl Skep {
                 .w_full()
                 .overflow_hidden()
                 .border_b_1()
-                .border_color(theme.border)
-                .child(head);
-            if showing && let Some(body) = &self.opened {
-                row = row.child(self.message(body, cx));
+                .border_color(theme.border);
+            if showing {
+                row = row.bg(theme.raised);
             }
-            rows = rows.child(row);
+            rows = rows.child(row.child(head));
         }
 
         div()
@@ -758,9 +793,99 @@ impl Skep {
                     .id("mail-list")
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_h_0()
                     .overflow_y_scroll()
                     .child(rows),
             )
+            .children(self.opened.as_ref().map(|body| self.reading(body, cx)))
+            .into_any_element()
+    }
+
+    /// Where a message is read. A fixed pane rather than a row that grows,
+    /// because what fills it is a native view: gpui cannot clip it to a
+    /// scrolling list and cannot draw anything over it.
+    fn reading(&self, body: &comb_services::mail::Body, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let preview = self.preview.clone();
+
+        let shown = if body.html.is_empty() {
+            // Sent as text, so it is read as text, and every line of it can be
+            // copied the way a log line can.
+            self.message(body, cx)
+        } else {
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |bounds, _, _, _| {
+                            if let Some(preview) = preview.borrow().as_ref() {
+                                preview.place(bounds);
+                            }
+                        },
+                    )
+                    .size_full(),
+                )
+                .into_any_element()
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .h(px(READING))
+            .flex_shrink_0()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .min_w_0()
+                    .px_6()
+                    .py_2()
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .label()
+                            .child(SharedString::from(body.subject.clone())),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .flex_shrink_0()
+                            .child(self.copy_message(body, cx))
+                            .child(self.close_message(cx)),
+                    ),
+            )
+            .child(shown)
+            .into_any_element()
+    }
+
+    fn close_message(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("close-message")
+            .caption()
+            .cursor_pointer()
+            .text_color(self.theme.muted)
+            .on_click(cx.listener(|skep, _, _, cx| {
+                skep.opened = None;
+                if let Some(preview) = skep.preview.borrow_mut().as_mut() {
+                    preview.hide();
+                }
+                cx.notify();
+            }))
+            .child(SharedString::from("close"))
             .into_any_element()
     }
 
@@ -805,18 +930,13 @@ impl Skep {
         }
 
         let mut aside = div().flex().flex_col().w_full().gap_1();
+        // The pane's own header carries the copy action, so this says only
+        // what the header does not.
         aside = aside.child(
             div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .child(
-                    div()
-                        .caption()
-                        .text_color(theme.muted)
-                        .child(SharedString::from(format!("to {}", body.to.join(", ")))),
-                )
-                .child(self.copy_message(body, cx)),
+                .caption()
+                .text_color(theme.muted)
+                .child(SharedString::from(format!("to {}", body.to.join(", ")))),
         );
         if body.converted {
             aside = aside.child(
@@ -883,14 +1003,17 @@ impl Skep {
         }
 
         div()
+            .id("message-body")
             .flex()
             .flex_col()
+            .flex_1()
+            .min_h_0()
             .w_full()
             .min_w_0()
             .px_6()
-            .py_3()
+            .pb_3()
             .gap_2()
-            .bg(theme.raised)
+            .overflow_y_scroll()
             .child(aside)
             .child(lines)
             .into_any_element()

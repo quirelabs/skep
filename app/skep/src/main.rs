@@ -4,6 +4,7 @@
 mod bridge;
 mod icons;
 mod platform;
+mod preview;
 mod theme;
 mod ui;
 
@@ -67,11 +68,14 @@ fn main() -> Result<()> {
             let menubar = objc2_foundation::MainThreadMarker::new()
                 .map(|mtm| platform::Menubar::new(mtm, commands.clone()));
 
-            let bounds = Bounds::centered(None, size(px(860.), px(560.)), cx);
+            let bounds = Bounds::centered(None, size(px(1080.), px(720.)), cx);
             let window = cx
                 .open_window(
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        // A message needs room to be read as it was written,
+                        // so the floor is set by mail rather than by a list.
+                        window_min_size: Some(size(px(820.), px(560.))),
                         titlebar: Some(TitlebarOptions {
                             title: Some("Skep".into()),
                             // No titlebar strip: the interface runs to the top

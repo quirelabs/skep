@@ -62,6 +62,10 @@ libc = "0.2"
 # The menubar item, which GPUI has no API for at this revision. App only: the
 # engine never touches AppKit.
 objc2 = "0.6"
+# Showing a message as it was written. Same generation as objc2-app-kit, so
+# there is one objc2 in the tree rather than two.
+objc2-web-kit = "0.3"
+raw-window-handle = "0.6"
 objc2-app-kit = { version = "0.3", features = [
     "NSStatusBar",
     "NSStatusItem",
