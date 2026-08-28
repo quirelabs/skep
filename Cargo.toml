@@ -90,6 +90,10 @@ hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 
+# Editing a person's config without reformatting the rest of it. The crate
+# cargo uses for the same job.
+toml_edit = { version = "0.25", default-features = false, features = ["display", "parse"] }
+
 # Certificates for local domains. Defaults to the ring provider, which keeps
 # cargo build free of cmake and a C toolchain.
 # Already in the tree through rcgen, whose own API speaks these types.

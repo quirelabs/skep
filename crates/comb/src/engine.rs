@@ -184,6 +184,16 @@ impl Engine {
             .unwrap_or_default()
     }
 
+    /// Stops serving a hostname. Says whether it was there at all, so a
+    /// frontend can tell a person the difference.
+    pub fn remove_site(&self, host: &str) -> bool {
+        self.inner
+            .sites
+            .write()
+            .map(|mut book| book.remove(host).is_some())
+            .unwrap_or(false)
+    }
+
     /// Adds sites, with later ones winning, and says which are new.
     pub fn add_sites(&self, more: crate::proxy::Sites) -> Vec<String> {
         let Ok(mut book) = self.inner.sites.write() else {

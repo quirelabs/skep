@@ -79,6 +79,10 @@ pub enum Request {
     },
     /// What hostnames this machine serves.
     Sites,
+    /// Stops serving one hostname.
+    RemoveSite {
+        host: String,
+    },
     /// Teaches a running host about a project's sites.
     AddSites {
         sites: std::collections::BTreeMap<String, u16>,
@@ -358,6 +362,12 @@ async fn answer(engine: &Engine, request: Request) -> Response {
             };
         }
         Request::Sites => {
+            return Response::Sites {
+                sites: engine.site_list(),
+            };
+        }
+        Request::RemoveSite { host } => {
+            engine.remove_site(&host);
             return Response::Sites {
                 sites: engine.site_list(),
             };

@@ -224,3 +224,173 @@ fn up_without_an_engine_says_how_to_start_one() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// A config file with the things people actually put in one: comments, blank
+/// lines, and spacing nobody would choose twice.
+const HAND_WRITTEN: &str = "\
+# What this repository needs.
+#
+# Postgres is pinned because the staging box runs 16.
+[services.postgres]
+version = \"16\"     # keep in step with staging
+
+# Mail goes nowhere in development.
+[services.mailpit]
+ports = { http = 8025, smtp = 1025 }
+";
+
+#[test]
+fn adding_a_site_leaves_the_rest_of_the_file_byte_for_byte() {
+    let home = Home::new("site-add");
+    let project = Home::new("site-add-project");
+    let file = project.0.join("skep.toml");
+    std::fs::write(&file, HAND_WRITTEN).unwrap();
+
+    let output = skep()
+        .args(["site", "add", "shop.test", "3000"])
+        .current_dir(&project.0)
+        .env("SKEP_HOME", &home.0)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let after = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        after.starts_with(HAND_WRITTEN),
+        "everything that was there before has to survive unchanged:\n{after}"
+    );
+    assert!(after.contains("[sites]"), "{after}");
+    assert!(after.contains("\"shop.test\" = 3000"), "{after}");
+}
+
+#[test]
+fn adding_to_a_table_that_exists_keeps_its_comments() {
+    let home = Home::new("site-second");
+    let project = Home::new("site-second-project");
+    let file = project.0.join("skep.toml");
+    let original = "\
+[sites]
+# The storefront, which the checkout service talks to.
+\"shop.test\" = 3000
+
+# Databases below.
+[services.postgres]
+version = \"16\"
+";
+    std::fs::write(&file, original).unwrap();
+
+    let output = skep()
+        .args(["site", "add", "admin.test", "4000"])
+        .current_dir(&project.0)
+        .env("SKEP_HOME", &home.0)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let after = std::fs::read_to_string(&file).unwrap();
+    for kept in [
+        "# The storefront, which the checkout service talks to.",
+        "\"shop.test\" = 3000",
+        "# Databases below.",
+        "[services.postgres]",
+        "version = \"16\"",
+    ] {
+        assert!(after.contains(kept), "{kept} was lost:\n{after}");
+    }
+    assert!(after.contains("\"admin.test\" = 4000"), "{after}");
+}
+
+#[test]
+fn removing_a_site_leaves_the_others_and_their_comments() {
+    let home = Home::new("site-remove");
+    let project = Home::new("site-remove-project");
+    let file = project.0.join("skep.toml");
+    let original = "\
+# Two sites.
+[sites]
+\"shop.test\" = 3000
+# The one we are keeping.
+\"admin.test\" = 4000
+";
+    std::fs::write(&file, original).unwrap();
+
+    let output = skep()
+        .args(["site", "remove", "shop.test"])
+        .current_dir(&project.0)
+        .env("SKEP_HOME", &home.0)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let after = std::fs::read_to_string(&file).unwrap();
+    assert!(!after.contains("shop.test"), "{after}");
+    assert!(after.contains("# Two sites."), "{after}");
+    assert!(after.contains("# The one we are keeping."), "{after}");
+    assert!(after.contains("\"admin.test\" = 4000"), "{after}");
+}
+
+#[test]
+fn a_hostname_that_could_never_be_served_never_reaches_the_file() {
+    let home = Home::new("site-bad");
+    let project = Home::new("site-bad-project");
+    let file = project.0.join("skep.toml");
+    std::fs::write(&file, HAND_WRITTEN).unwrap();
+
+    for host in ["../../etc/passwd", "not a host", ""] {
+        let output = skep()
+            .args(["site", "add", host, "3000"])
+            .current_dir(&project.0)
+            .env("SKEP_HOME", &home.0)
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "{host:?} should have been refused"
+        );
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        HAND_WRITTEN,
+        "a refusal must not touch the file at all"
+    );
+}
+
+#[test]
+fn removing_something_that_is_not_there_says_so() {
+    let home = Home::new("site-absent");
+    let project = Home::new("site-absent-project");
+    std::fs::write(project.0.join("skep.toml"), HAND_WRITTEN).unwrap();
+
+    let output = skep()
+        .args(["site", "remove", "nothing.test"])
+        .current_dir(&project.0)
+        .env("SKEP_HOME", &home.0)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let message = String::from_utf8_lossy(&output.stderr);
+    assert!(message.contains("nothing.test"), "{message}");
+}
+
+#[test]
+fn without_a_project_file_it_says_to_use_global() {
+    let home = Home::new("site-nowhere");
+    let elsewhere = Home::new("site-nowhere-dir");
+
+    let output = skep()
+        .args(["site", "add", "shop.test", "3000"])
+        .current_dir(&elsewhere.0)
+        .env("SKEP_HOME", &home.0)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let message = String::from_utf8_lossy(&output.stderr);
+    assert!(message.contains("--global"), "{message}");
+}

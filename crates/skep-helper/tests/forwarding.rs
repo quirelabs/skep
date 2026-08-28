@@ -8,8 +8,27 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-/// Kills the helper even when a test panics before it gets there.
+/// Kills the helper even when a test panics before it gets there, and can say
+/// what it complained about on the way out. A helper that dies during startup
+/// leaves its socket file behind, so without this a failure looks like the
+/// helper was never there rather than like it gave a reason.
 struct Helping(Child);
+
+impl Helping {
+    fn complaint(&mut self) -> String {
+        use std::io::Read;
+
+        let _ = self.0.kill();
+        let mut said = String::new();
+        if let Some(mut stderr) = self.0.stderr.take() {
+            let _ = stderr.read_to_string(&mut said);
+        }
+        match self.0.try_wait() {
+            Ok(Some(status)) => format!("the helper exited {status}: {}", said.trim()),
+            _ => format!("the helper is still running: {}", said.trim()),
+        }
+    }
+}
 
 impl Drop for Helping {
     fn drop(&mut self) {
@@ -41,12 +60,17 @@ async fn echoing() -> u16 {
     port
 }
 
-async fn wait_for(path: &std::path::Path) {
+/// Waits for something that answers, not merely for a file. A socket left
+/// behind by a helper that died exists but refuses every connection.
+async fn wait_for(path: &std::path::Path, helper: &mut Helping) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !path.exists() && Instant::now() < deadline {
+    while Instant::now() < deadline {
+        if tokio::net::UnixStream::connect(path).await.is_ok() {
+            return;
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(path.exists(), "the helper never opened its control socket");
+    panic!("nothing answered on the control socket. {}", helper.complaint());
 }
 
 #[tokio::test]
@@ -58,7 +82,7 @@ async fn it_carries_bytes_to_the_port_behind_it() {
     let _ = std::fs::remove_file(&control);
 
     let owner = comb::invoking_user();
-    let _helper = Helping(
+    let mut helper = Helping(
         Command::new(env!("CARGO_BIN_EXE_skep-helper"))
             .args(["--control", &control.display().to_string()])
             .args(["--user", &owner.uid.to_string()])
@@ -69,7 +93,7 @@ async fn it_carries_bytes_to_the_port_behind_it() {
             .spawn()
             .unwrap(),
     );
-    wait_for(&control).await;
+    wait_for(&control, &mut helper).await;
 
     let mut through = TcpStream::connect(("127.0.0.1", front)).await.unwrap();
     through.write_all(b"straight through").await.unwrap();
@@ -90,7 +114,7 @@ async fn it_says_which_version_it_is_and_what_it_holds() {
     let _ = std::fs::remove_file(&control);
 
     let owner = comb::invoking_user();
-    let _helper = Helping(
+    let mut helper = Helping(
         Command::new(env!("CARGO_BIN_EXE_skep-helper"))
             .args(["--control", &control.display().to_string()])
             .args(["--user", &owner.uid.to_string()])
@@ -101,7 +125,7 @@ async fn it_says_which_version_it_is_and_what_it_holds() {
             .spawn()
             .unwrap(),
     );
-    wait_for(&control).await;
+    wait_for(&control, &mut helper).await;
 
     let health = comb::health(&control)
         .await

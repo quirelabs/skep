@@ -4,6 +4,7 @@
 
 mod domains;
 mod serve;
+mod site;
 
 use anyhow::{Result, anyhow, bail};
 use comb::{Client, Error, InstanceId, Paths, Request, Response, ServiceStatus};
@@ -26,6 +27,9 @@ usage:
                               domains can serve real https (asks for a password)
   skep untrust                stop trusting it
   skep sites                  every hostname this machine serves
+  skep site add <host> <port> give an app you already run a name and https
+  skep site remove <host>     stop serving that name
+                              (both edit skep.toml, or config.toml with --global)
   skep domains status         is local https actually working
   skep domains install        take ports 80 and 443 and route .test here
                               (needs sudo, and refuses to trample another tool)
@@ -83,6 +87,7 @@ async fn dispatch() -> Result<()> {
         "logs" => logs(&rest).await,
         "domains" => domains::run(&rest).await,
         "sites" => sites().await,
+        "site" => site::run(&rest).await,
         "trust" => trust(),
         "untrust" => untrust(),
         "snapshot" => snapshot(&rest).await,
