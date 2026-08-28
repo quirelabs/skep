@@ -1,6 +1,7 @@
 //! Built-in service adapters. An adapter describes a service and how to check
 //! it; the engine owns spawning and supervision and never calls back in here.
 
+pub mod mail;
 mod mailpit;
 mod mongodb;
 mod mysql;

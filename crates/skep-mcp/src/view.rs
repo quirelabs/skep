@@ -197,3 +197,10 @@ impl Sites {
         }
     }
 }
+
+/// What the mail catcher caught, in the shape an agent asked the question in.
+#[derive(Debug, Serialize)]
+pub struct Mail {
+    pub unread: usize,
+    pub messages: Vec<comb_services::mail::Summary>,
+}

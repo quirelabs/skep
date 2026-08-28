@@ -164,6 +164,7 @@ no skep engine is running. Start one with `skep serve`.
 | `skep_logs` | A bounded tail of a service's output |
 | `skep_project` | Read a repository's `skep.toml` and report or start what it needs |
 | `skep_sites` | Every hostname served over https, and the port behind each |
+| `skep_mail` | What the mail catcher caught, searchable, and one message in full |
 | `skep_snapshot` | Keep a named copy of a service's data |
 | `skep_snapshots` | List the copies kept |
 | `skep_branch` | Run a second copy on its own data and port |

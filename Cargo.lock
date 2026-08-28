@@ -4357,8 +4357,12 @@ dependencies = [
 name = "quire-comb-services"
 version = "0.0.0"
 dependencies = [
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "quire-comb",
  "serde",
+ "serde_json",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
 ]

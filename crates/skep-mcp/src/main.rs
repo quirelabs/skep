@@ -26,6 +26,17 @@ struct Service {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct Mail {
+    /// Words to look for in senders, subjects and bodies. Omit to list the
+    /// most recent messages.
+    query: Option<String>,
+    /// The id of one message, to read it in full instead of listing.
+    id: Option<String>,
+    /// How many to return. Defaults to 20.
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct Named {
     /// Service name, optionally with a version.
     service: String,
@@ -132,6 +143,47 @@ impl Skep {
             }
         }
         self.report_on(&mut client, &instance.to_string()).await
+    }
+
+    #[tool(
+        name = "skep_mail",
+        description = "What the local mail catcher has caught: the mail an application sent \
+                       while it was running. With no arguments, the most recent messages as \
+                       {\"unread\":1,\"messages\":[{\"id\":\"abc\",\"from\":\"hello@myapp.test\",\
+                       \"subject\":\"Reset your password\",\"snippet\":\"Click here...\",\
+                       \"at\":\"2026-08-28T10:34:17-04:00\",\"read\":false}]}. With query, only \
+                       messages matching it. With id, that one message in full, including its \
+                       body as text, which is where a confirmation link or a code will be. \
+                       This is the one call needed to answer whether something was sent and \
+                       what it said. Needs mailpit running."
+    )]
+    async fn mail(
+        &self,
+        Parameters(Mail { query, id, limit }): Parameters<Mail>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let port = match mail_port().await {
+            Ok(port) => port,
+            Err(problem) => return Ok(*problem),
+        };
+        let limit = limit.unwrap_or(20);
+
+        if let Some(id) = id {
+            return match comb_services::mail::read(port, &id).await {
+                Ok(body) => json(&body),
+                Err(error) => Ok(sentence(error.to_string())),
+            };
+        }
+
+        let caught = match query {
+            Some(query) => comb_services::mail::search(port, &query, limit)
+                .await
+                .map(|messages| (messages, 0)),
+            None => comb_services::mail::inbox(port, limit).await,
+        };
+        match caught {
+            Ok((messages, unread)) => json(&view::Mail { unread, messages }),
+            Err(error) => Ok(sentence(error.to_string())),
+        }
     }
 
     #[tool(
@@ -466,6 +518,37 @@ async fn ask(client: &mut Client, request: Request) -> Result<Response, Box<Call
         Ok(response) => Ok(response),
         Err(error) => Err(Box::new(sentence(error.to_string()))),
     }
+}
+
+/// Which port the mail catcher is on, asked of the engine rather than assumed,
+/// because a project is free to move it.
+async fn mail_port() -> Result<u16, Box<CallToolResult>> {
+    let mut client = connect().await?;
+    let services = match ask(&mut client, Request::Status).await {
+        Ok(Response::Status { overview }) => overview.services,
+        Ok(other) => return Err(Box::new(confused(other))),
+        Err(problem) => return Err(problem),
+    };
+
+    let Some(mailpit) = services
+        .iter()
+        .find(|service| service.id.service.as_str() == "mailpit")
+    else {
+        return Err(Box::new(sentence(
+            "skep does not have mailpit. Start it with skep_start.",
+        )));
+    };
+    if mailpit.state != comb::ServiceState::Ready {
+        return Err(Box::new(sentence(format!(
+            "mailpit is {}, so there is nothing catching mail. Start it with skep_start.",
+            mailpit.state
+        ))));
+    }
+    mailpit
+        .ports
+        .get("http")
+        .copied()
+        .ok_or_else(|| Box::new(sentence("mailpit is running but has no http port")))
 }
 
 fn sentence(message: impl Into<String>) -> CallToolResult {

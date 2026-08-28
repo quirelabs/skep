@@ -3,6 +3,7 @@
 //! how two of them end up racing.
 
 mod domains;
+mod mail;
 mod serve;
 mod site;
 
@@ -27,6 +28,9 @@ usage:
                               domains can serve real https (asks for a password)
   skep untrust                stop trusting it
   skep sites                  every hostname this machine serves
+  skep mail [query]           what the mail catcher caught
+  skep mail read <id>         one message, in full
+  skep mail clear             empty it
   skep site add <host> <port> give an app you already run a name and https
   skep site remove <host>     stop serving that name
                               (both edit skep.toml, or config.toml with --global)
@@ -86,6 +90,7 @@ async fn dispatch() -> Result<()> {
         }
         "logs" => logs(&rest).await,
         "domains" => domains::run(&rest).await,
+        "mail" => mail::run(&rest).await,
         "sites" => sites().await,
         "site" => site::run(&rest).await,
         "trust" => trust(),

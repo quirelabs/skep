@@ -17,6 +17,11 @@ pub enum Command {
     Resync,
     /// Ask whoever holds the machine to stand down, then take it.
     TakeOver,
+    /// What the mail catcher has caught.
+    Mail,
+    /// One message, in full.
+    ReadMail(String),
+    ClearMail,
     /// Follow one service's output, or nothing.
     Watch(Option<InstanceId>),
     Snapshot(InstanceId, String),
@@ -38,6 +43,13 @@ pub enum Update {
         pid: Option<u32>,
     },
     Failed(String),
+    /// What the mail catcher has caught, or why it could not be asked.
+    Mail {
+        messages: Vec<comb_services::mail::Summary>,
+        unread: usize,
+    },
+    MailBody(Box<comb_services::mail::Body>),
+    MailTrouble(String),
     /// Every hostname this machine serves, and anything stopping it.
     Sites {
         sites: std::collections::BTreeMap<String, u16>,
@@ -157,6 +169,29 @@ async fn start_sites(host: &comb::Host, reports: &UnboundedSender<Update>) {
     });
 }
 
+/// Asked of the engine rather than assumed, because a project is free to move
+/// the port, and said in words a person can act on when it cannot be had.
+async fn mail_port(engine: &Engine) -> std::result::Result<u16, String> {
+    let services = engine.status().await;
+    let Some(mailpit) = services
+        .iter()
+        .find(|service| service.id.service.as_str() == "mailpit")
+    else {
+        return Err("skep does not have mailpit".to_string());
+    };
+    if mailpit.state != comb::ServiceState::Ready {
+        return Err(format!(
+            "mailpit is {}, so nothing is catching mail",
+            mailpit.state
+        ));
+    }
+    mailpit
+        .ports
+        .get("http")
+        .copied()
+        .ok_or_else(|| "mailpit is running but has no http port".to_string())
+}
+
 async fn follow(engine: Engine, id: InstanceId, reports: UnboundedSender<Update>) {
     let stream = engine.subscribe_logs(&id).await;
     if let Ok(tail) = engine.logs(&id, 300).await {
@@ -211,6 +246,44 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
                 }
                 Err(error) => Err(error),
             }
+        }
+        Command::Mail => {
+            match mail_port(engine).await {
+                Ok(port) => match comb_services::mail::inbox(port, 100).await {
+                    Ok((messages, unread)) => {
+                        let _ = reports.send(Update::Mail { messages, unread });
+                    }
+                    Err(error) => {
+                        let _ = reports.send(Update::MailTrouble(error.to_string()));
+                    }
+                },
+                Err(why) => {
+                    let _ = reports.send(Update::MailTrouble(why));
+                }
+            }
+            Ok(())
+        }
+        Command::ReadMail(id) => {
+            if let Ok(port) = mail_port(engine).await {
+                match comb_services::mail::read(port, &id).await {
+                    Ok(body) => {
+                        let _ = reports.send(Update::MailBody(Box::new(body)));
+                    }
+                    Err(error) => {
+                        let _ = reports.send(Update::MailTrouble(error.to_string()));
+                    }
+                }
+            }
+            Ok(())
+        }
+        Command::ClearMail => {
+            if let Ok(port) = mail_port(engine).await {
+                let _ = comb_services::mail::clear(port).await;
+                if let Ok((messages, unread)) = comb_services::mail::inbox(port, 100).await {
+                    let _ = reports.send(Update::Mail { messages, unread });
+                }
+            }
+            Ok(())
         }
         Command::RemoveBranch(id) => engine.remove_branch(&id).await,
         Command::TakeOver => {

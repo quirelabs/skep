@@ -22,6 +22,7 @@ use crate::theme::{Scale, Theme};
 enum Page {
     Services,
     Sites,
+    Mail,
     Settings,
 }
 
@@ -34,7 +35,7 @@ const RAIL: &[(&str, &str, Option<Page>)] = &[
     ("Sites", "globe-simple", Some(Page::Sites)),
     ("Projects", "squares-four", None),
     ("Logs", "list-dashes", None),
-    ("Mail", "envelope-simple", None),
+    ("Mail", "envelope-simple", Some(Page::Mail)),
     ("Agent", "sparkle", None),
 ];
 
@@ -108,6 +109,12 @@ pub struct Skep {
     copied: Option<(Copied, Instant)>,
     /// The copies kept for whichever service is open.
     kept: Vec<Snapshot>,
+    /// What the mail catcher caught, which message is open, and anything in
+    /// the way of asking.
+    mail: Vec<comb_services::mail::Summary>,
+    unread: usize,
+    opened: Option<comb_services::mail::Body>,
+    mail_trouble: Option<SharedString>,
     /// Every hostname this machine serves, and anything in the way of it.
     sites: BTreeMap<String, u16>,
     site_trouble: Vec<String>,
@@ -176,6 +183,10 @@ impl Skep {
             next_line: 0,
             copied: None,
             kept: Vec::new(),
+            mail: Vec::new(),
+            unread: 0,
+            opened: None,
+            mail_trouble: None,
             sites: BTreeMap::new(),
             site_trouble: Vec::new(),
             authority_trusted: false,
@@ -215,6 +226,20 @@ impl Skep {
                     if self.mirror.apply(&event) == Applied::Resync {
                         let _ = self.commands.send(Command::Resync);
                     }
+                }
+                Update::Mail { messages, unread } => {
+                    self.mail = messages;
+                    self.unread = unread;
+                    self.mail_trouble = None;
+                }
+                Update::MailBody(body) => {
+                    self.opened = Some(*body);
+                    self.mail_trouble = None;
+                }
+                Update::MailTrouble(why) => {
+                    self.mail = Vec::new();
+                    self.opened = None;
+                    self.mail_trouble = Some(SharedString::from(why));
                 }
                 Update::Sites {
                     sites,
@@ -292,6 +317,16 @@ impl Skep {
     }
 }
 
+/// The time of day out of an iso timestamp. A message caught minutes ago does
+/// not need its date spelled out.
+fn clock(at: &str) -> String {
+    at.split('T')
+        .nth(1)
+        .and_then(|rest| rest.get(..5))
+        .unwrap_or(at)
+        .to_string()
+}
+
 fn faded(color: Hsla, alpha: f32) -> Hsla {
     Hsla { a: alpha, ..color }
 }
@@ -342,6 +377,7 @@ impl Render for Skep {
             .child(match self.page {
                 Page::Services => self.content(cx),
                 Page::Sites => self.sites_page(cx),
+                Page::Mail => self.mail_page(cx),
                 Page::Settings => self.settings(cx),
             })
     }
@@ -533,11 +569,226 @@ impl Skep {
                 .hover(|style| style.bg(self.theme.raised))
                 .on_click(cx.listener(move |skep, _, _, cx| {
                     skep.page = page;
+                    // A page that shows something fetched asks for it on the
+                    // way in rather than showing yesterday's answer.
+                    if page == Page::Mail {
+                        let _ = skep.commands.send(Command::Mail);
+                    }
                     cx.notify();
                 }))
                 .into_any_element(),
             None => item.into_any_element(),
         }
+    }
+
+    /// What the mail catcher caught. The same shape as everything else here:
+    /// a list of rows that open in place, because a message is one more thing
+    /// to look inside rather than somewhere else to go.
+    fn mail_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let open = self.opened.as_ref().map(|body| body.id.clone());
+
+        let mut rows = div().flex().flex_col().w_full();
+        if let Some(trouble) = &self.mail_trouble {
+            rows = rows.child(self.note(trouble));
+        } else if self.mail.is_empty() {
+            rows = rows.child(self.nothing("no mail caught yet"));
+        }
+
+        for (index, message) in self.mail.iter().enumerate() {
+            let id = message.id.clone();
+            let showing = open.as_deref() == Some(message.id.as_str());
+            let head = div()
+                .id(("mail", index))
+                .flex()
+                .items_center()
+                .gap_3()
+                .w_full()
+                .min_w_0()
+                .px_6()
+                .py_3()
+                .cursor_pointer()
+                .hover(|style| style.bg(theme.raised))
+                .on_click(cx.listener(move |skep, _, _, cx| {
+                    if skep.opened.as_ref().is_some_and(|body| body.id == id) {
+                        skep.opened = None;
+                    } else {
+                        let _ = skep.commands.send(Command::ReadMail(id.clone()));
+                    }
+                    cx.notify();
+                }))
+                // Unread sits where a service's dot sits, so the one place
+                // status is allowed to live keeps holding it.
+                .child(
+                    div()
+                        .size(px(6.))
+                        .rounded_full()
+                        .flex_shrink_0()
+                        .bg(if message.read {
+                            gpui::transparent_black()
+                        } else {
+                            theme.accent
+                        }),
+                )
+                .child(
+                    div()
+                        .w(px(180.))
+                        .truncate()
+                        .text_color(theme.muted)
+                        .child(SharedString::from(message.from.clone())),
+                )
+                .child(
+                    div()
+                        .w(px(220.))
+                        .truncate()
+                        .child(SharedString::from(message.subject.clone())),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .label()
+                        .text_color(theme.muted)
+                        .child(SharedString::from(message.snippet.clone())),
+                )
+                .child(
+                    div()
+                        .caption()
+                        .flex_shrink_0()
+                        .text_color(theme.muted)
+                        .child(SharedString::from(clock(&message.at))),
+                );
+
+            let mut row = div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .overflow_hidden()
+                .border_b_1()
+                .border_color(theme.border)
+                .child(head);
+            if showing && let Some(body) = &self.opened {
+                row = row.child(self.message(body));
+            }
+            rows = rows.child(row);
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .h_full()
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .pl_4()
+                    .pr_6()
+                    .h(px(TITLEBAR))
+                    .flex_shrink_0()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(self.page_title("Mail", cx))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(div().caption().text_color(theme.muted).child(
+                                SharedString::from(if self.unread == 0 {
+                                    format!("{} caught", self.mail.len())
+                                } else {
+                                    format!("{} unread of {}", self.unread, self.mail.len())
+                                }),
+                            ))
+                            .children((!self.mail.is_empty()).then(|| {
+                                div()
+                                    .id("clear-mail")
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .label()
+                                    .cursor_pointer()
+                                    .text_color(theme.muted)
+                                    .hover(|style| style.bg(theme.raised).text_color(theme.text))
+                                    .child(SharedString::from("Clear"))
+                                    .on_click(cx.listener(|skep, _, _, cx| {
+                                        skep.opened = None;
+                                        let _ = skep.commands.send(Command::ClearMail);
+                                        cx.notify();
+                                    }))
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("mail-list")
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .child(rows),
+            )
+            .into_any_element()
+    }
+
+    /// The message itself, in the same monospaced treatment the logs get:
+    /// what was sent is closer to output than to prose.
+    fn message(&self, body: &comb_services::mail::Body) -> AnyElement {
+        let theme = &self.theme;
+        let mut lines = div().flex().flex_col().w_full().gap_0p5();
+        for line in body.text.lines() {
+            lines = lines.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .label()
+                    .font_family(MONO)
+                    .child(SharedString::from(line.to_string())),
+            );
+        }
+
+        let mut panel = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .px_6()
+            .py_3()
+            .gap_2()
+            .bg(theme.raised)
+            .child(
+                div()
+                    .caption()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(format!("to {}", body.to.join(", ")))),
+            );
+        if body.converted {
+            panel = panel.child(
+                div()
+                    .caption()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(
+                        "this message was html, shown here as text",
+                    )),
+            );
+        }
+        if !body.attachments.is_empty() {
+            panel = panel.child(
+                div()
+                    .caption()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(format!(
+                        "attached: {}",
+                        body.attachments.join(", ")
+                    ))),
+            );
+        }
+        panel.child(lines).into_any_element()
     }
 
     fn sites_page(&self, cx: &mut Context<Self>) -> AnyElement {
