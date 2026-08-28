@@ -12,7 +12,9 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use comb::{Engine, Paths};
 use comb_services::catalog;
-use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+use gpui::{
+    App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
+};
 use tokio::runtime::Runtime;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -72,7 +74,11 @@ fn main() -> Result<()> {
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
                         titlebar: Some(TitlebarOptions {
                             title: Some("Skep".into()),
-                            ..Default::default()
+                            // No titlebar strip: the interface runs to the top
+                            // of the window and the rail holds the traffic
+                            // lights.
+                            appears_transparent: true,
+                            traffic_light_position: Some(point(px(20.), px(16.))),
                         }),
                         ..Default::default()
                     },

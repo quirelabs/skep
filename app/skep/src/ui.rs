@@ -38,9 +38,20 @@ const RAIL: &[(&str, &str, Option<Page>)] = &[
     ("Agent", "sparkle", None),
 ];
 
-/// Small enough that the thin weight lands on a single device pixel, which is
-/// the whole reason for choosing it.
+/// The thin weight is eight units in a 256 unit box, so an icon lands on whole
+/// device pixels only when its size divides by sixteen. At two times that
+/// means 16 or 32 and nothing between, and 16 is the rail's size. Growing it
+/// to 18 or 20 would soften every glyph, so extra room comes from padding.
 const GLYPH: f32 = 16.;
+
+/// Wide enough to hold the traffic lights, which sit inside the rail rather
+/// than in a titlebar above it. Collapsing hides the words, not the buttons,
+/// so the narrow width is set by them rather than by the icons.
+const RAIL_WIDE: f32 = 208.;
+const RAIL_NARROW: f32 = 92.;
+
+/// The traffic lights occupy the top left corner, so nothing else may.
+const TITLEBAR: f32 = 44.;
 
 /// Every motion in the interface is shorter than this. Anything slower reads
 /// as the machine being slow rather than as the interface being alive.
@@ -91,6 +102,8 @@ pub struct Skep {
     authority_trusted: bool,
     commands: UnboundedSender<Command>,
     updates: UnboundedReceiver<Update>,
+    /// Whether the rail shows words beside its glyphs.
+    collapsed: bool,
     /// Dropping this stops the appearance following the system.
     _following: Subscription,
 }
@@ -149,6 +162,7 @@ impl Skep {
             authority_trusted: false,
             commands: bridge.commands,
             updates: bridge.updates,
+            collapsed: false,
             _following: following,
         };
         skep.reflect();
@@ -321,13 +335,17 @@ impl Skep {
         div()
             .flex()
             .flex_col()
-            .w(px(164.))
+            .w(px(if self.collapsed {
+                RAIL_NARROW
+            } else {
+                RAIL_WIDE
+            }))
             .h_full()
             .flex_shrink_0()
             .border_r_1()
             .border_color(self.theme.border)
-            .pt_5()
-            .pb_4()
+            .pb_3()
+            .child(self.titlebar(cx))
             .gap_0p5()
             .children(items)
             .child(div().flex_1())
@@ -338,6 +356,50 @@ impl Skep {
                 Some(Page::Settings),
                 cx,
             ))
+            .into_any_element()
+    }
+
+    /// The window has no titlebar of its own, so this row is it: the traffic
+    /// lights sit in its left, and the whole strip drags and zooms the window
+    /// the way a real one would.
+    fn titlebar(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("titlebar")
+            .flex()
+            .items_center()
+            .justify_end()
+            .w_full()
+            .h(px(TITLEBAR))
+            .px_3()
+            .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                window.start_window_move();
+            })
+            .on_click(cx.listener(|_, click: &gpui::ClickEvent, window, _| {
+                if click.click_count() == 2 {
+                    window.titlebar_double_click();
+                }
+            }))
+            .child(
+                div()
+                    .id("collapse")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(28.))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(self.theme.raised))
+                    .child(
+                        svg()
+                            .path("icons/sidebar-simple.svg")
+                            .size(px(GLYPH))
+                            .text_color(self.theme.muted),
+                    )
+                    .on_click(cx.listener(|skep, _, _, cx| {
+                        skep.collapsed = !skep.collapsed;
+                        cx.notify();
+                    })),
+            )
             .into_any_element()
     }
 
@@ -358,37 +420,54 @@ impl Skep {
         } else {
             self.theme.idle
         };
-        let item = div()
+
+        let mut item = div()
             .id(("rail", index))
             .flex()
             .items_center()
-            .gap_2()
-            .px_6()
-            .py_1()
-            .child(
-                svg()
-                    .path(format!("icons/{glyph}.svg"))
-                    .size(px(GLYPH))
-                    .flex_shrink_0()
-                    .text_color(colour),
-            )
-            .text_color(if here {
-                self.theme.text
-            } else if built {
-                self.theme.muted
-            } else {
-                self.theme.idle
-            })
-            .font_weight(if here {
-                FontWeight::MEDIUM
-            } else {
-                FontWeight::NORMAL
-            })
-            .child(SharedString::from(name));
+            .gap_3()
+            .mx_2()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .text_color(colour);
+
+        if self.collapsed {
+            item = item.justify_center().px_0();
+        }
+        // The selected row is a surface rather than an accent fill: orange is
+        // reserved for what you press and what is moving, and a whole row of
+        // it would drown both.
+        if here {
+            item = item.bg(self.theme.raised);
+        }
+
+        item = item.child(
+            svg()
+                .path(format!("icons/{glyph}.svg"))
+                .size(px(GLYPH))
+                .flex_shrink_0()
+                .text_color(colour),
+        );
+
+        if !self.collapsed {
+            item = item.child(
+                div()
+                    .body()
+                    .min_w_0()
+                    .font_weight(if here {
+                        FontWeight::MEDIUM
+                    } else {
+                        FontWeight::NORMAL
+                    })
+                    .child(SharedString::from(name)),
+            );
+        }
 
         match page {
             Some(page) => item
                 .cursor_pointer()
+                .hover(|style| style.bg(self.theme.raised))
                 .on_click(cx.listener(move |skep, _, _, cx| {
                     skep.page = page;
                     cx.notify();
@@ -398,12 +477,6 @@ impl Skep {
         }
     }
 
-    /// Read only on purpose. The file is the interface; this explains what it
-    /// currently means and opens it.
-    /// Sites are what skep puts in front of an app you already run, so the
-    /// page says the url and the port and nothing else. Anything in the way
-    /// is said plainly rather than left for a person to work out from a
-    /// browser warning.
     fn sites_page(&self, _cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
 
@@ -465,7 +538,8 @@ impl Skep {
                     .items_center()
                     .w_full()
                     .px_6()
-                    .py_4()
+                    .h(px(TITLEBAR))
+                    .flex_shrink_0()
                     .border_b_1()
                     .border_color(theme.border)
                     .child(div().title().child(SharedString::from("Sites"))),
@@ -503,7 +577,8 @@ impl Skep {
                     .justify_between()
                     .w_full()
                     .px_6()
-                    .py_4()
+                    .h(px(TITLEBAR))
+                    .flex_shrink_0()
                     .border_b_1()
                     .border_color(theme.border)
                     .child(div().title().child(SharedString::from("Settings")))
@@ -654,7 +729,8 @@ impl Skep {
             .items_center()
             .justify_between()
             .px_6()
-            .py_4()
+            .h(px(TITLEBAR))
+            .flex_shrink_0()
             .border_b_1()
             .border_color(self.theme.border)
             .child(div().title().child(SharedString::from("Services")))
