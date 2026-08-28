@@ -70,7 +70,10 @@ async fn wait_for(path: &std::path::Path, helper: &mut Helping) {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("nothing answered on the control socket. {}", helper.complaint());
+    panic!(
+        "nothing answered on the control socket. {}",
+        helper.complaint()
+    );
 }
 
 #[tokio::test]
