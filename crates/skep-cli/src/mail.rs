@@ -52,7 +52,10 @@ async fn list(query: Option<&str>) -> Result<()> {
 }
 
 async fn read(id: &str) -> Result<()> {
-    let body = comb_services::mail::read(port().await?, id).await?;
+    let port = port().await?;
+    let body = comb_services::mail::read(port, id).await?;
+    // Reading a message is what makes it read, whichever surface did it.
+    comb_services::mail::mark_read(port, id).await?;
     println!("from     {}", body.from);
     println!("to       {}", body.to.join(", "));
     println!("subject  {}", body.subject);

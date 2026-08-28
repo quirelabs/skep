@@ -84,6 +84,10 @@ const GUTTER: f32 = 34.;
 enum Copied {
     Line(u64),
     Everything,
+    /// One line of a message, by its place in it. gpui has no text selection
+    /// at this revision, so copying a piece has to be something you click.
+    Piece(usize),
+    Message,
 }
 
 enum Connection {
@@ -315,6 +319,30 @@ impl Skep {
         };
         cx.notify();
     }
+}
+
+/// Every url in a message, in the order they appear and without repeats. The
+/// converter writes a link as its words followed by its target in brackets, so
+/// finding them is a matter of reading to the next space or bracket.
+fn links(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("http") {
+        rest = &rest[at..];
+        if !rest.starts_with("http://") && !rest.starts_with("https://") {
+            rest = &rest["http".len()..];
+            continue;
+        }
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == ')' || c == '>')
+            .unwrap_or(rest.len());
+        let link = rest[..end].trim_end_matches(['.', ',', ';']).to_string();
+        if !link.is_empty() && !found.contains(&link) {
+            found.push(link);
+        }
+        rest = &rest[end..];
+    }
+    found
 }
 
 /// The time of day out of an iso timestamp. A message caught minutes ago does
@@ -669,7 +697,7 @@ impl Skep {
                 .border_color(theme.border)
                 .child(head);
             if showing && let Some(body) = &self.opened {
-                row = row.child(self.message(body));
+                row = row.child(self.message(body, cx));
             }
             rows = rows.child(row);
         }
@@ -738,47 +766,68 @@ impl Skep {
 
     /// The message itself, in the same monospaced treatment the logs get:
     /// what was sent is closer to output than to prose.
-    fn message(&self, body: &comb_services::mail::Body) -> AnyElement {
+    ///
+    /// gpui has no text selection at this revision, so nothing here can be
+    /// dragged over. Every line is a click instead, and any link in the
+    /// message is pulled out and made one of its own, because a link or a code
+    /// is what anyone is actually after.
+    fn message(&self, body: &comb_services::mail::Body, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
+
         let mut lines = div().flex().flex_col().w_full().gap_0p5();
-        for line in body.text.lines() {
+        for (place, line) in body.text.lines().enumerate() {
+            let done = self
+                .copied
+                .is_some_and(|(what, _)| what == Copied::Piece(place));
+            let words = line.to_string();
+            let mut shown = div()
+                .id(("mail-line", place))
+                .w_full()
+                .min_w_0()
+                .px_1()
+                .rounded_sm()
+                .label()
+                .font_family(MONO)
+                .cursor_pointer();
+            if done {
+                shown = shown.bg(theme.base);
+            }
             lines = lines.child(
-                div()
-                    .w_full()
-                    .min_w_0()
-                    .label()
-                    .font_family(MONO)
+                shown
+                    .hover(|style| style.bg(theme.base))
+                    .on_click(cx.listener(move |skep, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(words.clone()));
+                        skep.copied = Some((Copied::Piece(place), Instant::now()));
+                        cx.notify();
+                    }))
                     .child(SharedString::from(line.to_string())),
             );
         }
 
-        let mut panel = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .min_w_0()
-            .px_6()
-            .py_3()
-            .gap_2()
-            .bg(theme.raised)
-            .child(
-                div()
-                    .caption()
-                    .text_color(theme.muted)
-                    .child(SharedString::from(format!("to {}", body.to.join(", ")))),
-            );
+        let mut aside = div().flex().flex_col().w_full().gap_1();
+        aside = aside.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .caption()
+                        .text_color(theme.muted)
+                        .child(SharedString::from(format!("to {}", body.to.join(", ")))),
+                )
+                .child(self.copy_message(body, cx)),
+        );
         if body.converted {
-            panel = panel.child(
+            aside = aside.child(
                 div()
                     .caption()
                     .text_color(theme.muted)
-                    .child(SharedString::from(
-                        "this message was html, shown here as text",
-                    )),
+                    .child(SharedString::from("sent as html, read here as text")),
             );
         }
         if !body.attachments.is_empty() {
-            panel = panel.child(
+            aside = aside.child(
                 div()
                     .caption()
                     .text_color(theme.muted)
@@ -788,7 +837,88 @@ impl Skep {
                     ))),
             );
         }
-        panel.child(lines).into_any_element()
+
+        // Links get their own row, because a url wrapped in a sentence is the
+        // one thing that most needs copying on its own.
+        for (place, link) in links(&body.text).into_iter().enumerate() {
+            let done = self
+                .copied
+                .is_some_and(|(what, _)| what == Copied::Piece(usize::MAX - place));
+            let target = link.clone();
+            aside = aside.child(
+                div()
+                    .id(("mail-link", place))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .max_w_full()
+                    .min_w_0()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .bg(theme.base)
+                    .hover(|style| style.bg(theme.border))
+                    .on_click(cx.listener(move |skep, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(target.clone()));
+                        skep.copied = Some((Copied::Piece(usize::MAX - place), Instant::now()));
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .caption()
+                            .font_family(MONO)
+                            .child(SharedString::from(link)),
+                    )
+                    .child(
+                        div()
+                            .caption()
+                            .flex_shrink_0()
+                            .text_color(if done { theme.text } else { theme.muted })
+                            .child(SharedString::from(if done { "copied" } else { "copy" })),
+                    ),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .px_6()
+            .py_3()
+            .gap_2()
+            .bg(theme.raised)
+            .child(aside)
+            .child(lines)
+            .into_any_element()
+    }
+
+    fn copy_message(&self, body: &comb_services::mail::Body, cx: &mut Context<Self>) -> AnyElement {
+        let done = self.copied.is_some_and(|(what, _)| what == Copied::Message);
+        let text = body.text.clone();
+        div()
+            .id("copy-message")
+            .caption()
+            .cursor_pointer()
+            .text_color(if done {
+                self.theme.text
+            } else {
+                self.theme.accent
+            })
+            .on_click(cx.listener(move |skep, _, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                skep.copied = Some((Copied::Message, Instant::now()));
+                cx.notify();
+            }))
+            .child(SharedString::from(if done {
+                "copied"
+            } else {
+                "copy message"
+            }))
+            .into_any_element()
     }
 
     fn sites_page(&self, cx: &mut Context<Self>) -> AnyElement {

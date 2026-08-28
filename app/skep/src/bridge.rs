@@ -268,6 +268,14 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
                 match comb_services::mail::read(port, &id).await {
                     Ok(body) => {
                         let _ = reports.send(Update::MailBody(Box::new(body)));
+                        // Opening a message is what makes it read. Mailpit
+                        // only changes that when asked, and the list has to be
+                        // asked again or the mark stays where it was.
+                        let _ = comb_services::mail::mark_read(port, &id).await;
+                        if let Ok((messages, unread)) = comb_services::mail::inbox(port, 100).await
+                        {
+                            let _ = reports.send(Update::Mail { messages, unread });
+                        }
                     }
                     Err(error) => {
                         let _ = reports.send(Update::MailTrouble(error.to_string()));

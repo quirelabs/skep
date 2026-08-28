@@ -6,7 +6,7 @@
 //! frontends ask the engine which port mailpit is on and then come here.
 
 use comb::{Error, Result};
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Bytes;
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
@@ -139,8 +139,12 @@ pub async fn search(port: u16, query: &str, limit: usize) -> Result<Vec<Summary>
 pub async fn read(port: u16, id: &str) -> Result<Body> {
     let opened: Opened = parse(&get(port, &format!("/api/v1/message/{}", escape(id))).await?)?;
 
-    // A message with no plain part still has to say something.
-    let converted = opened.text.trim().is_empty() && !opened.html.trim().is_empty();
+    // Where there is html, convert it here rather than take mailpit's plain
+    // part. Mailpit decorates: an h1 comes back fenced in rows of asterisks
+    // and bold words keep their markers, which is right for a terminal and
+    // noise on a screen. Its plain part is used only when a message really
+    // was sent as text.
+    let converted = !opened.html.trim().is_empty();
     let text = if converted {
         to_text(&opened.html)
     } else {
@@ -166,6 +170,15 @@ pub async fn read(port: u16, id: &str) -> Result<Body> {
             .map(|one| one.file_name)
             .collect(),
     })
+}
+
+/// Marks a message read. Fetching one does not: mailpit only changes it when
+/// asked, so opening a message has to say so.
+pub async fn mark_read(port: u16, id: &str) -> Result<()> {
+    let body = format!("{{\"IDs\":[\"{}\"],\"Read\":true}}", id.replace('"', ""));
+    request_with(port, "PUT", "/api/v1/messages", Some(body))
+        .await
+        .map(drop)
 }
 
 pub async fn clear(port: u16) -> Result<()> {
@@ -218,6 +231,15 @@ async fn get(port: u16, path: &str) -> Result<Vec<u8>> {
 }
 
 async fn request(port: u16, method: &str, path: &str) -> Result<Vec<u8>> {
+    request_with(port, method, path, None).await
+}
+
+async fn request_with(
+    port: u16,
+    method: &str,
+    path: &str,
+    json_body: Option<String>,
+) -> Result<Vec<u8>> {
     let stream = TcpStream::connect(("127.0.0.1", port))
         .await
         .map_err(|_| Error::Io(std::io::Error::other("no mail catcher is listening")))?;
@@ -226,12 +248,20 @@ async fn request(port: u16, method: &str, path: &str) -> Result<Vec<u8>> {
         .map_err(|error| Error::Io(std::io::Error::other(error.to_string())))?;
     tokio::spawn(connection);
 
-    let request = hyper::Request::builder()
+    let sending = hyper::Request::builder()
         .method(method)
         .uri(path)
         .header(hyper::header::HOST, "127.0.0.1")
-        .body(Empty::<Bytes>::new())
-        .map_err(|error| Error::Io(std::io::Error::other(error.to_string())))?;
+        .header(hyper::header::CONTENT_TYPE, "application/json");
+    let request = match json_body {
+        Some(body) => sending.body(Full::new(Bytes::from(body)).boxed()),
+        None => sending.body(
+            Empty::<Bytes>::new()
+                .map_err(|never| match never {})
+                .boxed(),
+        ),
+    }
+    .map_err(|error| Error::Io(std::io::Error::other(error.to_string())))?;
 
     let response = sender
         .send_request(request)
@@ -446,6 +476,20 @@ mod tests {
     fn an_unclosed_tag_is_not_a_panic() {
         assert_eq!(to_text("before <b"), "before <b");
         assert_eq!(to_text("<script>never closed"), "");
+    }
+
+    /// Mailpit's own plain part fences a heading in asterisks and keeps bold
+    /// markers, which is right for a terminal and noise on a screen. This is
+    /// the message that showed it.
+    #[test]
+    fn a_heading_does_not_come_back_wearing_asterisks() {
+        let html = "<html><body><h1>Password reset</h1>\
+                    <p>Someone asked to reset the password for <b>you@example.test</b>.</p>\
+                    </body></html>";
+        assert_eq!(
+            to_text(html),
+            "Password reset\nSomeone asked to reset the password for you@example.test."
+        );
     }
 
     #[test]
