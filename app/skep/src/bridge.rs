@@ -22,6 +22,14 @@ pub enum Command {
     /// One message, in full.
     ReadMail(String),
     ClearMail,
+    /// Load this one message's remote images. Never remembered, never global.
+    ShowImages(String),
+    /// The message as it arrived.
+    MailSource(String),
+    /// How it would fare in real clients, and whether its links work. Asked
+    /// for, because checking links reaches out over the network and a mail
+    /// viewer that does that on its own would be lying about the sandbox.
+    MailChecks(String),
     /// Follow one service's output, or nothing.
     Watch(Option<InstanceId>),
     Snapshot(InstanceId, String),
@@ -50,6 +58,13 @@ pub enum Update {
     },
     MailBody(Box<comb_services::mail::Body>),
     MailTrouble(String),
+    MailSource(String),
+    MailChecks(
+        Box<(
+            comb_services::mail::Compatibility,
+            comb_services::mail::Links,
+        )>,
+    ),
     /// Every hostname this machine serves, and anything stopping it.
     Sites {
         sites: std::collections::BTreeMap<String, u16>,
@@ -281,6 +296,43 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
                         let _ = reports.send(Update::MailTrouble(error.to_string()));
                     }
                 }
+            }
+            Ok(())
+        }
+        Command::ShowImages(id) => {
+            if let Ok(port) = mail_port(engine).await
+                && let Ok(body) = comb_services::mail::read_showing(
+                    port,
+                    &id,
+                    comb_services::mail::Images::Allowed,
+                )
+                .await
+            {
+                let _ = reports.send(Update::MailBody(Box::new(body)));
+            }
+            Ok(())
+        }
+        Command::MailSource(id) => {
+            if let Ok(port) = mail_port(engine).await {
+                match comb_services::mail::source(port, &id).await {
+                    Ok(source) => {
+                        let _ = reports.send(Update::MailSource(source));
+                    }
+                    Err(error) => {
+                        let _ = reports.send(Update::MailTrouble(error.to_string()));
+                    }
+                }
+            }
+            Ok(())
+        }
+        Command::MailChecks(id) => {
+            if let Ok(port) = mail_port(engine).await {
+                let clients = comb_services::mail::compatibility(port, &id).await;
+                let links = comb_services::mail::links(port, &id).await;
+                let _ = reports.send(Update::MailChecks(Box::new((
+                    clients.unwrap_or_default(),
+                    links.unwrap_or_default(),
+                ))));
             }
             Ok(())
         }

@@ -45,6 +45,9 @@ pub struct Body {
     /// fetch or run. Empty when the message was sent as plain text, which is
     /// how a reader tells whether there is anything to render.
     pub html: String,
+    /// Remote images held back, and how many of those were tracking pixels.
+    pub images: usize,
+    pub pixels: usize,
     pub attachments: Vec<String>,
 }
 
@@ -141,6 +144,12 @@ pub async fn search(port: u16, query: &str, limit: usize) -> Result<Vec<Summary>
 }
 
 pub async fn read(port: u16, id: &str) -> Result<Body> {
+    read_showing(port, id, Images::Blocked).await
+}
+
+/// The same message with its remote images allowed, asked for one message at a
+/// time and never remembered.
+pub async fn read_showing(port: u16, id: &str, images: Images) -> Result<Body> {
     let opened: Opened = parse(&get(port, &format!("/api/v1/message/{}", escape(id))).await?)?;
 
     // Where there is html, convert it here rather than take mailpit's plain
@@ -153,6 +162,11 @@ pub async fn read(port: u16, id: &str) -> Result<Body> {
         to_text(&opened.html)
     } else {
         opened.text
+    };
+    let shown = if opened.html.trim().is_empty() {
+        Rendered::default()
+    } else {
+        render(&opened.html, images)
     };
 
     Ok(Body {
@@ -168,11 +182,9 @@ pub async fn read(port: u16, id: &str) -> Result<Body> {
         at: opened.date,
         text,
         converted,
-        html: if opened.html.trim().is_empty() {
-            String::new()
-        } else {
-            safe_html(&opened.html)
-        },
+        html: shown.html,
+        images: shown.images,
+        pixels: shown.pixels,
         attachments: opened
             .attachments
             .into_iter()
@@ -188,6 +200,134 @@ pub async fn mark_read(port: u16, id: &str) -> Result<()> {
     request_with(port, "PUT", "/api/v1/messages", Some(body))
         .await
         .map(drop)
+}
+
+/// The message exactly as it arrived, headers and encoding and all. This is
+/// the answer to "what did my app actually send", which a rendered view can
+/// only approximate.
+pub async fn source(port: u16, id: &str) -> Result<String> {
+    let raw = get(port, &format!("/api/v1/message/{}/raw", escape(id))).await?;
+    Ok(String::from_utf8_lossy(&raw).into_owned())
+}
+
+/// How the message would fare in real mail clients. Mailpit runs 186 tests
+/// against a support database and skep was throwing the answer away.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Compatibility {
+    pub supported: f32,
+    pub partial: f32,
+    pub unsupported: f32,
+    pub tests: usize,
+    pub warnings: Vec<Warning>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Warning {
+    pub what: String,
+    pub supported: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawChecks {
+    #[serde(rename = "Total")]
+    total: RawTotal,
+    #[serde(rename = "Warnings", default)]
+    warnings: Vec<RawWarning>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTotal {
+    #[serde(rename = "Tests")]
+    tests: usize,
+    #[serde(rename = "Supported")]
+    supported: f32,
+    #[serde(rename = "Partial")]
+    partial: f32,
+    #[serde(rename = "Unsupported")]
+    unsupported: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawWarning {
+    #[serde(rename = "Title")]
+    title: String,
+    #[serde(rename = "Score")]
+    score: RawScore,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawScore {
+    #[serde(rename = "Supported")]
+    supported: f32,
+}
+
+pub async fn compatibility(port: u16, id: &str) -> Result<Compatibility> {
+    let body = get(port, &format!("/api/v1/message/{}/html-check", escape(id))).await?;
+    let raw: RawChecks = parse(&body)?;
+    Ok(Compatibility {
+        supported: raw.total.supported,
+        partial: raw.total.partial,
+        unsupported: raw.total.unsupported,
+        tests: raw.total.tests,
+        warnings: raw
+            .warnings
+            .into_iter()
+            .map(|one| Warning {
+                what: one.title,
+                supported: one.score.supported,
+            })
+            .collect(),
+    })
+}
+
+/// Every link in the message, followed. This reaches out over the network, so
+/// it only ever happens because somebody asked for it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Links {
+    pub errors: usize,
+    pub links: Vec<Link>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Link {
+    pub url: String,
+    pub status: u16,
+    pub said: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawLinks {
+    #[serde(rename = "Errors", default)]
+    errors: usize,
+    #[serde(rename = "Links", default)]
+    links: Vec<RawLink>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawLink {
+    #[serde(rename = "URL")]
+    url: String,
+    #[serde(rename = "StatusCode", default)]
+    status: u16,
+    #[serde(rename = "Status", default)]
+    said: String,
+}
+
+pub async fn links(port: u16, id: &str) -> Result<Links> {
+    let body = get(port, &format!("/api/v1/message/{}/link-check", escape(id))).await?;
+    let raw: RawLinks = parse(&body)?;
+    Ok(Links {
+        errors: raw.errors,
+        links: raw
+            .links
+            .into_iter()
+            .map(|one| Link {
+                url: one.url,
+                status: one.status,
+                said: one.said,
+            })
+            .collect(),
+    })
 }
 
 pub async fn clear(port: u16) -> Result<()> {
@@ -301,8 +441,34 @@ async fn request_with(
 /// fetches its own tracking pixel the moment it is opened, which tells whoever
 /// sent it that you read it. That is measured, not assumed: an unguarded page
 /// fetched one twice.
-pub fn safe_html(html: &str) -> String {
+pub fn safe_html(html: &str) -> Rendered {
+    render(html, Images::Blocked)
+}
+
+/// Whether remote images may load. Blocked is the only default there can be:
+/// loading them is what tells a sender you opened the message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Images {
+    Blocked,
+    Allowed,
+}
+
+/// A message ready to show, and what was held back to get it there.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Rendered {
+    pub html: String,
+    /// Remote images not loaded.
+    pub images: usize,
+    /// How many of those were a single pixel, which is an image only in the
+    /// sense that it has to be fetched. Counted apart because "two images and
+    /// a tracking pixel" is the true sentence, and the pixel is the reason any
+    /// of this is blocked.
+    pub pixels: usize,
+}
+
+pub fn render(html: &str, images: Images) -> Rendered {
     let mut out = String::with_capacity(html.len());
+    let mut held = Rendered::default();
     let mut rest = html;
 
     while let Some(start) = rest.find('<') {
@@ -324,7 +490,8 @@ pub fn safe_html(html: &str) -> String {
         }
 
         let Some(end) = rest.find('>') else {
-            return finish(&out);
+            held.html = finish(&out, images);
+            return held;
         };
         let tag = &rest[1..end];
         let name = tag
@@ -340,20 +507,68 @@ pub fn safe_html(html: &str) -> String {
             continue;
         }
 
+        if name == "img" {
+            match remote_image(tag) {
+                Some(true) => held.pixels += 1,
+                Some(false) => held.images += 1,
+                None => {}
+            }
+        }
+
         out.push('<');
-        out.push_str(&strip_attributes(tag));
+        out.push_str(&strip_attributes(tag, images));
         out.push('>');
         rest = &rest[end + 1..];
     }
     out.push_str(rest);
-    finish(&out)
+
+    held.html = finish(&out, images);
+    held
+}
+
+/// Whether an image comes from elsewhere, and whether it is the one pixel kind
+/// whose only job is to be fetched.
+fn remote_image(tag: &str) -> Option<bool> {
+    let source = attribute(tag, "src")?;
+    let source = source.trim().to_ascii_lowercase();
+    if !source.starts_with("http://") && !source.starts_with("https://") {
+        return None;
+    }
+    let tiny = |name: &str| {
+        attribute(tag, name)
+            .map(|value| matches!(value.trim(), "0" | "1"))
+            .unwrap_or(false)
+    };
+    Some(tiny("width") && tiny("height"))
+}
+
+fn attribute(tag: &str, wanted: &str) -> Option<String> {
+    let lowered = tag.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(at) = lowered[from..].find(&format!("{wanted}=")) {
+        let at = from + at;
+        // Only when it really is the attribute and not the end of another.
+        let starts = at == 0 || lowered.as_bytes()[at - 1].is_ascii_whitespace();
+        let after = &tag[at + wanted.len() + 1..];
+        if starts {
+            return Some(match after.chars().next() {
+                Some(quote @ ('"' | '\'')) => after[1..].split(quote).next()?.to_string(),
+                _ => after.split_whitespace().next()?.to_string(),
+            });
+        }
+        from = at + wanted.len() + 1;
+    }
+    None
 }
 
 /// Attributes that fetch, and attributes that run. Everything else is kept, so
 /// the message still looks like itself.
-fn strip_attributes(tag: &str) -> String {
+fn strip_attributes(tag: &str, images: Images) -> String {
     let dangerous = |name: &str| {
         let name = name.to_ascii_lowercase();
+        if name == "src" && images == Images::Allowed {
+            return false;
+        }
         name.starts_with("on")
             || matches!(
                 name.as_str(),
@@ -432,11 +647,18 @@ fn without_urls(style: &str) -> String {
 /// The policy that makes the guarantee, rather than the tidying that supports
 /// it. Nothing may be fetched, inline styling is allowed because that is how
 /// mail is written, and images only when they came with the message.
-fn finish(body: &str) -> String {
+fn finish(body: &str, images: Images) -> String {
+    // Asked for, and only for this one message: there is no setting that turns
+    // this on everywhere, because the choice belongs to the message in front
+    // of you rather than to every message that will ever arrive.
+    let sources = match images {
+        Images::Blocked => "data:",
+        Images::Allowed => "data: https: http:",
+    };
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
-         style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'\">\
+         style-src 'unsafe-inline'; img-src {sources}; font-src 'none'; form-action 'none'\">\
          <style>html,body{{margin:0;padding:14px;font:13px/1.5 -apple-system,sans-serif;\
          word-wrap:break-word}}img{{max-width:100%}}</style></head><body>{body}</body></html>"
     )
@@ -572,7 +794,42 @@ fn tidy(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{safe_html, to_text};
+    use super::{Images, render, safe_html, to_text};
+
+    /// Two images and a tracking pixel is the true sentence, and the pixel is
+    /// the reason any of this is blocked, so it is counted apart.
+    #[test]
+    fn a_tracking_pixel_is_counted_apart_from_an_image() {
+        let html = r#"<img src="https://cdn.test/logo.png" width="200" height="60">
+            <img src="https://cdn.test/hero.jpg">
+            <img src="https://track.test/o.gif" width="1" height="1">"#;
+        let held = safe_html(html);
+        assert_eq!(held.images, 2, "two real images");
+        assert_eq!(held.pixels, 1, "and one that exists only to be fetched");
+    }
+
+    #[test]
+    fn an_image_that_came_with_the_message_is_not_held_back() {
+        let held = safe_html(r#"<img src="data:image/png;base64,iVBOR" width="1" height="1">"#);
+        assert_eq!(held.images, 0);
+        assert_eq!(held.pixels, 0, "it is embedded, so nothing is fetched");
+    }
+
+    #[test]
+    fn asking_for_images_lets_them_through_for_that_message_only() {
+        let html = r#"<img src="https://cdn.test/logo.png" width="200" height="60">"#;
+        let blocked = render(html, Images::Blocked).html;
+        let allowed = render(html, Images::Allowed).html;
+
+        assert!(!blocked.contains("cdn.test"), "{blocked}");
+        assert!(blocked.contains("img-src data:"), "{blocked}");
+
+        assert!(allowed.contains("cdn.test"), "{allowed}");
+        assert!(allowed.contains("img-src data: https: http:"), "{allowed}");
+        // Everything else stays shut whichever way images went.
+        assert!(allowed.contains("default-src 'none'"), "{allowed}");
+        assert!(!allowed.contains("script-src"), "{allowed}");
+    }
 
     #[test]
     fn nothing_that_fetches_survives_sanitising() {
@@ -581,7 +838,7 @@ mod tests {
             <iframe src="https://tracker.test/frame"></iframe>
             <div style="background: url('https://tracker.test/bg.png'); color: red">hi</div>
             <script>fetch('https://tracker.test/beacon')</script>"#;
-        let safe = safe_html(html);
+        let safe = safe_html(html).html;
 
         assert!(!safe.contains("tracker.test"), "{safe}");
         assert!(!safe.contains("<iframe"), "{safe}");
@@ -594,7 +851,7 @@ mod tests {
 
     #[test]
     fn the_policy_forbids_fetching_even_if_the_pass_missed_something() {
-        let safe = safe_html("<p>hello</p>");
+        let safe = safe_html("<p>hello</p>").html;
         assert!(safe.contains("Content-Security-Policy"), "{safe}");
         assert!(safe.contains("default-src 'none'"), "{safe}");
         // Mail is written with inline styles, so those have to survive.
@@ -605,7 +862,7 @@ mod tests {
 
     #[test]
     fn handlers_that_would_run_are_removed() {
-        let safe = safe_html(r#"<div onclick="alert(1)" onload="x()" title="kept">hi</div>"#);
+        let safe = safe_html(r#"<div onclick="alert(1)" onload="x()" title="kept">hi</div>"#).html;
         assert!(!safe.contains("onclick"), "{safe}");
         assert!(!safe.contains("onload"), "{safe}");
         assert!(safe.contains("title=\"kept\""), "{safe}");
@@ -615,7 +872,7 @@ mod tests {
     fn an_embedded_image_is_left_alone_in_the_words() {
         // The policy allows data urls; the pass must not undo that by turning
         // the element into something else.
-        let safe = safe_html("<p>before</p><p>after</p>");
+        let safe = safe_html("<p>before</p><p>after</p>").html;
         assert!(safe.contains("before"), "{safe}");
         assert!(safe.contains("after"), "{safe}");
     }

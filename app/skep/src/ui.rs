@@ -21,6 +21,15 @@ use crate::platform::Menubar;
 use crate::preview::Preview;
 use crate::theme::{Scale, Theme};
 
+/// The three ways to look at one message: as it renders, as it arrived, and as
+/// it would fare elsewhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MailView {
+    Rendered,
+    Source,
+    Checks,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Services,
@@ -127,6 +136,19 @@ pub struct Skep {
     /// element that knows where the reading pane is has to tell it on every
     /// frame and cannot borrow the view to do so.
     preview: Rc<RefCell<Option<Preview>>>,
+    /// Which way the open message is being looked at, and what has been asked
+    /// for about it. All of it clears when a different message is opened,
+    /// because none of it is true of any other one.
+    mail_view: MailView,
+    source: Option<String>,
+    /// Whether this one message was asked to load its images.
+    images_shown: bool,
+    checks: Option<
+        Box<(
+            comb_services::mail::Compatibility,
+            comb_services::mail::Links,
+        )>,
+    >,
     /// Where the list is scrolled to, so a bar can be drawn showing it.
     mail_scroll: ScrollHandle,
     /// Every hostname this machine serves, and anything in the way of it.
@@ -202,6 +224,10 @@ impl Skep {
             opened: None,
             mail_trouble: None,
             preview: Rc::new(RefCell::new(None)),
+            mail_view: MailView::Rendered,
+            source: None,
+            images_shown: false,
+            checks: None,
             mail_scroll: ScrollHandle::new(),
             sites: BTreeMap::new(),
             site_trouble: Vec::new(),
@@ -253,6 +279,8 @@ impl Skep {
                     self.unread = unread;
                     self.mail_trouble = None;
                 }
+                Update::MailSource(source) => self.source = Some(source),
+                Update::MailChecks(checks) => self.checks = Some(checks),
                 Update::MailBody(body) => {
                     if let Some(preview) = self.preview.borrow_mut().as_mut() {
                         if body.html.is_empty() {
@@ -260,6 +288,14 @@ impl Skep {
                         } else {
                             preview.show(&body.html);
                         }
+                    }
+                    // A different message means everything asked about the
+                    // last one is no longer about anything.
+                    if self.opened.as_ref().is_none_or(|open| open.id != body.id) {
+                        self.mail_view = MailView::Rendered;
+                        self.source = None;
+                        self.checks = None;
+                        self.images_shown = false;
                     }
                     self.opened = Some(*body);
                     self.mail_trouble = None;
@@ -425,9 +461,16 @@ impl Render for Skep {
         }
         // It draws above everything gpui draws, so anywhere but the mail page
         // it has to be gone rather than merely behind.
-        if self.page != Page::Mail
-            && let Some(preview) = self.preview.borrow_mut().as_mut()
-        {
+        // It draws above everything gpui draws, so anywhere it is not wanted
+        // it has to be gone rather than merely behind: covered by the source
+        // or the checks is not a thing it can be.
+        let wanted = self.page == Page::Mail
+            && self.mail_view == MailView::Rendered
+            && self
+                .opened
+                .as_ref()
+                .is_some_and(|body| !body.html.is_empty());
+        if !wanted && let Some(preview) = self.preview.borrow_mut().as_mut() {
             preview.hide();
         }
 
@@ -881,29 +924,12 @@ impl Skep {
     /// scrolling list and cannot draw anything over it.
     fn reading(&self, body: &comb_services::mail::Body, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
-        let preview = self.preview.clone();
 
-        let shown = if body.html.is_empty() {
-            // Sent as text, so it is read as text, and every line of it can be
-            // copied the way a log line can.
-            self.message(body, cx)
-        } else {
-            div()
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .child(
-                    gpui::canvas(
-                        |_, _, _| (),
-                        move |bounds, _, _, _| {
-                            if let Some(preview) = preview.borrow().as_ref() {
-                                preview.place(bounds);
-                            }
-                        },
-                    )
-                    .size_full(),
-                )
-                .into_any_element()
+        let shown = match self.mail_view {
+            MailView::Rendered if body.html.is_empty() => self.message(body, cx),
+            MailView::Rendered => self.rendered(body, cx),
+            MailView::Source => self.source_view(),
+            MailView::Checks => self.checks_view(cx),
         };
 
         div()
@@ -942,11 +968,327 @@ impl Skep {
                             .items_center()
                             .gap_3()
                             .flex_shrink_0()
+                            .child(self.mail_tabs(body, cx))
                             .child(self.copy_message(body, cx))
                             .child(self.close_message(cx)),
                     ),
             )
             .child(shown)
+            .into_any_element()
+    }
+
+    fn mail_tabs(&self, body: &comb_services::mail::Body, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let mut tabs = div().flex().items_center().gap_1();
+
+        for (which, name) in [
+            (MailView::Rendered, "Rendered"),
+            (MailView::Source, "Source"),
+            (MailView::Checks, "Checks"),
+        ] {
+            // A plain text message has nothing to render differently, so the
+            // rendered tab would be a lie about there being a choice.
+            if which == MailView::Rendered && body.html.is_empty() {
+                continue;
+            }
+            let here = self.mail_view == which;
+            let id = body.id.clone();
+            tabs = tabs.child(
+                div()
+                    .id(SharedString::from(format!("mail-tab-{name}")))
+                    .px_2()
+                    .py_0p5()
+                    .rounded_md()
+                    .caption()
+                    .cursor_pointer()
+                    .text_color(if here { theme.text } else { theme.muted })
+                    .bg(if here {
+                        theme.base
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .hover(|style| style.text_color(theme.text))
+                    .on_click(cx.listener(move |skep, _, _, cx| {
+                        skep.mail_view = which;
+                        // Asked for on the way in rather than kept fresh: the
+                        // source never changes and the checks reach out over
+                        // the network.
+                        match which {
+                            MailView::Source if skep.source.is_none() => {
+                                let _ = skep.commands.send(Command::MailSource(id.clone()));
+                            }
+                            _ => {}
+                        }
+                        cx.notify();
+                    }))
+                    .child(SharedString::from(name)),
+            );
+        }
+        tabs.into_any_element()
+    }
+
+    /// The message as it renders, with a word about what was held back to make
+    /// that safe.
+    fn rendered(&self, body: &comb_services::mail::Body, cx: &mut Context<Self>) -> AnyElement {
+        let preview = self.preview.clone();
+        let mut pane = div().flex().flex_col().flex_1().min_h_0().w_full();
+
+        if !self.images_shown && (body.images > 0 || body.pixels > 0) {
+            pane = pane.child(self.held_back(body, cx));
+        }
+
+        pane.child(
+            div().flex_1().min_h_0().w_full().child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |bounds, _, _, _| {
+                        if let Some(preview) = preview.borrow().as_ref() {
+                            preview.place(bounds);
+                        }
+                    },
+                )
+                .size_full(),
+            ),
+        )
+        .into_any_element()
+    }
+
+    /// What was not loaded, said plainly, with the way to change it. A pixel
+    /// is named apart from an image because it is the reason for the rule.
+    fn held_back(&self, body: &comb_services::mail::Body, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let images = body.images;
+        let pixels = body.pixels;
+        let counted =
+            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let said = match (images, pixels) {
+            (0, p) => counted(p, "tracking pixel", "tracking pixels"),
+            (i, 0) => counted(i, "image", "images"),
+            (i, p) => format!(
+                "{} and {}",
+                counted(i, "image", "images"),
+                counted(p, "tracking pixel", "tracking pixels")
+            ),
+        };
+        let id = body.id.clone();
+
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .w_full()
+            .px_6()
+            .py_2()
+            .flex_shrink_0()
+            .bg(theme.base)
+            .child(
+                div()
+                    .caption()
+                    .min_w_0()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(format!("{said} not loaded"))),
+            )
+            .child(
+                div()
+                    .id("load-images")
+                    .caption()
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .text_color(theme.accent)
+                    .on_click(cx.listener(move |skep, _, _, cx| {
+                        skep.images_shown = true;
+                        let _ = skep.commands.send(Command::ShowImages(id.clone()));
+                        cx.notify();
+                    }))
+                    .child(SharedString::from("load them")),
+            )
+            .into_any_element()
+    }
+
+    /// The message exactly as it arrived. Every line copyable, because this is
+    /// the view somebody is reading to find out what went wrong.
+    fn source_view(&self) -> AnyElement {
+        let theme = &self.theme;
+        let Some(source) = &self.source else {
+            return self.nothing("reading the message").into_any_element();
+        };
+
+        let mut lines = div().flex().flex_col().w_full();
+        for line in source.lines() {
+            lines = lines.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .caption()
+                    .font_family(MONO)
+                    .text_color(theme.muted)
+                    .child(SharedString::from(line.to_string())),
+            );
+        }
+
+        div()
+            .id("mail-source")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .px_6()
+            .py_2()
+            .overflow_y_scroll()
+            .child(lines)
+            .into_any_element()
+    }
+
+    /// How the message would fare elsewhere. Nothing here runs until it is
+    /// asked for: following the links means reaching out over the network, and
+    /// a viewer that did that on its own would contradict everything the
+    /// rendered view promises.
+    fn checks_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let Some(open) = &self.opened else {
+            return self.nothing("no message").into_any_element();
+        };
+
+        let Some(found) = &self.checks else {
+            let id = open.id.clone();
+            return div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .px_6()
+                .py_3()
+                .gap_2()
+                .child(div().caption().text_color(theme.muted).child(
+                    SharedString::from(
+                        "Checks how this message renders in real mail clients, and follows every                          link in it to see whether it answers. Following the links reaches out                          over the network, so it happens only when you ask.",
+                    ),
+                ))
+                .child(
+                    div()
+                        .id("run-checks")
+                        .caption()
+                        .cursor_pointer()
+                        .text_color(theme.accent)
+                        .on_click(cx.listener(move |skep, _, _, cx| {
+                            let _ = skep.commands.send(Command::MailChecks(id.clone()));
+                            cx.notify();
+                        }))
+                        .child(SharedString::from("run the checks")),
+                )
+                .into_any_element();
+        };
+
+        let (clients, links) = found.as_ref();
+        let mut out = div().flex().flex_col().w_full().gap_3();
+
+        out = out.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().label().child(SharedString::from(format!(
+                    "{:.0}% supported across {} client tests",
+                    clients.supported, clients.tests
+                ))))
+                .child(
+                    div()
+                        .caption()
+                        .text_color(theme.muted)
+                        .child(SharedString::from(format!(
+                            "{:.0}% partial, {:.0}% unsupported",
+                            clients.partial, clients.unsupported
+                        ))),
+                ),
+        );
+
+        for warning in clients.warnings.iter().take(8) {
+            out = out.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .w_full()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .caption()
+                            .min_w_0()
+                            .truncate()
+                            .child(SharedString::from(warning.what.clone())),
+                    )
+                    .child(
+                        div()
+                            .caption()
+                            .flex_shrink_0()
+                            .text_color(theme.muted)
+                            .child(SharedString::from(format!("{:.0}%", warning.supported))),
+                    ),
+            );
+        }
+
+        out = out.child(
+            div()
+                .label()
+                .child(SharedString::from(if links.errors == 0 {
+                    format!("{} links, all answering", links.links.len())
+                } else {
+                    format!(
+                        "{} of {} links did not answer",
+                        links.errors,
+                        links.links.len()
+                    )
+                })),
+        );
+
+        for link in links.links.iter().take(12) {
+            let bad = link.status >= 400 || link.status == 0;
+            out = out.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .w_full()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .caption()
+                            .font_family(MONO)
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme.muted)
+                            .child(SharedString::from(link.url.clone())),
+                    )
+                    .child(
+                        div()
+                            .caption()
+                            .flex_shrink_0()
+                            .text_color(if bad { theme.failed } else { theme.running })
+                            .child(SharedString::from(if link.said.is_empty() {
+                                link.status.to_string()
+                            } else {
+                                link.said.clone()
+                            })),
+                    ),
+            );
+        }
+
+        div()
+            .id("mail-checks")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .px_6()
+            .py_3()
+            .overflow_y_scroll()
+            .child(out)
             .into_any_element()
     }
 

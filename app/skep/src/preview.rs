@@ -17,7 +17,7 @@ use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSView, NSWorkspace};
+use objc2_app_kit::{NSColor, NSView, NSWorkspace};
 use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize, NSString};
 use objc2_web_kit::{
     WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
@@ -112,6 +112,14 @@ impl Preview {
                 &configuration,
             )
         };
+        // Safari's inspector, on the message. Right click, inspect element,
+        // on mail the app under development just sent: the cheapest useful
+        // thing in the whole viewer.
+        unsafe { view.setInspectable(true) };
+        // So a light message does not flash against a dark window while it
+        // loads. The message itself is left as it was written.
+        unsafe { view.setUnderPageBackgroundColor(Some(&NSColor::whiteColor())) };
+
         let navigation = Navigation::new(marker);
         unsafe { view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*navigation))) };
 

@@ -150,6 +150,32 @@ async fn what_was_caught_can_be_listed_read_and_searched() {
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].subject, "Reset your password");
 
+    // What the message really was, headers and all.
+    let source = comb_services::mail::source(http, &html_one.id)
+        .await
+        .unwrap();
+    assert!(source.contains("Subject: Reset your password"), "{source}");
+    assert!(source.contains("Content-Type: text/html"), "{source}");
+
+    // How it would fare elsewhere. Mailpit runs these against a support
+    // database; skep was throwing the answer away before.
+    let clients = comb_services::mail::compatibility(http, &html_one.id)
+        .await
+        .unwrap();
+    assert!(clients.tests > 0, "there should be client tests");
+    assert!(
+        clients.supported > 0.,
+        "a plain message should be widely supported"
+    );
+
+    // And whether its links answer. This reaches out, which is why nothing
+    // does it on its own.
+    let links = comb_services::mail::links(http, &html_one.id)
+        .await
+        .unwrap();
+    assert_eq!(links.links.len(), 1, "the message has one link");
+    assert!(links.links[0].url.contains("myapp.test"), "{links:?}");
+
     comb_services::mail::clear(http).await.unwrap();
     let (empty, _) = comb_services::mail::inbox(http, 20).await.unwrap();
     assert!(empty.is_empty(), "clearing should leave nothing behind");
