@@ -970,31 +970,74 @@ impl Skep {
                 );
             }
 
-            let (partial, none): (Vec<_>, Vec<_>) =
-                warning.clients.iter().partition(|client| client.partial);
-            for (title, group) in [("no support", &none), ("partial", &partial)] {
-                if group.is_empty() {
-                    continue;
-                }
-                detail = detail.child(
-                    div()
-                        .caption()
-                        .text_color(theme.muted)
-                        .child(SharedString::from(format!("{title} ({})", group.len()))),
-                );
-                let names: Vec<String> = group.iter().map(|client| client.name.clone()).collect();
-                detail = detail.child(div().caption().child(SharedString::from(names.join(", "))));
-                // The database explains its partial cases, and the explanation
-                // is usually the actionable part.
-                if let Some(note) = group
+            // The note first, and in full ink. It is the sentence that says
+            // what happens instead, which is the thing anybody opened this to
+            // find out. The clients it applies to sit under it, quieter,
+            // because they are the scope of the sentence rather than the point
+            // of it.
+            for note in &warning.notes {
+                let names: Vec<String> = note
+                    .clients
                     .iter()
-                    .find_map(|client| (!client.note.is_empty()).then(|| client.note.clone()))
-                {
+                    .map(|client| client.name.clone())
+                    .collect();
+                detail =
+                    detail.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .w_full()
+                            .min_w_0()
+                            .pl_3()
+                            .border_l_2()
+                            .border_color(theme.border)
+                            .child(div().label().child(SharedString::from(note.says.clone())))
+                            .child(div().caption().text_color(theme.muted).child(
+                                SharedString::from(format!(
+                                    "{} {}",
+                                    names.len(),
+                                    if names.len() == 1 {
+                                        "client"
+                                    } else {
+                                        "clients"
+                                    }
+                                )),
+                            ))
+                            .child(
+                                div()
+                                    .caption()
+                                    .text_color(theme.muted)
+                                    .child(SharedString::from(names.join(", "))),
+                            ),
+                    );
+            }
+
+            if !warning.silent.is_empty() {
+                let (partial, none): (Vec<_>, Vec<_>) =
+                    warning.silent.iter().partition(|client| client.partial);
+                for (title, group) in [("no support", &none), ("partial", &partial)] {
+                    if group.is_empty() {
+                        continue;
+                    }
+                    let names: Vec<String> =
+                        group.iter().map(|client| client.name.clone()).collect();
                     detail = detail.child(
                         div()
-                            .caption()
-                            .text_color(theme.muted)
-                            .child(SharedString::from(note)),
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .w_full()
+                            .min_w_0()
+                            .child(div().caption().text_color(theme.muted).child(
+                                SharedString::from(format!("{title}, with nothing said about why")),
+                            ))
+                            .child(
+                                div()
+                                    .caption()
+                                    .text_color(theme.muted)
+                                    .child(SharedString::from(names.join(", "))),
+                            ),
                     );
                 }
             }

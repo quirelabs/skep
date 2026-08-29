@@ -233,8 +233,18 @@ pub struct Warning {
     pub supported: f32,
     pub partial: f32,
     pub unsupported: f32,
-    /// Only the clients that do not fully support it. The ones that do need no
-    /// explaining, and listing all forty nine would bury the ones that matter.
+    /// What the support database says, and who it applies to. This is the
+    /// sentence somebody came here for: it is the difference between knowing a
+    /// thing is unsupported and knowing what happens instead.
+    pub notes: Vec<Note>,
+    /// Clients that fall short with nothing said about why. Grouped after the
+    /// notes because there is nothing to read, only a list.
+    pub silent: Vec<Client>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Note {
+    pub says: String,
     pub clients: Vec<Client>,
 }
 
@@ -244,9 +254,6 @@ pub struct Client {
     pub platform: String,
     /// Either partial or none. Anything supported is left out.
     pub partial: bool,
-    /// What the support database says about the partial case, when it says
-    /// anything.
-    pub note: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -323,24 +330,43 @@ pub async fn compatibility(port: u16, id: &str) -> Result<Compatibility> {
             .warnings
             .into_iter()
             .map(|one| {
-                let mut clients: Vec<Client> = one
-                    .results
-                    .iter()
-                    .filter(|result| result.support != "yes")
-                    .map(|result| Client {
+                // Gathered by what is said about them rather than by how badly
+                // they fail: two clients that fail the same way for the same
+                // reason are one thing to read, not two.
+                let mut by_note: std::collections::BTreeMap<String, Vec<Client>> =
+                    std::collections::BTreeMap::new();
+                let mut silent: Vec<Client> = Vec::new();
+
+                for result in one.results.iter().filter(|result| result.support != "yes") {
+                    let client = Client {
                         name: tidy_client(&result.name),
                         platform: readable(&result.platform),
                         partial: result.support == "partial",
-                        note: one
-                            .notes
-                            .get(&result.note)
-                            .map(|note| plain(note))
-                            .unwrap_or_default(),
+                    };
+                    match one.notes.get(&result.note).map(|note| plain(note)) {
+                        Some(says) if !says.trim().is_empty() => {
+                            by_note.entry(says).or_default().push(client)
+                        }
+                        _ => silent.push(client),
+                    }
+                }
+
+                let mut notes: Vec<Note> = by_note
+                    .into_iter()
+                    .map(|(says, mut clients)| {
+                        // The database tests a client once per version, and the
+                        // version is dropped from the name, so the same client
+                        // would otherwise be named several times in a row.
+                        clients.sort_by(|a, b| a.name.cmp(&b.name));
+                        clients.dedup_by(|a, b| a.name == b.name);
+                        Note { says, clients }
                     })
                     .collect();
-                // The ones that fail outright first: they are the reason the
-                // warning exists.
-                clients.sort_by_key(|client| (client.partial, client.name.clone()));
+                // What affects the most clients is what matters most.
+                notes.sort_by_key(|note| std::cmp::Reverse(note.clients.len()));
+                silent.sort_by_key(|client| (client.partial, client.name.clone()));
+                silent.dedup_by(|a, b| a.name == b.name && a.partial == b.partial);
+
                 Warning {
                     what: one.title,
                     description: one.description,
@@ -350,7 +376,8 @@ pub async fn compatibility(port: u16, id: &str) -> Result<Compatibility> {
                     supported: one.score.supported,
                     partial: one.score.partial,
                     unsupported: one.score.unsupported,
-                    clients,
+                    notes,
+                    silent,
                 }
             })
             .collect(),

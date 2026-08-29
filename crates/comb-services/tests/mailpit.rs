@@ -177,13 +177,34 @@ async fn what_was_caught_can_be_listed_read_and_searched() {
             warning.url
         );
         assert!(
-            !warning.clients.is_empty(),
-            "a warning with less than full support names who falls short"
+            !warning.notes.is_empty() || !warning.silent.is_empty(),
+            "a warning names who falls short"
         );
-        assert!(
-            warning.clients.iter().all(|client| !client.name.is_empty()),
-            "each of them by name"
-        );
+        // The note is the sentence people came for, so it has to survive the
+        // trip out of html and keep the clients it applies to.
+        for note in &warning.notes {
+            assert!(!note.says.trim().is_empty(), "a note that says nothing");
+            // A note may legitimately contain angle brackets: this one reads
+            // "Replaced by a <div> with supported attributes". What must not
+            // survive is the markup those were written in.
+            assert!(
+                !note.says.contains("<code") && !note.says.contains("&lt;"),
+                "markup left in a note: {}",
+                note.says
+            );
+            assert!(
+                !note.clients.is_empty(),
+                "a note applying to nobody: {}",
+                note.says
+            );
+            // Versions are dropped from client names, so the same client must
+            // not be listed once per version it was tested at.
+            let mut seen: Vec<&str> = note.clients.iter().map(|c| c.name.as_str()).collect();
+            let before = seen.len();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(before, seen.len(), "a client listed more than once");
+        }
     }
 
     // And whether its links answer. This reaches out, which is why nothing
