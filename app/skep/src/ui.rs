@@ -68,7 +68,11 @@ const RAIL_WIDE: f32 = 208.;
 
 /// How far a page heading must stand clear of the traffic lights: whatever
 /// width the rail is not currently covering for it.
-fn clearance(rail: f32) -> f32 {
+fn clearance(rail: f32, lights: bool) -> f32 {
+    if !lights {
+        // Full screen: there are no buttons in that corner to stand clear of.
+        return 0.;
+    }
     (LIGHTS - rail).max(0.)
 }
 
@@ -142,6 +146,9 @@ pub struct Skep {
     mail_view: MailView,
     source: Option<String>,
     /// Whether this one message was asked to load its images.
+    /// Whether the window is full screen, where macOS takes the traffic
+    /// lights away and the space kept clear for them is just a gap.
+    fullscreen: bool,
     /// Which client-support warning is open, if any.
     open_warning: Option<usize>,
     images_shown: bool,
@@ -228,6 +235,7 @@ impl Skep {
             preview: Rc::new(RefCell::new(None)),
             mail_view: MailView::Rendered,
             source: None,
+            fullscreen: false,
             open_warning: None,
             images_shown: false,
             checks: None,
@@ -470,6 +478,7 @@ fn ports(status: &ServiceStatus) -> SharedString {
 
 impl Render for Skep {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.fullscreen = window.is_fullscreen();
         // The webview belongs to the window, so it cannot exist before one.
         if self.preview.borrow().is_none() {
             *self.preview.borrow_mut() = Preview::attach(window);
@@ -582,7 +591,7 @@ impl Skep {
         div()
             .id("rail-top")
             .w_full()
-            .h(px(TITLEBAR))
+            .h(px(if self.fullscreen { 8. } else { TITLEBAR }))
             .flex_shrink_0()
             .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
                 window.start_window_move();
@@ -598,6 +607,7 @@ impl Skep {
     /// gives up, so the traffic lights never land on the words.
     fn page_title(&self, title: &'static str, cx: &mut Context<Self>) -> AnyElement {
         let (from, to, moves) = (self.rail_from, self.rail_to, self.rail_moves);
+        let lights = !self.fullscreen;
         div()
             .flex()
             .items_center()
@@ -629,7 +639,7 @@ impl Skep {
             .with_animation(
                 ("title", moves),
                 Animation::new(MOTION).with_easing(ease_in_out),
-                move |title, delta| title.pl(px(clearance(from + (to - from) * delta))),
+                move |title, delta| title.pl(px(clearance(from + (to - from) * delta, lights))),
             )
             .into_any_element()
     }
@@ -1336,9 +1346,18 @@ impl Skep {
                         // Asked for on the way in rather than kept fresh: the
                         // source never changes and the checks reach out over
                         // the network.
+                        // Choosing a view is the asking. Making somebody then
+                        // press a button to get what the view is for is one
+                        // act too many, and the rule was never that checks
+                        // should be hard to reach: it was that opening a
+                        // message must not reach out on its own. It still
+                        // does not.
                         match which {
                             MailView::Source if skep.source.is_none() => {
                                 let _ = skep.commands.send(Command::MailSource(id.clone()));
+                            }
+                            MailView::Checks if skep.checks.is_none() => {
+                                let _ = skep.commands.send(Command::MailChecks(id.clone()));
                             }
                             _ => {}
                         }
@@ -1464,18 +1483,16 @@ impl Skep {
             .into_any_element()
     }
 
-    /// How the message would fare elsewhere. Nothing here runs until it is
-    /// asked for: following the links means reaching out over the network, and
-    /// a viewer that did that on its own would contradict everything the
-    /// rendered view promises.
+    /// How the message would fare elsewhere. Coming to this view is what asks
+    /// for it, which is a deliberate act; opening a message still reaches out
+    /// to nothing at all, which was the promise the rendered view makes.
     fn checks_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
-        let Some(open) = &self.opened else {
+        if self.opened.is_none() {
             return self.nothing("no message").into_any_element();
-        };
+        }
 
         let Some(found) = &self.checks else {
-            let id = open.id.clone();
             return div()
                 .flex()
                 .flex_col()
@@ -1484,23 +1501,16 @@ impl Skep {
                 .w_full()
                 .px_6()
                 .py_3()
-                .gap_2()
-                .child(div().caption().text_color(theme.muted).child(
-                    SharedString::from(
-                        "Checks how this message renders in real mail clients, and follows every                          link in it to see whether it answers. Following the links reaches out                          over the network, so it happens only when you ask.",
-                    ),
-                ))
+                .gap_1()
+                .child(self.nothing("checking"))
                 .child(
                     div()
-                        .id("run-checks")
                         .caption()
-                        .cursor_pointer()
-                        .text_color(theme.accent)
-                        .on_click(cx.listener(move |skep, _, _, cx| {
-                            let _ = skep.commands.send(Command::MailChecks(id.clone()));
-                            cx.notify();
-                        }))
-                        .child(SharedString::from("run the checks")),
+                        .text_color(theme.muted)
+                        .child(SharedString::from(
+                            "Testing how this message renders in real mail clients, and following \
+                         every link in it to see whether it answers.",
+                        )),
                 )
                 .into_any_element();
         };
