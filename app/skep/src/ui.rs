@@ -405,6 +405,17 @@ fn links(text: &str) -> Vec<String> {
     found
 }
 
+/// A small stable number from a string. Not a hash anybody should rely on,
+/// just enough to give a sender the same mark every time.
+fn fingerprint(text: &str) -> u32 {
+    let mut sum: u32 = 2_166_136_261;
+    for byte in text.trim().to_ascii_lowercase().bytes() {
+        sum ^= u32::from(byte);
+        sum = sum.wrapping_mul(16_777_619);
+    }
+    sum
+}
+
 /// The time of day out of an iso timestamp. A message caught minutes ago does
 /// not need its date spelled out.
 fn clock(at: &str) -> String {
@@ -737,9 +748,10 @@ impl Skep {
                             theme.accent
                         }),
                 )
+                .child(self.sender_mark(&message.from))
                 .child(
                     div()
-                        .w(px(180.))
+                        .w(px(160.))
                         .truncate()
                         .text_color(theme.muted)
                         .child(SharedString::from(message.from.clone())),
@@ -759,6 +771,20 @@ impl Skep {
                         .text_color(theme.muted)
                         .child(SharedString::from(message.snippet.clone())),
                 )
+                .children((message.attachments > 0).then(|| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_0p5()
+                        .flex_shrink_0()
+                        .text_color(theme.muted)
+                        .child(svg().path("icons/paperclip.svg").size(px(13.)))
+                        .child(
+                            div()
+                                .caption()
+                                .child(SharedString::from(message.attachments.to_string())),
+                        )
+                }))
                 .child(
                     div()
                         .caption()
@@ -855,6 +881,99 @@ impl Skep {
             .into_any_element()
     }
 
+    /// How widely the message is supported, as a bar rather than three
+    /// numbers in a row.
+    ///
+    /// The three parts are ordered rather than merely different, so they are
+    /// drawn as one ink getting fainter rather than as three colours. That is
+    /// also what keeps status colour where it belongs, which is in a row's
+    /// dot and nowhere else.
+    fn support(&self, clients: &comb_services::mail::Compatibility) -> AnyElement {
+        let theme = &self.theme;
+        let total = (clients.supported + clients.partial + clients.unsupported).max(0.01);
+        let parts = [
+            ("supported", clients.supported, theme.text),
+            ("partial", clients.partial, theme.muted),
+            ("unsupported", clients.unsupported, theme.idle),
+        ];
+
+        let mut bar = div().flex().w_full().h(px(8.)).gap_0p5();
+        for (_, amount, ink) in parts {
+            if amount <= 0. {
+                continue;
+            }
+            bar = bar.child(
+                div()
+                    .h_full()
+                    .w(gpui::relative(amount / total))
+                    .rounded_full()
+                    .bg(ink),
+            );
+        }
+
+        // Each part is named beside its own mark: the shade alone is not
+        // enough to tell anyone which is which.
+        let mut key = div().flex().items_center().gap_4().flex_wrap();
+        for (name, amount, ink) in parts {
+            key = key.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(div().size(px(6.)).rounded_full().bg(ink))
+                    .child(
+                        div()
+                            .caption()
+                            .text_color(theme.muted)
+                            .child(SharedString::from(format!("{name} {amount:.0}%"))),
+                    ),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .w_full()
+            .child(div().label().child(SharedString::from(format!(
+                "{:.0}% supported across {} client tests",
+                clients.supported, clients.tests
+            ))))
+            .child(bar)
+            .child(key)
+            .into_any_element()
+    }
+
+    /// A sender's own mark: a small comb of cells, filled from the address
+    /// itself so the same sender always draws the same shape. Mirrored down
+    /// the middle, because a symmetric pattern reads as made rather than as
+    /// noise.
+    ///
+    /// It carries no information a person could not get from the address. What
+    /// it gives is a shape to recognise, so a list of mail stops being a wall
+    /// of words.
+    fn sender_mark(&self, from: &str) -> AnyElement {
+        let bits = fingerprint(from);
+        let ink = self.theme.muted;
+
+        let mut comb = div().flex().flex_col().gap_px().flex_shrink_0();
+        for row in 0..3 {
+            let mut across = div().flex().gap_px();
+            for column in 0..3 {
+                // The outer columns are the same, so the mark has an axis.
+                let bit = row * 2 + column.min(2 - column);
+                let filled = bits >> bit & 1 == 1;
+                across = across.child(div().size(px(4.)).rounded_sm().bg(if filled {
+                    ink
+                } else {
+                    gpui::transparent_black()
+                }));
+            }
+            comb = comb.child(across);
+        }
+        comb.into_any_element()
+    }
+
     /// What each column of the list is. Without these the times read as
     /// numbers and the sender reads as just another line of text.
     fn mail_columns(&self) -> AnyElement {
@@ -876,7 +995,8 @@ impl Skep {
             .border_b_1()
             .border_color(theme.border)
             .child(div().size(px(6.)).flex_shrink_0())
-            .child(label("From").w(px(180.)))
+            .child(div().w(px(14.)).flex_shrink_0())
+            .child(label("From").w(px(160.)))
             .child(label("Subject").w(px(220.)))
             .child(label("Preview").flex_1().min_w_0())
             .child(label("Time").flex_shrink_0())
@@ -1185,25 +1305,7 @@ impl Skep {
         let (clients, links) = found.as_ref();
         let mut out = div().flex().flex_col().w_full().gap_3();
 
-        out = out.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().label().child(SharedString::from(format!(
-                    "{:.0}% supported across {} client tests",
-                    clients.supported, clients.tests
-                ))))
-                .child(
-                    div()
-                        .caption()
-                        .text_color(theme.muted)
-                        .child(SharedString::from(format!(
-                            "{:.0}% partial, {:.0}% unsupported",
-                            clients.partial, clients.unsupported
-                        ))),
-                ),
-        );
+        out = out.child(self.support(clients));
 
         for warning in clients.warnings.iter().take(8) {
             out = out.child(
