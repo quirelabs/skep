@@ -17,6 +17,8 @@ pub enum Command {
     Resync,
     /// Ask whoever holds the machine to stand down, then take it.
     TakeOver,
+    /// Whether anything is actually listening behind each site.
+    CheckSites,
     /// What the mail catcher has caught.
     Mail,
     /// One message, in full.
@@ -51,6 +53,8 @@ pub enum Update {
         pid: Option<u32>,
     },
     Failed(String),
+    /// Which sites have something answering behind them.
+    SiteHealth(std::collections::BTreeMap<String, bool>),
     /// What the mail catcher has caught, or why it could not be asked.
     Mail {
         messages: Vec<comb_services::mail::Summary>,
@@ -261,6 +265,23 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
                 }
                 Err(error) => Err(error),
             }
+        }
+        Command::CheckSites => {
+            let sites = engine.site_list();
+            let mut answering = std::collections::BTreeMap::new();
+            for (host, port) in sites {
+                // A short reach to loopback: either something is holding the
+                // port or it is not, and neither answer is worth waiting on.
+                let alive = tokio::time::timeout(
+                    std::time::Duration::from_millis(250),
+                    tokio::net::TcpStream::connect(("127.0.0.1", port)),
+                )
+                .await
+                .is_ok_and(|reached| reached.is_ok());
+                answering.insert(host, alive);
+            }
+            let _ = reports.send(Update::SiteHealth(answering));
+            Ok(())
         }
         Command::Mail => {
             match mail_port(engine).await {

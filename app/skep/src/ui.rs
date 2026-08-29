@@ -163,6 +163,9 @@ pub struct Skep {
     /// Every hostname this machine serves, and anything in the way of it.
     sites: BTreeMap<String, u16>,
     site_trouble: Vec<String>,
+    /// Which sites had something answering the last time anyone looked. A site
+    /// is only config until something is behind it.
+    answering: BTreeMap<String, bool>,
     authority_trusted: bool,
     commands: UnboundedSender<Command>,
     updates: UnboundedReceiver<Update>,
@@ -242,6 +245,7 @@ impl Skep {
             mail_scroll: ScrollHandle::new(),
             sites: BTreeMap::new(),
             site_trouble: Vec::new(),
+            answering: BTreeMap::new(),
             authority_trusted: false,
             commands: bridge.commands,
             updates: bridge.updates,
@@ -280,6 +284,7 @@ impl Skep {
                         let _ = self.commands.send(Command::Resync);
                     }
                 }
+                Update::SiteHealth(answering) => self.answering = answering,
                 Update::Mail { messages, unread } => {
                     if self.opened.is_none()
                         && let Some(preview) = self.preview.borrow_mut().as_mut()
@@ -771,8 +776,14 @@ impl Skep {
                     skep.page = page;
                     // A page that shows something fetched asks for it on the
                     // way in rather than showing yesterday's answer.
-                    if page == Page::Mail {
-                        let _ = skep.commands.send(Command::Mail);
+                    match page {
+                        Page::Mail => {
+                            let _ = skep.commands.send(Command::Mail);
+                        }
+                        Page::Sites => {
+                            let _ = skep.commands.send(Command::CheckSites);
+                        }
+                        _ => {}
                     }
                     cx.notify();
                 }))
@@ -1290,6 +1301,33 @@ impl Skep {
             comb = comb.child(across);
         }
         comb.into_any_element()
+    }
+
+    /// What each column of a site is. A hostname and a number side by side
+    /// say nothing about which is which.
+    fn site_columns(&self) -> AnyElement {
+        let theme = &self.theme;
+        let label = |text: &'static str| {
+            div()
+                .caption()
+                .text_color(theme.muted)
+                .child(SharedString::from(text))
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .w_full()
+            .px_6()
+            .py_1()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(div().size(px(6.)).flex_shrink_0())
+            .child(label("Hostname").flex_1().min_w_0())
+            .child(label("Port").w(px(90.)))
+            .child(label("Behind it").w(px(150.)))
+            .into_any_element()
     }
 
     /// What each column of the list is. Without these the times read as
@@ -1879,35 +1917,64 @@ impl Skep {
 
         let mut rows = div().flex().flex_col().w_full();
         if self.sites.is_empty() {
-            rows = rows.child(div().px_6().py_4().label().text_color(theme.muted).child(
-                SharedString::from(
-                    "No sites yet. Put one in skep.toml or config.toml, then run skep up:\n\n\
-                         [sites]\n\"myapp.test\" = 3000",
-                ),
-            ));
+            rows = rows.child(self.nothing("no sites yet"));
+        } else {
+            rows = rows.child(self.site_columns());
         }
+
         for (host, port) in &self.sites {
+            // A site is config until something is behind it. The dot says
+            // which, in the one place status colour is allowed to live.
+            let alive = self.answering.get(host).copied();
             rows = rows.child(
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .gap_3()
                     .w_full()
                     .min_w_0()
                     .px_6()
                     .py_3()
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(div().min_w_0().child(SharedString::from(format!(
-                        "https://{host}:{}",
-                        comb::HTTPS_PORT
-                    ))))
                     .child(
                         div()
-                            .caption()
+                            .size(px(6.))
+                            .rounded_full()
                             .flex_shrink_0()
+                            .bg(match alive {
+                                Some(true) => theme.running,
+                                Some(false) => theme.failed,
+                                None => theme.idle,
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(SharedString::from(host.clone())),
+                    )
+                    .child(
+                        div()
+                            .w(px(90.))
+                            .flex_shrink_0()
+                            .label()
+                            .font_family(MONO)
                             .text_color(theme.muted)
-                            .child(SharedString::from(format!("port {port}"))),
+                            .child(SharedString::from(format!("{port}"))),
+                    )
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .flex_shrink_0()
+                            .caption()
+                            .text_color(theme.muted)
+                            .child(SharedString::from(match alive {
+                                Some(true) => "answering".to_string(),
+                                Some(false) => format!("nothing on {port}"),
+                                None => "not checked".to_string(),
+                            })),
                     ),
             );
         }
@@ -1922,6 +1989,8 @@ impl Skep {
             notes = notes.child(self.note(trouble));
         }
 
+        let answering = self.answering.values().filter(|alive| **alive).count();
+
         div()
             .flex()
             .flex_col()
@@ -1933,6 +2002,7 @@ impl Skep {
                 div()
                     .flex()
                     .items_center()
+                    .justify_between()
                     .w_full()
                     .pl_4()
                     .pr_6()
@@ -1940,7 +2010,17 @@ impl Skep {
                     .flex_shrink_0()
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(self.page_title("Sites", cx)),
+                    .child(self.page_title("Sites", cx))
+                    .children((!self.sites.is_empty()).then(|| {
+                        div()
+                            .caption()
+                            .flex_shrink_0()
+                            .text_color(theme.muted)
+                            .child(SharedString::from(format!(
+                                "{answering} of {} answering",
+                                self.sites.len()
+                            )))
+                    })),
             )
             .child(notes)
             .child(rows)
