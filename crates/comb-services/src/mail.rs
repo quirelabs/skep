@@ -224,7 +224,29 @@ pub struct Compatibility {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Warning {
     pub what: String,
+    pub description: String,
+    /// Where the support data came from, so the claim can be checked.
+    pub url: String,
+    pub category: String,
+    /// How many times the message uses it.
+    pub found: usize,
     pub supported: f32,
+    pub partial: f32,
+    pub unsupported: f32,
+    /// Only the clients that do not fully support it. The ones that do need no
+    /// explaining, and listing all forty nine would bury the ones that matter.
+    pub clients: Vec<Client>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Client {
+    pub name: String,
+    pub platform: String,
+    /// Either partial or none. Anything supported is left out.
+    pub partial: bool,
+    /// What the support database says about the partial case, when it says
+    /// anything.
+    pub note: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -251,14 +273,42 @@ struct RawTotal {
 struct RawWarning {
     #[serde(rename = "Title")]
     title: String,
+    #[serde(rename = "Description", default)]
+    description: String,
+    #[serde(rename = "URL", default)]
+    url: String,
+    #[serde(rename = "Category", default)]
+    category: String,
     #[serde(rename = "Score")]
     score: RawScore,
+    #[serde(rename = "Results", default)]
+    results: Vec<RawResult>,
+    #[serde(rename = "NotesByNumber", default)]
+    notes: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RawScore {
+    #[serde(rename = "Found", default)]
+    found: usize,
     #[serde(rename = "Supported")]
     supported: f32,
+    #[serde(rename = "Partial", default)]
+    partial: f32,
+    #[serde(rename = "Unsupported", default)]
+    unsupported: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawResult {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Platform", default)]
+    platform: String,
+    #[serde(rename = "Support")]
+    support: String,
+    #[serde(rename = "NoteNumber", default)]
+    note: String,
 }
 
 pub async fn compatibility(port: u16, id: &str) -> Result<Compatibility> {
@@ -272,9 +322,36 @@ pub async fn compatibility(port: u16, id: &str) -> Result<Compatibility> {
         warnings: raw
             .warnings
             .into_iter()
-            .map(|one| Warning {
-                what: one.title,
-                supported: one.score.supported,
+            .map(|one| {
+                let mut clients: Vec<Client> = one
+                    .results
+                    .iter()
+                    .filter(|result| result.support != "yes")
+                    .map(|result| Client {
+                        name: tidy_client(&result.name),
+                        platform: readable(&result.platform),
+                        partial: result.support == "partial",
+                        note: one
+                            .notes
+                            .get(&result.note)
+                            .map(|note| plain(note))
+                            .unwrap_or_default(),
+                    })
+                    .collect();
+                // The ones that fail outright first: they are the reason the
+                // warning exists.
+                clients.sort_by_key(|client| (client.partial, client.name.clone()));
+                Warning {
+                    what: one.title,
+                    description: one.description,
+                    url: one.url,
+                    category: one.category,
+                    found: one.score.found,
+                    supported: one.score.supported,
+                    partial: one.score.partial,
+                    unsupported: one.score.unsupported,
+                    clients,
+                }
             })
             .collect(),
     })
@@ -311,6 +388,22 @@ struct RawLink {
     status: u16,
     #[serde(rename = "Status", default)]
     said: String,
+}
+
+/// Mailpit names a client and its date together. The date belongs beside the
+/// version, not in the middle of a sentence.
+fn tidy_client(name: &str) -> String {
+    name.split(" (").next().unwrap_or(name).trim().to_string()
+}
+
+/// The support database writes its platforms with dashes.
+fn readable(platform: &str) -> String {
+    platform.replace('-', " ")
+}
+
+/// Notes come as html because they came from a web page.
+fn plain(note: &str) -> String {
+    to_text(note)
 }
 
 pub async fn links(port: u16, id: &str) -> Result<Links> {

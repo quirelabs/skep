@@ -142,6 +142,8 @@ pub struct Skep {
     mail_view: MailView,
     source: Option<String>,
     /// Whether this one message was asked to load its images.
+    /// Which client-support warning is open, if any.
+    open_warning: Option<usize>,
     images_shown: bool,
     checks: Option<
         Box<(
@@ -226,6 +228,7 @@ impl Skep {
             preview: Rc::new(RefCell::new(None)),
             mail_view: MailView::Rendered,
             source: None,
+            open_warning: None,
             images_shown: false,
             checks: None,
             mail_scroll: ScrollHandle::new(),
@@ -296,6 +299,7 @@ impl Skep {
                         self.source = None;
                         self.checks = None;
                         self.images_shown = false;
+                        self.open_warning = None;
                     }
                     self.opened = Some(*body);
                     self.mail_trouble = None;
@@ -481,8 +485,15 @@ impl Render for Skep {
                 .opened
                 .as_ref()
                 .is_some_and(|body| !body.html.is_empty());
-        if !wanted && let Some(preview) = self.preview.borrow_mut().as_mut() {
-            preview.hide();
+        if let Some(preview) = self.preview.borrow_mut().as_mut() {
+            // Both ways round: hiding it on the way out is only half the job,
+            // and without the other half coming back to the message showed
+            // nothing at all.
+            if wanted {
+                preview.reveal();
+            } else {
+                preview.hide();
+            }
         }
 
         div()
@@ -879,6 +890,155 @@ impl Skep {
             )
             .children(self.opened.as_ref().map(|body| self.reading(body, cx)))
             .into_any_element()
+    }
+
+    /// One thing the message uses that is not supported everywhere. Shut, it
+    /// is the name and how widely it works. Open, it is which clients fall
+    /// short, in what way, and what the support database says about it.
+    fn warning(
+        &self,
+        index: usize,
+        warning: &comb_services::mail::Warning,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = &self.theme;
+        let open = self.open_warning == Some(index);
+
+        let head = div()
+            .id(("warning", index))
+            .flex()
+            .items_center()
+            .gap_3()
+            .w_full()
+            .min_w_0()
+            .py_1p5()
+            .cursor_pointer()
+            .hover(|style| style.text_color(theme.text))
+            .on_click(cx.listener(move |skep, _, _, cx| {
+                skep.open_warning = if open { None } else { Some(index) };
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .label()
+                    .min_w_0()
+                    .truncate()
+                    .child(SharedString::from(warning.what.clone())),
+            )
+            .child(
+                div()
+                    .caption()
+                    .flex_shrink_0()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(format!(
+                        "{} · used {}×",
+                        warning.category, warning.found
+                    ))),
+            )
+            .child(div().flex_1())
+            .child(div().w(px(90.)).flex_shrink_0().child(self.ratio(
+                warning.supported,
+                warning.partial,
+                warning.unsupported,
+            )))
+            .child(
+                div()
+                    .caption()
+                    .w(px(34.))
+                    .flex_shrink_0()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(format!("{:.0}%", warning.supported))),
+            );
+
+        let mut row = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(head);
+
+        if open {
+            let mut detail = div().flex().flex_col().gap_2().w_full().pb_3();
+            if !warning.description.is_empty() {
+                detail = detail.child(
+                    div()
+                        .caption()
+                        .text_color(theme.muted)
+                        .child(SharedString::from(warning.description.clone())),
+                );
+            }
+
+            let (partial, none): (Vec<_>, Vec<_>) =
+                warning.clients.iter().partition(|client| client.partial);
+            for (title, group) in [("no support", &none), ("partial", &partial)] {
+                if group.is_empty() {
+                    continue;
+                }
+                detail = detail.child(
+                    div()
+                        .caption()
+                        .text_color(theme.muted)
+                        .child(SharedString::from(format!("{title} ({})", group.len()))),
+                );
+                let names: Vec<String> = group.iter().map(|client| client.name.clone()).collect();
+                detail = detail.child(div().caption().child(SharedString::from(names.join(", "))));
+                // The database explains its partial cases, and the explanation
+                // is usually the actionable part.
+                if let Some(note) = group
+                    .iter()
+                    .find_map(|client| (!client.note.is_empty()).then(|| client.note.clone()))
+                {
+                    detail = detail.child(
+                        div()
+                            .caption()
+                            .text_color(theme.muted)
+                            .child(SharedString::from(note)),
+                    );
+                }
+            }
+
+            if !warning.url.is_empty() {
+                let url = warning.url.clone();
+                detail = detail.child(
+                    div()
+                        .id(("warning-url", index))
+                        .caption()
+                        .cursor_pointer()
+                        .text_color(theme.accent)
+                        .on_click(move |_, _, cx| cx.open_url(&url))
+                        .child(SharedString::from("where this comes from")),
+                );
+            }
+            row = row.child(detail);
+        }
+
+        row.into_any_element()
+    }
+
+    /// The same three parts as the summary, drawn small enough to sit in a
+    /// row. No key: the summary above already named the shades.
+    fn ratio(&self, supported: f32, partial: f32, unsupported: f32) -> AnyElement {
+        let theme = &self.theme;
+        let total = (supported + partial + unsupported).max(0.01);
+        let mut bar = div().flex().w_full().h(px(4.)).gap_0p5();
+        for (amount, ink) in [
+            (supported, theme.text),
+            (partial, theme.muted),
+            (unsupported, theme.idle),
+        ] {
+            if amount > 0. {
+                bar = bar.child(
+                    div()
+                        .h_full()
+                        .w(gpui::relative(amount / total))
+                        .rounded_full()
+                        .bg(ink),
+                );
+            }
+        }
+        bar.into_any_element()
     }
 
     /// How widely the message is supported, as a bar rather than three
@@ -1307,30 +1467,20 @@ impl Skep {
 
         out = out.child(self.support(clients));
 
-        for warning in clients.warnings.iter().take(8) {
+        if !clients.warnings.is_empty() {
             out = out.child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .w_full()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .caption()
-                            .min_w_0()
-                            .truncate()
-                            .child(SharedString::from(warning.what.clone())),
-                    )
-                    .child(
-                        div()
-                            .caption()
-                            .flex_shrink_0()
-                            .text_color(theme.muted)
-                            .child(SharedString::from(format!("{:.0}%", warning.supported))),
-                    ),
+                    .caption()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(format!(
+                        "{} of the things this message uses are not supported everywhere",
+                        clients.warnings.len()
+                    ))),
             );
+        }
+
+        for (index, warning) in clients.warnings.iter().enumerate() {
+            out = out.child(self.warning(index, warning, cx));
         }
 
         out = out.child(

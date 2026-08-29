@@ -167,6 +167,24 @@ async fn what_was_caught_can_be_listed_read_and_searched() {
         clients.supported > 0.,
         "a plain message should be widely supported"
     );
+    // The detail is the point of the view, so it has to actually arrive.
+    if let Some(warning) = clients.warnings.first() {
+        assert!(!warning.what.is_empty(), "a warning names what it is about");
+        assert!(warning.found > 0, "and how many times it is used");
+        assert!(
+            warning.url.starts_with("http"),
+            "and where the claim comes from: {}",
+            warning.url
+        );
+        assert!(
+            !warning.clients.is_empty(),
+            "a warning with less than full support names who falls short"
+        );
+        assert!(
+            warning.clients.iter().all(|client| !client.name.is_empty()),
+            "each of them by name"
+        );
+    }
 
     // And whether its links answer. This reaches out, which is why nothing
     // does it on its own.

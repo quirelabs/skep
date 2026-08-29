@@ -77,6 +77,10 @@ pub struct Preview {
     parent: Retained<NSView>,
     /// Held because the webview does not keep its delegate alive.
     _navigation: Retained<Navigation>,
+    /// Whether a message has been put in it. Hiding does not empty it, so
+    /// coming back to it is a matter of showing it again rather than loading
+    /// it again.
+    loaded: bool,
     showing: bool,
 }
 
@@ -130,6 +134,7 @@ impl Preview {
             view,
             parent,
             _navigation: navigation,
+            loaded: false,
             showing: false,
         })
     }
@@ -141,7 +146,18 @@ impl Preview {
                 .loadHTMLString_baseURL(&NSString::from_str(html), None);
         }
         self.view.setHidden(false);
+        self.loaded = true;
         self.showing = true;
+    }
+
+    /// Shows what is already in it. Switching to the source and back should
+    /// not cost a reload, and a message that reloaded every time would flicker
+    /// and refetch on every glance.
+    pub fn reveal(&mut self) {
+        if self.loaded && !self.showing {
+            self.view.setHidden(false);
+            self.showing = true;
+        }
     }
 
     pub fn hide(&mut self) {
