@@ -4,11 +4,21 @@
 use std::cell::RefCell;
 
 use comb::{Glyph, ServiceState, ServiceStatus};
+
+/// What the shape means, for anyone reading the menu bar aloud.
+fn describe_glyph(glyph: Glyph) -> String {
+    match glyph {
+        Glyph::Idle => "skep, nothing running".to_string(),
+        Glyph::Running(count) => format!("skep, {count} running"),
+        Glyph::Working => "skep, working".to_string(),
+        Glyph::Failed => "skep, something failed".to_string(),
+    }
+}
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSColor, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
+    NSApplication, NSColor, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength,
 };
 use objc2_foundation::{MainThreadMarker, NSString};
@@ -75,16 +85,56 @@ impl Menubar {
     /// Grey when nothing runs, green with a count when everything is healthy,
     /// orange while anything is in motion, and a different shape entirely when
     /// something has failed, because that is the one you must not miss.
+    ///
+    /// The shape is the app's own: a cell, hollow when nothing runs and solid
+    /// when something does, so the state reads without colour as well as with
+    /// it. It is drawn by the system rather than typed as a character, which
+    /// is what makes it sit on the menu bar's baseline at the size the menu
+    /// bar happens to be, on every display.
     pub fn show(&self, glyph: Glyph, services: &[ServiceStatus]) {
-        let (title, tint) = match glyph {
-            Glyph::Idle => ("○".to_string(), NSColor::secondaryLabelColor()),
-            Glyph::Running(count) => (format!("● {count}"), NSColor::systemGreenColor()),
-            Glyph::Working => ("◐".to_string(), NSColor::systemOrangeColor()),
-            Glyph::Failed => ("▲".to_string(), NSColor::systemRedColor()),
+        let (symbol, title, tint) = match glyph {
+            Glyph::Idle => ("hexagon", String::new(), NSColor::secondaryLabelColor()),
+            Glyph::Running(count) => (
+                "hexagon.fill",
+                format!(" {count}"),
+                NSColor::systemGreenColor(),
+            ),
+            Glyph::Working => (
+                "hexagon.lefthalf.filled",
+                String::new(),
+                NSColor::systemOrangeColor(),
+            ),
+            // Not a cell at all. A shape you have not been staring past all
+            // day is the point of it.
+            Glyph::Failed => (
+                "exclamationmark.triangle.fill",
+                String::new(),
+                NSColor::systemRedColor(),
+            ),
         };
 
         if let Some(button) = self.item.button(self.mtm) {
-            button.setTitle(&NSString::from_str(&title));
+            let drawn = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                &NSString::from_str(symbol),
+                Some(&NSString::from_str(&describe_glyph(glyph))),
+            );
+            match drawn {
+                Some(image) => {
+                    // A template image takes the menu bar's own colour rules,
+                    // which is what keeps it right in both appearances.
+                    image.setTemplate(true);
+                    button.setImage(Some(&image));
+                    button.setTitle(&NSString::from_str(&title));
+                }
+                // An older macOS without the symbol still has to say
+                // something, so it says it the way it always did.
+                None => button.setTitle(&NSString::from_str(match glyph {
+                    Glyph::Idle => "\u{25cb}",
+                    Glyph::Running(_) => "\u{25cf}",
+                    Glyph::Working => "\u{25d0}",
+                    Glyph::Failed => "\u{25b2}",
+                })),
+            }
             button.setContentTintColor(Some(&tint));
         }
         self.item.setMenu(Some(&self.menu(services)));

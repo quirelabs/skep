@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use comb::{Applied, InstanceId, Label, LogLine, Mirror, ServiceState, ServiceStatus, Snapshot};
 use gpui::{
-    Animation, AnimationExt, AnyElement, ClipboardItem, Context, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle, SharedString,
+    Animation, AnimationExt, AnyElement, Bounds, ClipboardItem, Context, FontWeight, Hsla,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, div, ease_in_out, pulsating_between,
     px, svg,
 };
@@ -415,6 +415,67 @@ fn links(text: &str) -> Vec<String> {
         rest = &rest[end..];
     }
     found
+}
+
+/// The dither. Cells on a fixed grid, kept or dropped by a threshold that
+/// comes from where the cell is rather than from chance, which is what stops
+/// it swimming when the window changes size.
+///
+/// It thins towards the middle so the words sitting there stay the loudest
+/// thing in an empty screen, and the whole field is capped so an enormous
+/// window cannot turn a texture into thousands of quads.
+fn dither(bounds: Bounds<Pixels>, ink: Hsla, window: &mut Window) {
+    const STEP: f32 = 7.;
+    const CELL: f32 = 1.;
+    const MOST: usize = 2_400;
+
+    let wide = f32::from(bounds.size.width);
+    let tall = f32::from(bounds.size.height);
+    if wide <= 0. || tall <= 0. {
+        return;
+    }
+
+    let columns = (wide / STEP).floor().max(1.) as usize;
+    let rows = (tall / STEP).floor().max(1.) as usize;
+    // Coarsen rather than clip: a texture that stops half way across is worse
+    // than one that is simply sparser.
+    let skip = (columns * rows).div_ceil(MOST).max(1);
+
+    let mut placed = 0usize;
+    for row in 0..rows {
+        for column in 0..columns {
+            if !(row * columns + column).is_multiple_of(skip) {
+                continue;
+            }
+            // The classic four by four ordered matrix, which is what makes the
+            // field read as a texture rather than as noise.
+            const MATRIX: [[u8; 4]; 4] =
+                [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+            let level = MATRIX[row % 4][column % 4];
+
+            let x = column as f32 * STEP;
+            let y = row as f32 * STEP;
+            // Distance from the middle, so the centre stays quiet.
+            let from_middle = (((x / wide) - 0.5).abs() + ((y / tall) - 0.5).abs()).min(1.);
+            if f32::from(level) / 16. > from_middle {
+                continue;
+            }
+
+            let mut faded = ink;
+            faded.a *= 0.5;
+            window.paint_quad(gpui::fill(
+                Bounds {
+                    origin: gpui::point(bounds.origin.x + px(x), bounds.origin.y + px(y)),
+                    size: gpui::size(px(CELL), px(CELL)),
+                },
+                faded,
+            ));
+            placed += 1;
+            if placed >= MOST {
+                return;
+            }
+        }
+    }
 }
 
 /// A small stable number from a string. Not a hash anybody should rely on,
@@ -1155,6 +1216,50 @@ impl Skep {
             .child(bar)
             .child(key)
             .into_any_element()
+    }
+
+    /// A service, named. The service and the version it is are one string in
+    /// the protocol and two different things to read: the name is what you are
+    /// looking for, the version is what you check afterwards. A branch says so
+    /// in words, because indentation alone does not survive a glance.
+    fn instance(&self, status: &ServiceStatus) -> AnyElement {
+        let theme = &self.theme;
+        let id = &status.id;
+
+        let mut named = div()
+            .flex()
+            .items_baseline()
+            .gap_1p5()
+            .w(px(200.))
+            .min_w_0()
+            .flex_shrink_0()
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .child(SharedString::from(id.service.as_str().to_string())),
+            )
+            .child(
+                div()
+                    .caption()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(id.version.as_str().to_string())),
+            );
+
+        if let Some(label) = &id.label {
+            named = named.child(
+                div()
+                    .flex_shrink_0()
+                    .caption()
+                    .px_1()
+                    .rounded_sm()
+                    .bg(theme.base)
+                    .text_color(theme.muted)
+                    .child(SharedString::from(label.as_str().to_string())),
+            );
+        }
+        named.into_any_element()
     }
 
     /// A sender's own mark: a small comb of cells, filled from the address
@@ -2004,16 +2109,35 @@ impl Skep {
 
     /// Empty states say what would be here, quietly, and never fill the space
     /// with something to look at.
+    /// Where there is nothing, with the texture that only ever appears here.
+    ///
+    /// An ordered dither rather than a random one: the pattern comes from the
+    /// cell's own coordinates, so it does not crawl when the window resizes
+    /// and it draws the same way twice. It fades out towards the words so it
+    /// never competes with them.
     fn nothing(&self, what: &'static str) -> impl IntoElement {
+        let ink = self.theme.idle;
         div()
+            .relative()
             .flex()
             .flex_1()
             .items_center()
             .justify_center()
             .py_10()
-            .label()
-            .text_color(self.theme.idle)
-            .child(SharedString::from(what))
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _| dither(bounds, ink, window),
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(
+                div()
+                    .label()
+                    .text_color(self.theme.idle)
+                    .child(SharedString::from(what)),
+            )
     }
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2078,7 +2202,6 @@ impl Skep {
         let failed = matches!(status.state, ServiceState::Failed { .. });
         let id = status.id.clone();
         let open = self.expanded.as_ref() == Some(&id);
-        let key = SharedString::from(id.to_string());
 
         let head = div()
             .id(("row", index))
@@ -2097,11 +2220,13 @@ impl Skep {
                 move |skep, _, _, cx| skep.toggle(id.clone(), cx)
             }))
             .child(self.dot(&status, working, index))
-            .child(div().w(px(186.)).truncate().child(key.clone()))
+            .child(self.instance(&status))
             .child(
                 div()
                     .w(px(104.))
+                    .flex_shrink_0()
                     .label()
+                    .font_family(MONO)
                     .text_color(theme.muted)
                     .child(ports(&status)),
             )
