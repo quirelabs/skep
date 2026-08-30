@@ -41,6 +41,22 @@ pub type Book = Arc<std::sync::RwLock<Sites>>;
 /// Where sites are served until a privileged helper can hand over 80 and 443.
 /// A port in the url is the thing that milestone buys back.
 pub const HTTPS_PORT: u16 = 8443;
+
+/// The `:port` a url needs, which is nothing at all when it is the one browsers
+/// already assume. Shared so the redirect and everything that prints a site
+/// agree about when a port is worth showing.
+pub fn port_suffix(port: u16) -> String {
+    if port == 443 {
+        String::new()
+    } else {
+        format!(":{port}")
+    }
+}
+
+/// A site's url as a person should see it.
+pub fn site_url(host: &str, port: u16) -> String {
+    format!("https://{host}{}", port_suffix(port))
+}
 pub const HTTP_PORT: u16 = 8080;
 
 type Body = BoxBody<Bytes, hyper::Error>;
@@ -115,11 +131,7 @@ pub async fn redirect(
             let service = service_fn(move |request: Request<Incoming>| async move {
                 // The port belongs in the url until something owns 443, and
                 // sending people to a port nothing serves is worse than ugly.
-                let shown = if https_port == 443 {
-                    String::new()
-                } else {
-                    format!(":{https_port}")
-                };
+                let shown = port_suffix(https_port);
                 let target = match host_of(&request) {
                     Some(host) => format!("https://{host}{shown}{}", path_of(&request)),
                     None => {

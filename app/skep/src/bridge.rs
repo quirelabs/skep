@@ -76,6 +76,8 @@ pub enum Update {
         sites: std::collections::BTreeMap<String, u16>,
         trouble: Vec<String>,
         trusted: bool,
+        /// The port to show a person, which is 443 once the helper forwards it.
+        public_https: u16,
     },
     /// The tail that was already there when watching began.
     Logs(Vec<LogLine>),
@@ -187,6 +189,7 @@ async fn start_sites(host: &comb::Host, reports: &UnboundedSender<Update>) {
         sites: host.engine().site_list(),
         trouble: serving.trouble,
         trusted,
+        public_https: serving.public_https,
     });
 }
 
@@ -281,6 +284,10 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
                         trusted: comb::Authority::open(&paths)
                             .map(|authority| authority.is_trusted())
                             .unwrap_or(false),
+                        public_https: comb::public_https_port(
+                            &comb::Layout::system(comb::SUFFIX).control,
+                        )
+                        .await,
                     });
                 }
                 Err(error) => {

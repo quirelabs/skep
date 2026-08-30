@@ -188,6 +188,8 @@ pub struct Skep {
     /// a timer nobody asked for.
     was_active: bool,
     authority_trusted: bool,
+    /// The port sites are reachable on, 8443 until the helper forwards 443.
+    site_port: u16,
     commands: UnboundedSender<Command>,
     updates: UnboundedReceiver<Update>,
     /// Where the rail is sliding from and to, and when it started. Keeping
@@ -272,6 +274,7 @@ impl Skep {
             site: None,
             was_active: true,
             authority_trusted: false,
+            site_port: comb::HTTPS_PORT,
             commands: bridge.commands,
             updates: bridge.updates,
             rail_from: RAIL_WIDE,
@@ -361,10 +364,12 @@ impl Skep {
                     sites,
                     trouble,
                     trusted,
+                    public_https,
                 } => {
                     self.sites = sites;
                     self.site_trouble = trouble;
                     self.authority_trusted = trusted;
+                    self.site_port = public_https;
                 }
                 Update::Hosting => {
                     self.connection = Connection::Hosting;
@@ -1712,9 +1717,9 @@ impl Skep {
                             .min_w_0()
                             .truncate()
                             .label()
-                            .child(SharedString::from(format!(
-                                "https://{shown}:{}",
-                                comb::HTTPS_PORT
+                            .child(SharedString::from(comb::site_url(
+                                &shown,
+                                self.site_port,
                             ))),
                     )
                     .child(
@@ -1730,7 +1735,7 @@ impl Skep {
                                     .cursor_pointer()
                                     .text_color(theme.accent)
                                     .on_click({
-                                        let url = format!("https://{shown}:{}", comb::HTTPS_PORT);
+                                        let url = comb::site_url(&shown, self.site_port);
                                         move |_, _, cx| cx.open_url(&url)
                                     })
                                     .child(SharedString::from("open in browser")),
@@ -2399,7 +2404,7 @@ impl Skep {
                     if skep.answering.get(&chosen) == Some(&true)
                         && let Some(preview) = skep.preview.borrow_mut().as_mut()
                     {
-                        preview.show_url(&format!("https://{chosen}:{}", comb::HTTPS_PORT));
+                        preview.show_url(&comb::site_url(&chosen, skep.site_port));
                     }
                     cx.notify();
                 }));

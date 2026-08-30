@@ -47,7 +47,10 @@ async fn add(host: &str, port: u16, global: bool) -> Result<()> {
     })
     .await
     {
-        Ok(()) => println!("serving it now at https://{host}:{}", comb::HTTPS_PORT),
+        Ok(()) => {
+            let public = comb::public_https_port(&comb::Layout::system(comb::SUFFIX).control).await;
+            println!("serving it now at {}", comb::site_url(host, public));
+        }
         Err(quiet) => println!("{quiet}"),
     }
     Ok(())

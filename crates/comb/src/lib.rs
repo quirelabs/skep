@@ -30,8 +30,8 @@ pub use certs::{Authority, Issued, valid_hostname};
 pub use dns::{PORT as DNS_PORT, Routing, SUFFIX, reply as dns_reply, routing, serve as serve_dns};
 pub use domains::{
     Foreign, Forward, HELPER_PROTOCOL, Health, Hello, Layout, Owner, Serving, activate,
-    become_user, deactivate, foreign, health, invoking_user, is_root, place, remove,
-    serve_alongside,
+    become_user, deactivate, foreign, hand_over, health, invoking_user, is_root, place, remove,
+    public_https_port, serve_alongside,
 };
 pub use engine::{Engine, Overview, ServiceStatus, Snapshot};
 pub use error::{Error, Result};
@@ -42,7 +42,9 @@ pub use mirror::{Applied, Glyph, Mirror, Summary};
 pub use paths::Paths;
 pub use platform::Platform;
 pub use ports::free_port;
-pub use proxy::{HTTP_PORT, HTTPS_PORT, Sites, redirect, serve as serve_sites};
+pub use proxy::{
+    HTTP_PORT, HTTPS_PORT, Sites, port_suffix, redirect, serve as serve_sites, site_url,
+};
 pub use spec::{
     Backoff, BinarySpec, HealthCheck, Port, PrepareStep, Probe, RestartPolicy, RestartSpec,
     ServiceSpec, ShutdownSpec, StopSignal,

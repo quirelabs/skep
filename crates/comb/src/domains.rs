@@ -70,13 +70,47 @@ pub struct Owner {
 
 /// What a host managed to start for local domains. Reported rather than
 /// printed, so the command line and the app can each say it their own way.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Serving {
     pub https: Option<u16>,
     pub http: Option<u16>,
     pub dns: Option<u16>,
+    /// The port to put in front of a person. Equal to `https` until a helper
+    /// forwards a privileged port here, and 443 once one does.
+    pub public_https: u16,
     /// Anything that did not start, in words worth showing a person.
     pub trouble: Vec<String>,
+}
+
+impl Default for Serving {
+    fn default() -> Self {
+        Self {
+            https: None,
+            http: None,
+            dns: None,
+            public_https: HTTPS_PORT,
+            trouble: Vec::new(),
+        }
+    }
+}
+
+/// The port a browser should be sent to.
+///
+/// Asked of the helper rather than assumed. The helper was installed to forward
+/// something specific, and what it actually forwards is the only honest answer;
+/// an install that forwards a different port should not be guessed at. No
+/// helper, or a helper that does not reach us, means our own port is the public
+/// one, which is what milestone 13.2 shipped and still works.
+pub async fn public_https_port(control: &Path) -> u16 {
+    match health(control).await {
+        Ok(health) => health
+            .forwarding
+            .iter()
+            .find(|forward| forward.to == HTTPS_PORT)
+            .map(|forward| forward.from)
+            .unwrap_or(HTTPS_PORT),
+        Err(_) => HTTPS_PORT,
+    }
 }
 
 /// Starts everything local domains need beside a host, and stops it when the
@@ -87,7 +121,10 @@ pub async fn serve_alongside(
     authority: std::sync::Arc<crate::certs::Authority>,
     suffix: &str,
 ) -> Serving {
-    let mut serving = Serving::default();
+    let mut serving = Serving {
+        public_https: public_https_port(&Layout::system(suffix).control).await,
+        ..Default::default()
+    };
 
     match tokio::net::TcpListener::bind(("127.0.0.1", HTTPS_PORT)).await {
         Ok(listener) => {
@@ -111,7 +148,7 @@ pub async fn serve_alongside(
     match tokio::net::TcpListener::bind(("127.0.0.1", HTTP_PORT)).await {
         Ok(listener) => {
             let mut quitting = host.quitting();
-            tokio::spawn(crate::proxy::redirect(listener, HTTPS_PORT, async move {
+            tokio::spawn(crate::proxy::redirect(listener, serving.public_https, async move {
                 let _ = quitting.changed().await;
             }));
             serving.http = Some(HTTP_PORT);
@@ -165,6 +202,17 @@ pub fn invoking_user() -> Owner {
 /// Gives up root for good. The helper calls this the moment it holds the
 /// ports, so the window in which it can do anything else is a few
 /// milliseconds at startup.
+/// Gives a path to the user this process is about to become, and restricts it
+/// to that user.
+///
+/// Called on the control socket before root is dropped. Binding as root leaves
+/// the socket owned by root at the process umask, and since connecting needs
+/// write permission the engine gets EACCES and reports no helper at all.
+pub fn hand_over(path: &Path, owner: Owner) -> Result<()> {
+    platform::give_to(path, owner.uid, owner.gid).map_err(Error::Io)?;
+    platform::restrict(path, 0o660).map_err(Error::Io)
+}
+
 pub fn become_user(owner: Owner) -> Result<()> {
     platform::drop_privileges(owner.uid, owner.gid).map_err(Error::Io)
 }

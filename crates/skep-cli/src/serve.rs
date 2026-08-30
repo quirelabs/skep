@@ -77,7 +77,7 @@ async fn serve_sites(host: &Host) -> Result<()> {
             println!("  the certificate authority is not trusted yet: run skep trust");
         }
         for (name, port) in host.engine().site_list() {
-            println!("  https://{name}:{} to port {port}", comb::HTTPS_PORT);
+            println!("  {} to port {port}", comb::site_url(&name, serving.public_https));
         }
     }
     for trouble in &serving.trouble {

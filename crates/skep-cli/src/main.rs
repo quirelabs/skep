@@ -125,8 +125,9 @@ async fn sites() -> Result<()> {
         println!("\n  [sites]\n  \"myapp.test\" = 3000");
         return Ok(());
     }
+    let public = comb::public_https_port(&comb::Layout::system(comb::SUFFIX).control).await;
     for (host, port) in sites {
-        println!("https://{host}:{}  to port {port}", comb::HTTPS_PORT);
+        println!("{}  to port {port}", comb::site_url(&host, public));
     }
     Ok(())
 }
