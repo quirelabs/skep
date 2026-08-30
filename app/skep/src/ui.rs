@@ -21,6 +21,17 @@ use crate::platform::Menubar;
 use crate::preview::Preview;
 use crate::theme::{Scale, Theme};
 
+/// A site being written. Kept as text rather than as a port number, because
+/// half a number is not a number and refusing to show what somebody typed is
+/// worse than waiting until they finish.
+#[derive(Default)]
+struct Draft {
+    host: String,
+    port: String,
+    on_port: bool,
+    complaint: Option<String>,
+}
+
 /// The three ways to look at one message: as it renders, as it arrived, and as
 /// it would fare elsewhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,6 +177,10 @@ pub struct Skep {
     /// Which sites had something answering the last time anyone looked. A site
     /// is only config until something is behind it.
     answering: BTreeMap<String, bool>,
+    /// A site being written, if one is. Two fields and which of them is
+    /// taking the keys.
+    draft: Option<Draft>,
+    entry: gpui::FocusHandle,
     /// Which site is being looked at, if any.
     site: Option<String>,
     /// Whether the window had focus last time it drew, so coming back to it
@@ -252,6 +267,8 @@ impl Skep {
             sites: BTreeMap::new(),
             site_trouble: Vec::new(),
             answering: BTreeMap::new(),
+            draft: None,
+            entry: cx.focus_handle(),
             site: None,
             was_active: true,
             authority_trusted: false,
@@ -1405,6 +1422,177 @@ impl Skep {
         comb.into_any_element()
     }
 
+    /// Writing a site down. Inline, in the list, where the row it becomes will
+    /// be: a window that opens over the top to ask two questions is a heavier
+    /// thing than the answer deserves, and this app does not have one.
+    fn new_site(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+
+        let Some(draft) = &self.draft else {
+            return div()
+                .id("add-site")
+                .flex()
+                .items_center()
+                .gap_3()
+                .w_full()
+                .px_6()
+                .py_3()
+                .cursor_pointer()
+                .text_color(theme.muted)
+                .hover(|style| style.bg(theme.raised).text_color(theme.text))
+                .on_click(cx.listener(|skep, _, window, cx| {
+                    skep.draft = Some(Draft::default());
+                    // Focus goes with it, or the keys would land nowhere.
+                    skep.entry.clone().focus(window, cx);
+                    cx.notify();
+                }))
+                .child(div().size(px(6.)).flex_shrink_0())
+                .child(SharedString::from("add a site"))
+                .into_any_element();
+        };
+
+        // The caret sits in whichever field is taking the keys, so there is
+        // never a question about where typing goes.
+        let field = |text: &str, here: bool, hint: &'static str, width: Option<f32>| {
+            let shown = if text.is_empty() && !here {
+                hint.to_string()
+            } else if here {
+                format!("{text}|")
+            } else {
+                text.to_string()
+            };
+            let mut cell = div()
+                .px_2()
+                .py_0p5()
+                .rounded_sm()
+                .min_w_0()
+                .truncate()
+                .text_color(if text.is_empty() && !here {
+                    theme.idle
+                } else {
+                    theme.text
+                })
+                .bg(if here {
+                    theme.base
+                } else {
+                    gpui::transparent_black()
+                })
+                .child(SharedString::from(shown));
+            match width {
+                Some(width) => cell = cell.w(px(width)).flex_shrink_0(),
+                None => cell = cell.flex_1(),
+            }
+            cell
+        };
+
+        let mut row = div()
+            .id("new-site")
+            .track_focus(&self.entry)
+            .flex()
+            .flex_col()
+            .w_full()
+            .px_6()
+            .py_2()
+            .gap_1()
+            .bg(theme.raised)
+            .on_key_down(cx.listener(Self::typing))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .w_full()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .size(px(6.))
+                            .flex_shrink_0()
+                            .rounded_full()
+                            .bg(theme.accent),
+                    )
+                    .child(field(&draft.host, !draft.on_port, "myapp.test", None))
+                    .child(field(&draft.port, draft.on_port, "3000", Some(90.)))
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .flex_shrink_0()
+                            .caption()
+                            .text_color(theme.muted)
+                            .child(SharedString::from("tab, return, esc")),
+                    ),
+            );
+
+        if let Some(complaint) = &draft.complaint {
+            row = row.child(
+                div()
+                    .caption()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(complaint.clone())),
+            );
+        }
+        row.into_any_element()
+    }
+
+    /// Two short fields do not need an editor. What they need is for the keys
+    /// to land where the caret is, and for the wrong ones not to.
+    fn typing(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(draft) = self.draft.as_mut() else {
+            return;
+        };
+        draft.complaint = None;
+
+        match event.keystroke.key.as_str() {
+            "escape" => {
+                self.draft = None;
+                cx.notify();
+                return;
+            }
+            "tab" => draft.on_port = !draft.on_port,
+            "backspace" => {
+                if draft.on_port {
+                    draft.port.pop();
+                } else {
+                    draft.host.pop();
+                }
+            }
+            "enter" => {
+                let host = draft.host.trim().to_string();
+                let port: Option<u16> = draft.port.trim().parse().ok();
+                match (comb::valid_hostname(&host), port) {
+                    (Ok(_), Some(port)) if port > 0 => {
+                        let _ = self.commands.send(Command::AddSite(host, port));
+                        self.draft = None;
+                    }
+                    (Err(_), _) => {
+                        draft.complaint = Some(format!(
+                            "{host:?} is not a hostname a certificate can cover"
+                        ))
+                    }
+                    (_, None) => draft.complaint = Some("that is not a port".to_string()),
+                    _ => draft.complaint = Some("a port cannot be zero".to_string()),
+                }
+            }
+            _ => {
+                if let Some(typed) = &event.keystroke.key_char {
+                    for character in typed.chars() {
+                        if draft.on_port {
+                            // Only digits, and no more than a port can be.
+                            if character.is_ascii_digit() && draft.port.len() < 5 {
+                                draft.port.push(character);
+                            }
+                        } else if character.is_ascii_alphanumeric()
+                            || character == '-'
+                            || character == '.'
+                        {
+                            draft.host.push(character);
+                        }
+                    }
+                }
+            }
+        }
+        cx.notify();
+    }
+
     /// A site, shown. If something is behind it you get the thing itself; if
     /// nothing is, you get a dead channel, which is the truth said in the only
     /// way a picture can say it.
@@ -2234,6 +2422,8 @@ impl Skep {
                 ),
             );
         }
+
+        rows = rows.child(self.new_site(cx));
 
         let mut notes = div().flex().flex_col().w_full();
         if !self.authority_trusted && !self.sites.is_empty() {

@@ -48,6 +48,55 @@ pub fn sites(settings: &Project, project: &Project) -> Result<comb::Sites> {
     Ok(all)
 }
 
+/// Puts a site in a config file without disturbing the rest of it.
+///
+/// A config file belongs to the person who wrote it, so this goes through
+/// toml_edit: comments, blank lines and spacing nobody would choose twice all
+/// survive, and only the one table asked for changes.
+pub fn add_site(path: &Path, host: &str, port: u16) -> Result<()> {
+    let host = comb::valid_hostname(host)?;
+    let mut document = read(path)?;
+    sites_table(&mut document).insert(host, toml_edit::value(i64::from(port)));
+    write(path, &document)
+}
+
+/// Takes one out again. Says whether it was there at all, so a frontend can
+/// tell somebody the difference.
+pub fn remove_site(path: &Path, host: &str) -> Result<bool> {
+    let mut document = read(path)?;
+    let had = sites_table(&mut document).remove(host).is_some();
+    if had {
+        write(path, &document)?;
+    }
+    Ok(had)
+}
+
+fn read(path: &Path) -> Result<toml_edit::DocumentMut> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    text.parse::<toml_edit::DocumentMut>()
+        .map_err(|error| Error::InvalidId(error.to_string()))
+}
+
+fn write(path: &Path, document: &toml_edit::DocumentMut) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(Error::Io)?;
+    }
+    std::fs::write(path, document.to_string()).map_err(Error::Io)
+}
+
+fn sites_table(document: &mut toml_edit::DocumentMut) -> &mut toml_edit::Table {
+    if !document.contains_key("sites") {
+        let mut fresh = toml_edit::Table::new();
+        // Written as [sites] rather than folded onto one line, which is the
+        // shape the settings template teaches.
+        fresh.set_implicit(false);
+        document.insert("sites", toml_edit::Item::Table(fresh));
+    }
+    document["sites"]
+        .as_table_mut()
+        .expect("sites is a table because it was just made one")
+}
+
 /// Walks up from `start`, so the command works from any subdirectory.
 pub fn find(start: &Path) -> Option<PathBuf> {
     start.ancestors().find_map(|directory| {

@@ -14,7 +14,6 @@ name = "skep"
 path = "src/main.rs"
 
 [dependencies]
-toml_edit = { workspace = true }
 comb = { workspace = true }
 comb-services = { workspace = true }
 tokio = { workspace = true }

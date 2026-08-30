@@ -17,6 +17,8 @@ pub enum Command {
     Resync,
     /// Ask whoever holds the machine to stand down, then take it.
     TakeOver,
+    /// Write a site into skep's own settings and start serving it.
+    AddSite(String, u16),
     /// Whether anything is actually listening behind each site.
     CheckSites,
     /// What the mail catcher has caught.
@@ -265,6 +267,27 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
                 }
                 Err(error) => Err(error),
             }
+        }
+        Command::AddSite(host, port) => {
+            let paths = engine.paths().clone();
+            match comb_services::project::ensure_settings(&paths)
+                .and_then(|path| comb_services::project::add_site(&path, &host, port))
+            {
+                Ok(()) => {
+                    engine.add_sites([(host, port)].into_iter().collect());
+                    let _ = reports.send(Update::Sites {
+                        sites: engine.site_list(),
+                        trouble: Vec::new(),
+                        trusted: comb::Authority::open(&paths)
+                            .map(|authority| authority.is_trusted())
+                            .unwrap_or(false),
+                    });
+                }
+                Err(error) => {
+                    let _ = reports.send(Update::MailTrouble(error.to_string()));
+                }
+            }
+            Ok(())
         }
         Command::CheckSites => {
             let sites = engine.site_list();

@@ -2,14 +2,11 @@
 //! wrote it, so this changes the one table it was asked to and leaves every
 //! comment, blank line and quirk of spacing exactly where it was.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use comb::{Paths, Request, Response};
 use comb_services::project;
-use toml_edit::{DocumentMut, Item, Table, value};
-
-const TABLE: &str = "sites";
 
 pub async fn run(args: &[String]) -> Result<()> {
     let global = args.iter().any(|arg| arg == "--global");
@@ -41,14 +38,8 @@ pub async fn run(args: &[String]) -> Result<()> {
 }
 
 async fn add(host: &str, port: u16, global: bool) -> Result<()> {
-    // The same rule the certificate authority uses, so a name that could never
-    // be served is refused before it reaches anybody's config file.
-    comb::valid_hostname(host)?;
-
     let path = which(global)?;
-    let mut document = read(&path)?;
-    table(&mut document).insert(host, value(i64::from(port)));
-    write(&path, &document)?;
+    project::add_site(&path, host, port)?;
     println!("{} now has {host} on port {port}", path.display());
 
     match tell(Request::AddSites {
@@ -64,11 +55,9 @@ async fn add(host: &str, port: u16, global: bool) -> Result<()> {
 
 async fn remove(host: &str, global: bool) -> Result<()> {
     let path = which(global)?;
-    let mut document = read(&path)?;
-    if table(&mut document).remove(host).is_none() {
+    if !project::remove_site(&path, host)? {
         bail!("{} does not mention {host}", path.display());
     }
-    write(&path, &document)?;
     println!("{} no longer has {host}", path.display());
 
     match tell(Request::RemoveSite {
@@ -98,29 +87,6 @@ fn which(global: bool) -> Result<PathBuf> {
             project::FILE
         ),
     }
-}
-
-fn read(path: &Path) -> Result<DocumentMut> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    Ok(text.parse::<DocumentMut>()?)
-}
-
-fn table(document: &mut DocumentMut) -> &mut Table {
-    if !document.contains_key(TABLE) {
-        let mut fresh = Table::new();
-        // Written as [sites] rather than folded into a line, which is the
-        // shape the settings template teaches.
-        fresh.set_implicit(false);
-        document.insert(TABLE, Item::Table(fresh));
-    }
-    document[TABLE]
-        .as_table_mut()
-        .expect("sites is a table because we just made it one")
-}
-
-fn write(path: &Path, document: &DocumentMut) -> Result<()> {
-    std::fs::write(path, document.to_string())?;
-    Ok(())
 }
 
 /// Best effort: editing the file is the command's job, and a host that is not
