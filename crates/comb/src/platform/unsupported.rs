@@ -25,6 +25,10 @@ pub fn try_lock_exclusive(_file: &File) -> io::Result<bool> {
     unreachable!("the platform module fails to compile before this is reachable")
 }
 
+pub fn give_to(_path: &Path, _uid: u32, _gid: u32) -> io::Result<()> {
+    Err(io::Error::other("not supported on this platform"))
+}
+
 pub fn restrict(_path: &Path, _mode: u32) -> io::Result<()> {
     unreachable!("the platform module fails to compile before this is reachable")
 }

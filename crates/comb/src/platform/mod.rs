@@ -12,7 +12,7 @@ mod mac;
 #[cfg(target_os = "macos")]
 pub(crate) use mac::{
     HELPER_LABEL, build_tools_missing, can_clone, clone_directory, daemon_plist, describe_exit,
-    drop_privileges, effective_group, effective_user, flush_dns, listener_on, load_daemon,
+    drop_privileges, effective_group, effective_user, flush_dns, give_to, listener_on, load_daemon,
     resolver_file, resolves_to, restrict, root_is_trusted, terminate, trust_root,
     try_lock_exclusive, unload_daemon, untrust_root, write_private,
 };

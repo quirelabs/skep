@@ -289,6 +289,21 @@ pub fn resolves_to(name: &str) -> Vec<String> {
 
 /// Gives up root for good. The group goes first, because after the user id
 /// changes there is no privilege left to change it with.
+/// Hands a path to another user, while still root.
+///
+/// A socket bound by root is owned by root, and connecting to a unix socket
+/// needs write permission on it. Without this the helper's control socket is
+/// unreachable by the very engine it was installed to serve.
+pub fn give_to(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
+    let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| io::Error::other("path contains a nul byte"))?;
+    // Safety: the pointer is a valid nul-terminated string for this call.
+    if unsafe { libc::chown(c_path.as_ptr(), uid, gid) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 pub fn drop_privileges(uid: u32, gid: u32) -> io::Result<()> {
     if uid == 0 {
         return Err(io::Error::other("refusing to drop privileges to root"));

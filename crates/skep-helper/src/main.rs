@@ -113,6 +113,10 @@ async fn run(settings: Settings) -> Result<(), String> {
     let control = UnixListener::bind(&settings.control)
         .map_err(|error| format!("could not open the control socket: {error}"))?;
 
+    // The socket outlives root, so it has to belong to whoever is left.
+    comb::hand_over(&settings.control, settings.owner)
+        .map_err(|error| format!("could not hand over the control socket: {error}"))?;
+
     // And root ends here.
     comb::become_user(settings.owner)
         .map_err(|error| format!("could not give up root: {error}"))?;
