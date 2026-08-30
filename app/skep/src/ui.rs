@@ -166,6 +166,12 @@ pub struct Skep {
     /// Which sites had something answering the last time anyone looked. A site
     /// is only config until something is behind it.
     answering: BTreeMap<String, bool>,
+    /// Which site is being looked at, if any.
+    site: Option<String>,
+    /// Whether the window had focus last time it drew, so coming back to it
+    /// can look again. The same deliberate act as opening the tab, rather than
+    /// a timer nobody asked for.
+    was_active: bool,
     authority_trusted: bool,
     commands: UnboundedSender<Command>,
     updates: UnboundedReceiver<Update>,
@@ -246,6 +252,8 @@ impl Skep {
             sites: BTreeMap::new(),
             site_trouble: Vec::new(),
             answering: BTreeMap::new(),
+            site: None,
+            was_active: true,
             authority_trusted: false,
             commands: bridge.commands,
             updates: bridge.updates,
@@ -284,7 +292,17 @@ impl Skep {
                         let _ = self.commands.send(Command::Resync);
                     }
                 }
-                Update::SiteHealth(answering) => self.answering = answering,
+                Update::SiteHealth(answering) => {
+                    // A site that stopped answering must stop being shown as
+                    // though it still does.
+                    if let Some(host) = &self.site
+                        && answering.get(host) != Some(&true)
+                        && let Some(preview) = self.preview.borrow_mut().as_mut()
+                    {
+                        preview.hide();
+                    }
+                    self.answering = answering;
+                }
                 Update::Mail { messages, unread } => {
                     if self.opened.is_none()
                         && let Some(preview) = self.preview.borrow_mut().as_mut()
@@ -422,6 +440,73 @@ fn links(text: &str) -> Vec<String> {
     found
 }
 
+/// No signal. Cells kept or dropped by a hash of where they are and which
+/// frame it is, so the field is different every frame and never repeats a
+/// pattern the eye can lock onto, with a band rolling down it the way an
+/// untuned set used to do.
+///
+/// It is only ever shown where there is genuinely nothing to show, which is
+/// what makes it honest rather than decorative: a site with nothing behind it
+/// is a dead channel.
+fn snow(bounds: Bounds<Pixels>, ink: Hsla, phase: f32, window: &mut Window) {
+    const STEP: f32 = 3.;
+    const MOST: usize = 3_000;
+
+    let wide = f32::from(bounds.size.width);
+    let tall = f32::from(bounds.size.height);
+    if wide <= 0. || tall <= 0. {
+        return;
+    }
+
+    // Stepped rather than smooth: static jumps, it does not fade.
+    let frame = (phase * 8.).floor() as u32;
+    let columns = (wide / STEP).floor().max(1.) as usize;
+    let rows = (tall / STEP).floor().max(1.) as usize;
+    let skip = (columns * rows).div_ceil(MOST).max(1);
+
+    // The band, a little brighter, sliding down and round.
+    let band = phase * tall;
+    let mut placed = 0usize;
+
+    for row in 0..rows {
+        for column in 0..columns {
+            if !(row * columns + column).is_multiple_of(skip) {
+                continue;
+            }
+            let mut noise = frame
+                .wrapping_mul(2_654_435_761)
+                .wrapping_add(row as u32)
+                .wrapping_mul(40_503)
+                .wrapping_add(column as u32)
+                .wrapping_mul(2_246_822_519);
+            noise ^= noise >> 15;
+            if !noise.is_multiple_of(7) {
+                continue;
+            }
+
+            let y = row as f32 * STEP;
+            let near_band = 1. - ((y - band).abs() / (tall * 0.18)).min(1.);
+            let mut faded = ink;
+            faded.a *= 0.25 + near_band * 0.5;
+
+            window.paint_quad(gpui::fill(
+                Bounds {
+                    origin: gpui::point(
+                        bounds.origin.x + px(column as f32 * STEP),
+                        bounds.origin.y + px(y),
+                    ),
+                    size: gpui::size(px(STEP - 1.), px(STEP - 1.)),
+                },
+                faded,
+            ));
+            placed += 1;
+            if placed >= MOST {
+                return;
+            }
+        }
+    }
+}
+
 /// The dither. Cells on a fixed grid, kept or dropped by a threshold that
 /// comes from where the cell is rather than from chance, which is what stops
 /// it swimming when the window changes size.
@@ -545,6 +630,13 @@ fn ports(status: &ServiceStatus) -> SharedString {
 impl Render for Skep {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.fullscreen = window.is_fullscreen();
+        // Coming back to the window is as deliberate as opening the tab, so
+        // the count is never older than the glance being taken at it.
+        let active = window.is_window_active();
+        if active && !self.was_active && self.page == Page::Sites {
+            let _ = self.commands.send(Command::CheckSites);
+        }
+        self.was_active = active;
         // The webview belongs to the window, so it cannot exist before one.
         if self.preview.borrow().is_none() {
             *self.preview.borrow_mut() = Preview::attach(window);
@@ -554,12 +646,22 @@ impl Render for Skep {
         // It draws above everything gpui draws, so anywhere it is not wanted
         // it has to be gone rather than merely behind: covered by the source
         // or the checks is not a thing it can be.
-        let wanted = self.page == Page::Mail
-            && self.mail_view == MailView::Rendered
-            && self
-                .opened
+        let wanted = match self.page {
+            Page::Mail => {
+                self.mail_view == MailView::Rendered
+                    && self
+                        .opened
+                        .as_ref()
+                        .is_some_and(|body| !body.html.is_empty())
+            }
+            // A site only shows itself when there is something behind it to
+            // show. Otherwise the pane has its own answer.
+            Page::Sites => self
+                .site
                 .as_ref()
-                .is_some_and(|body| !body.html.is_empty());
+                .is_some_and(|host| self.answering.get(host) == Some(&true)),
+            _ => false,
+        };
         if let Some(preview) = self.preview.borrow_mut().as_mut() {
             // Both ways round: hiding it on the way out is only half the job,
             // and without the other half coming back to the message showed
@@ -1303,6 +1405,143 @@ impl Skep {
         comb.into_any_element()
     }
 
+    /// A site, shown. If something is behind it you get the thing itself; if
+    /// nothing is, you get a dead channel, which is the truth said in the only
+    /// way a picture can say it.
+    fn watching(&self, host: &str, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let alive = self.answering.get(host) == Some(&true);
+        let ink = theme.idle;
+        let preview = self.preview.clone();
+
+        let body = if alive {
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |bounds, _, _, _| {
+                            if let Some(preview) = preview.borrow().as_ref() {
+                                preview.place(bounds);
+                            }
+                        },
+                    )
+                    .size_full(),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .overflow_hidden()
+                .child(div().absolute().size_full().with_animation(
+                    "snow",
+                    Animation::new(Duration::from_millis(900)).repeat(),
+                    move |field, delta| {
+                        field.child(
+                            gpui::canvas(
+                                |_, _, _| (),
+                                move |bounds, _, window, _| snow(bounds, ink, delta, window),
+                            )
+                            .size_full(),
+                        )
+                    },
+                ))
+                .child(
+                    div()
+                        .absolute()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .label()
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .bg(theme.raised)
+                                .text_color(theme.muted)
+                                .child(SharedString::from("no signal")),
+                        ),
+                )
+                .into_any_element()
+        };
+
+        let shown = host.to_string();
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .flex_1()
+            .min_h_0()
+            .border_t_2()
+            .border_color(theme.border)
+            .bg(theme.raised)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .min_w_0()
+                    .px_6()
+                    .py_2()
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .label()
+                            .child(SharedString::from(format!(
+                                "https://{shown}:{}",
+                                comb::HTTPS_PORT
+                            ))),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .flex_shrink_0()
+                            .child(
+                                div()
+                                    .id("open-site")
+                                    .caption()
+                                    .cursor_pointer()
+                                    .text_color(theme.accent)
+                                    .on_click({
+                                        let url = format!("https://{shown}:{}", comb::HTTPS_PORT);
+                                        move |_, _, cx| cx.open_url(&url)
+                                    })
+                                    .child(SharedString::from("open in browser")),
+                            )
+                            .child(
+                                div()
+                                    .id("close-site")
+                                    .caption()
+                                    .cursor_pointer()
+                                    .text_color(theme.muted)
+                                    .on_click(cx.listener(|skep, _, _, cx| {
+                                        skep.site = None;
+                                        if let Some(preview) = skep.preview.borrow_mut().as_mut() {
+                                            preview.hide();
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(SharedString::from("close")),
+                            ),
+                    ),
+            )
+            .child(body)
+            .into_any_element()
+    }
+
     /// What each column of a site is. A hostname and a number side by side
     /// say nothing about which is which.
     fn site_columns(&self) -> AnyElement {
@@ -1926,56 +2165,73 @@ impl Skep {
             // A site is config until something is behind it. The dot says
             // which, in the one place status colour is allowed to live.
             let alive = self.answering.get(host).copied();
+            let here = self.site.as_deref() == Some(host.as_str());
+            let chosen = host.clone();
+            let mut row = div()
+                .id(SharedString::from(format!("site-{host}")))
+                .flex()
+                .items_center()
+                .gap_3()
+                .w_full()
+                .min_w_0()
+                .px_6()
+                .py_3()
+                .cursor_pointer()
+                .border_b_1()
+                .border_color(theme.border)
+                .hover(|style| style.bg(theme.raised))
+                .on_click(cx.listener(move |skep, _, _, cx| {
+                    skep.site = Some(chosen.clone());
+                    if skep.answering.get(&chosen) == Some(&true)
+                        && let Some(preview) = skep.preview.borrow_mut().as_mut()
+                    {
+                        preview.show_url(&format!("https://{chosen}:{}", comb::HTTPS_PORT));
+                    }
+                    cx.notify();
+                }));
+            if here {
+                row = row.bg(theme.raised);
+            }
             rows = rows.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .w_full()
-                    .min_w_0()
-                    .px_6()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .size(px(6.))
-                            .rounded_full()
-                            .flex_shrink_0()
-                            .bg(match alive {
-                                Some(true) => theme.running,
-                                Some(false) => theme.failed,
-                                None => theme.idle,
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(SharedString::from(host.clone())),
-                    )
-                    .child(
-                        div()
-                            .w(px(90.))
-                            .flex_shrink_0()
-                            .label()
-                            .font_family(MONO)
-                            .text_color(theme.muted)
-                            .child(SharedString::from(format!("{port}"))),
-                    )
-                    .child(
-                        div()
-                            .w(px(150.))
-                            .flex_shrink_0()
-                            .caption()
-                            .text_color(theme.muted)
-                            .child(SharedString::from(match alive {
-                                Some(true) => "answering".to_string(),
-                                Some(false) => format!("nothing on {port}"),
-                                None => "not checked".to_string(),
-                            })),
-                    ),
+                row.child(
+                    div()
+                        .size(px(6.))
+                        .rounded_full()
+                        .flex_shrink_0()
+                        .bg(match alive {
+                            Some(true) => theme.running,
+                            Some(false) => theme.failed,
+                            None => theme.idle,
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(host.clone())),
+                )
+                .child(
+                    div()
+                        .w(px(90.))
+                        .flex_shrink_0()
+                        .label()
+                        .font_family(MONO)
+                        .text_color(theme.muted)
+                        .child(SharedString::from(format!("{port}"))),
+                )
+                .child(
+                    div()
+                        .w(px(150.))
+                        .flex_shrink_0()
+                        .caption()
+                        .text_color(theme.muted)
+                        .child(SharedString::from(match alive {
+                            Some(true) => "answering".to_string(),
+                            Some(false) => format!("nothing on {port}"),
+                            None => "not checked".to_string(),
+                        })),
+                ),
             );
         }
 
@@ -2023,7 +2279,17 @@ impl Skep {
                     })),
             )
             .child(notes)
-            .child(rows)
+            .child(
+                div()
+                    .id("site-list")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(rows),
+            )
+            .children(self.site.clone().map(|host| self.watching(&host, cx)))
             .into_any_element()
     }
 

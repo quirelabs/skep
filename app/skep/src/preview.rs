@@ -18,7 +18,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{NSColor, NSView, NSWorkspace};
-use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest};
 use objc2_web_kit::{
     WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
     WKWebViewConfiguration,
@@ -52,9 +52,12 @@ define_class!(
                 .map(|scheme| scheme.to_string())
                 .unwrap_or_default();
 
-            // Anything that would go out over the network leaves for the
-            // browser. Everything else is the message loading itself.
-            if scheme == "http" || scheme == "https" {
+            // A link somebody pressed leaves for the browser. Everything else
+            // is the pane loading what it was told to load, which is either a
+            // message with no url at all or a site being previewed.
+            let pressed = unsafe { action.navigationType() }
+                == objc2_web_kit::WKNavigationType::LinkActivated;
+            if pressed && (scheme == "http" || scheme == "https") {
                 if let Some(url) = target {
                     NSWorkspace::sharedWorkspace().openURL(&url);
                 }
@@ -137,6 +140,19 @@ impl Preview {
             loaded: false,
             showing: false,
         })
+    }
+
+    /// Points it at a site. Only ever something on this machine that the
+    /// person running skep put there themselves.
+    pub fn show_url(&mut self, url: &str) {
+        let Some(target) = NSURL::URLWithString(&NSString::from_str(url)) else {
+            return;
+        };
+        let request = NSURLRequest::requestWithURL(&target);
+        unsafe { self.view.loadRequest(&request) };
+        self.view.setHidden(false);
+        self.loaded = true;
+        self.showing = true;
     }
 
     /// Puts a message in it. The html is guarded before it gets here.
