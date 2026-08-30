@@ -1433,21 +1433,37 @@ impl Skep {
                 .id("add-site")
                 .flex()
                 .items_center()
-                .gap_3()
-                .w_full()
-                .px_6()
-                .py_3()
+                .gap_2()
+                .m_3()
+                .px_3()
+                .py_2p5()
+                .rounded_md()
                 .cursor_pointer()
-                .text_color(theme.muted)
-                .hover(|style| style.bg(theme.raised).text_color(theme.text))
+                .border_1()
+                .border_dashed()
+                .border_color(theme.border)
+                // The accent, because this is a thing you press. It is the one
+                // way into the screen and it was reading as another dim line
+                // in a list of dim lines.
+                .text_color(theme.accent)
+                .hover(|style| style.bg(theme.raised).border_color(theme.accent))
                 .on_click(cx.listener(|skep, _, window, cx| {
                     skep.draft = Some(Draft::default());
                     // Focus goes with it, or the keys would land nowhere.
                     skep.entry.clone().focus(window, cx);
                     cx.notify();
                 }))
-                .child(div().size(px(6.)).flex_shrink_0())
-                .child(SharedString::from("add a site"))
+                .child(svg().path("icons/plus.svg").size(px(GLYPH)).flex_shrink_0())
+                .child(SharedString::from("Add a site"))
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .caption()
+                        .text_color(theme.muted)
+                        .child(SharedString::from(
+                            "point a hostname at a port you already run something on",
+                        )),
+                )
                 .into_any_element();
         };
 
@@ -1518,8 +1534,18 @@ impl Skep {
                             .flex_shrink_0()
                             .caption()
                             .text_color(theme.muted)
-                            .child(SharedString::from("tab, return, esc")),
+                            .child(SharedString::from("return to add")),
                     ),
+            )
+            .child(
+                div()
+                    .caption()
+                    .text_color(theme.muted)
+                    .child(SharedString::from(
+                        "A hostname ending in .test resolves on its own; any other name needs \
+                         an /etc/hosts entry. The port is the one your app is already \
+                         listening on. Tab moves between them, escape gives up.",
+                    )),
             );
 
         if let Some(complaint) = &draft.complaint {
