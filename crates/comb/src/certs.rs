@@ -102,7 +102,11 @@ impl Authority {
         }
 
         let now = OffsetDateTime::now_utc();
-        let expires = now + Duration::days(LEAF_DAYS);
+        // The ceiling is on the whole span, so it is measured from not_before.
+        // Counting forward from `now` and then backdating spent a day more than
+        // Safari allows: 397 plus the backdate is 398.
+        let starts = now - Duration::days(BACKDATE_DAYS);
+        let expires = starts + Duration::days(LEAF_DAYS);
 
         let mut params = CertificateParams::new(vec![host.to_string()]).map_err(as_error)?;
         params.distinguished_name.push(DnType::CommonName, host);
@@ -111,7 +115,7 @@ impl Authority {
         params
             .extended_key_usages
             .push(ExtendedKeyUsagePurpose::ServerAuth);
-        params.not_before = now - Duration::days(BACKDATE_DAYS);
+        params.not_before = starts;
         params.not_after = expires;
 
         let key = KeyPair::generate().map_err(as_error)?;
