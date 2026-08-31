@@ -340,6 +340,12 @@ pub fn remove(layout: &Layout) -> Result<Vec<PathBuf>> {
 /// file is not proof: mDNSResponder caches, so the check has to go out through
 /// the system resolver and come back.
 pub fn activate(layout: &Layout, suffix: &str) -> Result<String> {
+    // launchd refuses to bootstrap a label it already holds, so installing over
+    // a running helper failed with "Bootstrap failed: 5" and left the old
+    // process serving the new files. Boot the old job out first; a failure here
+    // only means there was nothing to remove, which is the ordinary first
+    // install.
+    let _ = platform::unload_daemon(&layout.label);
     platform::load_daemon(&layout.plist).map_err(Error::Io)?;
     platform::flush_dns().map_err(Error::Io)?;
 
