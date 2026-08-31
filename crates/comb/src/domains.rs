@@ -282,6 +282,17 @@ pub fn place(
 
     make_room(&layout.helper)?;
     std::fs::copy(helper_source, &layout.helper).map_err(Error::Io)?;
+    // launchd refuses to bootstrap a system daemon whose executable a non-root
+    // user could write, and answers "Bootstrap failed: 5" without saying why.
+    // Copying onto a path keeps the owner it already had, so a helper first
+    // placed into a user-owned /usr/local stays user-owned through every later
+    // install unless the owner is set here.
+    // Only root can hand a file to root. A real install is already root by the
+    // time it writes here, and the tests place a layout under a temporary
+    // directory as an ordinary user, where there is no daemon to bootstrap.
+    if is_root() {
+        platform::give_to(&layout.helper, 0, 0).map_err(Error::Io)?;
+    }
     platform::restrict(&layout.helper, 0o755).map_err(Error::Io)?;
     touched.push(layout.helper.clone());
 
