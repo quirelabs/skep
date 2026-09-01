@@ -143,6 +143,28 @@ impl Authority {
         platform::untrust_root(&self.root_file()).map_err(Error::Io)
     }
 
+    /// The root's own fingerprint, which is the only way to tell two of them
+    /// apart when they carry the same name.
+    ///
+    /// Two skep homes produce two authorities with identical subjects, and an
+    /// hour was once lost to exactly that: one trusted, the other signing. A
+    /// screen that says which one it is holding turns that hour into a glance.
+    pub fn fingerprint(&self) -> String {
+        use rustls::pki_types::CertificateDer;
+        use rustls::pki_types::pem::PemObject;
+        use sha2::{Digest, Sha256};
+
+        let Ok(der) = CertificateDer::from_pem_slice(self.root_pem.as_bytes()) else {
+            return "unreadable".to_string();
+        };
+        let digest = Sha256::digest(der.as_ref());
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+
     /// Whether browsers on this machine will accept what we issue.
     pub fn is_trusted(&self) -> bool {
         platform::root_is_trusted(&self.root_file())

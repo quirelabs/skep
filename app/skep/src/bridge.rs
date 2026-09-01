@@ -64,6 +64,15 @@ pub enum Update {
     },
     MailBody(Box<comb_services::mail::Body>),
     MailTrouble(String),
+    /// Which authority this process is actually holding, and where it lives.
+    /// Two homes make two of these with the same name, so the screen has to
+    /// say which one rather than that there is one.
+    Trust {
+        home: String,
+        root: String,
+        fingerprint: String,
+        trusted: bool,
+    },
     MailSource(String),
     MailChecks(
         Box<(
@@ -183,6 +192,12 @@ async fn start_sites(host: &comb::Host, reports: &UnboundedSender<Update>) {
         return;
     };
     let trusted = authority.is_trusted();
+    let _ = reports.send(Update::Trust {
+        home: paths.root().display().to_string(),
+        root: authority.root_file().display().to_string(),
+        fingerprint: authority.fingerprint(),
+        trusted,
+    });
     let serving = comb::serve_alongside(host, std::sync::Arc::new(authority), comb::SUFFIX).await;
 
     let _ = reports.send(Update::Sites {

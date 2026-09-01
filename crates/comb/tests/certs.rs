@@ -226,3 +226,48 @@ fn hostnames_that_could_escape_the_directory_are_refused() {
     // Nothing was written outside the hosts directory.
     assert!(!home.path().join("etc").exists());
 }
+
+#[test]
+fn two_authorities_can_be_told_apart() {
+    // They carry the same name by design, so the name cannot distinguish them.
+    // The fingerprint is what an hour of confusion once turned on.
+    let one = TestHome::new();
+    let other = TestHome::new();
+    let first = Authority::open(&Paths::new(one.path())).unwrap();
+    let second = Authority::open(&Paths::new(other.path())).unwrap();
+
+    assert_ne!(first.fingerprint(), second.fingerprint());
+    // Stable for one authority, or it would be no use for telling them apart.
+    assert_eq!(
+        first.fingerprint(),
+        Authority::open(&Paths::new(one.path()))
+            .unwrap()
+            .fingerprint()
+    );
+    assert_eq!(
+        first.fingerprint().len(),
+        32 * 3 - 1,
+        "sha256, colon separated"
+    );
+}
+
+#[test]
+fn the_fingerprint_is_the_one_openssl_would_report() {
+    // It is shown so a person can compare it with what a keychain or a browser
+    // says. If ours were computed differently it would be worse than useless.
+    let home = TestHome::new();
+    let paths = Paths::new(home.path());
+    let authority = Authority::open(&paths).unwrap();
+
+    let said = openssl(&[
+        "x509",
+        "-in",
+        &authority.root_file().display().to_string(),
+        "-noout",
+        "-fingerprint",
+        "-sha256",
+    ]);
+    let theirs = said.trim().rsplit('=').next().unwrap().trim();
+
+    assert_eq!(authority.fingerprint(), theirs);
+}

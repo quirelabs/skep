@@ -21,6 +21,17 @@ use crate::platform::Menubar;
 use crate::preview::Preview;
 use crate::theme::{Scale, Theme};
 
+/// What the screen needs to say about certificates. Not "trusted" or not, but
+/// which authority, out of which home, with which fingerprint: two homes make
+/// two authorities carrying the same name, and only the last of those tells
+/// them apart.
+struct Trust {
+    home: String,
+    root: String,
+    fingerprint: String,
+    trusted: bool,
+}
+
 /// A site being written. Kept as text rather than as a port number, because
 /// half a number is not a number and refusing to show what somebody typed is
 /// worse than waiting until they finish.
@@ -157,6 +168,9 @@ pub struct Skep {
     mail_view: MailView,
     source: Option<String>,
     /// Whether this one message was asked to load its images.
+    /// Which authority this process holds, where it lives, and whether the
+    /// machine accepts it.
+    trust: Option<Trust>,
     /// Whether the window is full screen, where macOS takes the traffic
     /// lights away and the space kept clear for them is just a gap.
     fullscreen: bool,
@@ -261,6 +275,7 @@ impl Skep {
             preview: Rc::new(RefCell::new(None)),
             mail_view: MailView::Rendered,
             source: None,
+            trust: None,
             fullscreen: false,
             open_warning: None,
             images_shown: false,
@@ -311,6 +326,20 @@ impl Skep {
                     if self.mirror.apply(&event) == Applied::Resync {
                         let _ = self.commands.send(Command::Resync);
                     }
+                }
+                Update::Trust {
+                    home,
+                    root,
+                    fingerprint,
+                    trusted,
+                } => {
+                    self.trust = Some(Trust {
+                        home,
+                        root,
+                        fingerprint,
+                        trusted,
+                    });
+                    self.authority_trusted = trusted;
                 }
                 Update::SiteHealth(answering) => {
                     // A site that stopped answering must stop being shown as
@@ -2522,9 +2551,11 @@ impl Skep {
             .child(SharedString::from(text.to_string()))
     }
 
+    /// Named sections rather than a list of everything skep knows. Each one
+    /// says what it is for before it says what it holds, and every value is
+    /// honest about whether anybody chose it.
     fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
-        let services: Vec<_> = self.mirror.services().cloned().collect();
 
         div()
             .flex()
@@ -2549,18 +2580,6 @@ impl Skep {
             )
             .child(
                 div()
-                    .w_full()
-                    .px_6()
-                    .py_3()
-                    .body()
-                    .text_color(theme.muted)
-                    .child(SharedString::from(
-                        "Ports and versions live in config.toml. A project's skep.toml wins \
-                         wherever both speak, so a repository always gets what it asks for.",
-                    )),
-            )
-            .child(
-                div()
                     .id("settings-list")
                     .flex()
                     .flex_col()
@@ -2568,43 +2587,231 @@ impl Skep {
                     .w_full()
                     .min_w_0()
                     .overflow_y_scroll()
-                    .children(services.into_iter().map(|status| {
-                        let chosen = !status.ports_from.is_empty();
-                        let ports: Vec<String> = status
-                            .ports
-                            .iter()
-                            .map(|(name, number)| match status.ports_from.get(name) {
-                                Some(source) => format!("{name} {number} ({source})"),
-                                None => format!("{name} {number}"),
-                            })
-                            .collect();
-
-                        div()
-                            .flex()
-                            .w_full()
-                            .items_center()
-                            .gap_3()
-                            .px_6()
-                            .py_3()
-                            .border_b_1()
-                            .border_color(theme.border)
-                            .child(
-                                div()
-                                    .w(px(186.))
-                                    .truncate()
-                                    .child(SharedString::from(status.id.to_string())),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .truncate()
-                                    .label()
-                                    .text_color(if chosen { theme.text } else { theme.muted })
-                                    .child(SharedString::from(ports.join(",  "))),
-                            )
-                    })),
+                    .child(self.certificates(cx))
+                    .child(self.service_settings()),
             )
             .into_any_element()
+    }
+
+    fn section(&self, title: &'static str, about: &'static str) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .w_full()
+            .px_6()
+            .pt_5()
+            .pb_2()
+            .child(div().title().child(SharedString::from(title)))
+            .child(
+                div()
+                    .caption()
+                    .text_color(self.theme.muted)
+                    .child(SharedString::from(about)),
+            )
+    }
+
+    /// One fact and its value, with the value set apart so a column of them
+    /// reads down rather than across.
+    fn fact(&self, name: &'static str, value: String, mono: bool) -> impl IntoElement {
+        let mut shown = div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .label()
+            .child(SharedString::from(value));
+        if mono {
+            shown = shown.font_family(MONO);
+        }
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .w_full()
+            .min_w_0()
+            .px_6()
+            .py_1p5()
+            .child(
+                div()
+                    .w(px(120.))
+                    .flex_shrink_0()
+                    .caption()
+                    .text_color(self.theme.muted)
+                    .child(SharedString::from(name)),
+            )
+            .child(shown)
+    }
+
+    /// Which authority, out of which home, and whether this machine accepts
+    /// it. Naming the home is the whole point: two of them make two
+    /// authorities with the same name, and the difference is invisible until
+    /// something refuses a certificate that looks perfectly good.
+    fn certificates(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let mut out = div().flex().flex_col().w_full().child(self.section(
+            "Certificates",
+            "The authority skep signs local sites with. A browser accepts a site only if this \
+             machine trusts this authority.",
+        ));
+
+        let Some(trust) = &self.trust else {
+            return out
+                .child(self.fact("state", "no authority yet".to_string(), false))
+                .into_any_element();
+        };
+
+        out = out
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .w_full()
+                    .px_6()
+                    .py_1p5()
+                    .child(
+                        div()
+                            .w(px(120.))
+                            .flex_shrink_0()
+                            .caption()
+                            .text_color(theme.muted)
+                            .child(SharedString::from("trusted")),
+                    )
+                    .child(
+                        div()
+                            .size(px(6.))
+                            .rounded_full()
+                            .flex_shrink_0()
+                            .bg(if trust.trusted {
+                                theme.running
+                            } else {
+                                theme.failed
+                            }),
+                    )
+                    .child(div().label().child(SharedString::from(if trust.trusted {
+                        "yes, this machine accepts it"
+                    } else {
+                        "no, browsers will refuse these sites"
+                    }))),
+            )
+            .child(self.fact("home", trust.home.clone(), true))
+            .child(self.fact("authority", trust.root.clone(), true))
+            .child(self.fact("fingerprint", trust.fingerprint.clone(), true));
+
+        if !trust.trusted {
+            // Trusting it writes to the system keychain, which needs an
+            // administrator, which an app cannot become. Saying exactly what to
+            // run is the honest offer.
+            let command = "sudo skep trust".to_string();
+            out = out.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .w_full()
+                    .px_6()
+                    .py_2()
+                    .child(div().w(px(120.)).flex_shrink_0())
+                    .child(
+                        div()
+                            .id("copy-trust")
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(theme.base)
+                            .cursor_pointer()
+                            .hover(|style| style.border_color(theme.accent))
+                            .border_1()
+                            .border_color(theme.border)
+                            .on_click(cx.listener(move |skep, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    "sudo skep trust".to_string(),
+                                ));
+                                skep.copied = Some((Copied::Everything, Instant::now()));
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .label()
+                                    .font_family(MONO)
+                                    .child(SharedString::from(command)),
+                            )
+                            .child(
+                                div()
+                                    .caption()
+                                    .text_color(theme.muted)
+                                    .child(SharedString::from("copy")),
+                            ),
+                    ),
+            );
+        }
+
+        out.into_any_element()
+    }
+
+    /// What each service is set to, and by whom. A value nobody chose says so,
+    /// because "default" and "somebody decided this" are different facts and
+    /// the screen used to show them the same way.
+    fn service_settings(&self) -> AnyElement {
+        let theme = &self.theme;
+        let services: Vec<_> = self.mirror.services().cloned().collect();
+
+        let mut out = div().flex().flex_col().w_full().pb_6().child(self.section(
+            "Ports and versions",
+            "Set in config.toml. A project's skep.toml wins wherever both speak, so a \
+             repository always gets what it asks for.",
+        ));
+
+        for status in services {
+            let mut ports = div().flex().flex_col().gap_0p5().flex_1().min_w_0();
+            for (name, number) in &status.ports {
+                let source = status.ports_from.get(name);
+                ports =
+                    ports.child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .label()
+                                    .font_family(MONO)
+                                    .child(SharedString::from(format!("{name} {number}"))),
+                            )
+                            .child(div().caption().text_color(theme.muted).child(
+                                SharedString::from(match source {
+                                    Some(from) => format!("set in {from}"),
+                                    None => "default".to_string(),
+                                }),
+                            )),
+                    );
+            }
+
+            out = out.child(
+                div()
+                    .flex()
+                    .w_full()
+                    .min_w_0()
+                    .items_start()
+                    .gap_3()
+                    .px_6()
+                    .py_3()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .w(px(120.))
+                            .flex_shrink_0()
+                            .truncate()
+                            .child(SharedString::from(status.id.service.as_str().to_string())),
+                    )
+                    .child(ports),
+            );
+        }
+        out.into_any_element()
     }
 
     fn open_settings(&self, cx: &mut Context<Self>) -> AnyElement {
