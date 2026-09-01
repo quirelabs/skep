@@ -148,9 +148,13 @@ pub async fn serve_alongside(
     match tokio::net::TcpListener::bind(("127.0.0.1", HTTP_PORT)).await {
         Ok(listener) => {
             let mut quitting = host.quitting();
-            tokio::spawn(crate::proxy::redirect(listener, serving.public_https, async move {
-                let _ = quitting.changed().await;
-            }));
+            tokio::spawn(crate::proxy::redirect(
+                listener,
+                serving.public_https,
+                async move {
+                    let _ = quitting.changed().await;
+                },
+            ));
             serving.http = Some(HTTP_PORT);
         }
         Err(error) => serving

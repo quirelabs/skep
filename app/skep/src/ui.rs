@@ -1717,10 +1717,7 @@ impl Skep {
                             .min_w_0()
                             .truncate()
                             .label()
-                            .child(SharedString::from(comb::site_url(
-                                &shown,
-                                self.site_port,
-                            ))),
+                            .child(SharedString::from(comb::site_url(&shown, self.site_port))),
                     )
                     .child(
                         div()
