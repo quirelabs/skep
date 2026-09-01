@@ -72,14 +72,16 @@ fn a_deep_name_is_still_ours() {
     assert_eq!(address(&answer), [127, 0, 0, 1]);
 }
 
+/// Nothing binds ::1, so nothing may say it does. A name that resolves to an
+/// address with nothing behind it is worse than one that resolves only where
+/// it is actually served.
 #[test]
-fn an_ipv6_question_gets_loopback() {
+fn an_ipv6_question_gets_no_address_because_nothing_listens_there() {
     let answer = dns_reply(&question("myapp.test", AAAA), SUFFIX).unwrap();
-    assert_eq!(answers(&answer), 1);
-    assert_eq!(
-        address(&answer),
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
-    );
+
+    assert_eq!(answers(&answer), 0, "no address should be offered");
+    // Not a denial: the resolver has to go on and ask for the A record.
+    assert_eq!(code(&answer), 0, "the name exists, it just has no ipv6");
 }
 
 #[test]

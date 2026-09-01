@@ -21,14 +21,12 @@ pub const SUFFIX: &str = "test";
 
 const HEADER: usize = 12;
 const TYPE_A: u16 = 1;
-const TYPE_AAAA: u16 = 28;
 const CLASS_IN: u16 = 1;
 
 /// Short, because a person adding a site should not wait out a cache.
 const TTL: u32 = 60;
 
 const HERE: Ipv4Addr = Ipv4Addr::LOCALHOST;
-const HERE6: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 
 /// Whether the system will actually send names here. A file that exists is not
 /// the same as a file that points at us, and the difference is silent: names
@@ -133,7 +131,17 @@ pub fn reply(query: &[u8], suffix: &str) -> Option<Vec<u8>> {
 
     let records = match (ours, class, kind) {
         (true, CLASS_IN, TYPE_A) => vec![record(TYPE_A, &HERE.octets())],
-        (true, CLASS_IN, TYPE_AAAA) => vec![record(TYPE_AAAA, &HERE6)],
+        // Deliberately no answer for AAAA, though the name is ours.
+        //
+        // Everything that serves a site binds 127.0.0.1: the proxy, and the
+        // helper holding 80 and 443. Answering ::1 as well advertised an
+        // address nothing was listening on, and a client that prefers ipv6
+        // then tried it first and was refused. curl survives that by falling
+        // back; not everything does, and a name that half works is worse than
+        // one that resolves to the one place it is actually served.
+        //
+        // An empty answer rather than a denial, so the resolver goes on to ask
+        // for the A record instead of concluding the name does not exist.
         // A name we own but a type we have nothing for is an empty answer, not
         // a denial: saying the name does not exist would be a lie that stops
         // the resolver asking for the type we do serve.
