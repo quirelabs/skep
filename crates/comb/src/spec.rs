@@ -45,6 +45,9 @@ pub struct ServiceSpec {
     pub restart: RestartSpec,
     #[serde(default)]
     pub shutdown: ShutdownSpec,
+    /// The one thing this service says that is worth keeping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<Notice>,
 }
 
 impl ServiceSpec {
@@ -65,6 +68,7 @@ impl ServiceSpec {
             depends_on: Vec::new(),
             restart: RestartSpec::default(),
             shutdown: ShutdownSpec::default(),
+            notice: None,
         }
     }
 
@@ -125,6 +129,11 @@ impl ServiceSpec {
 
     pub fn with_restart(mut self, restart: RestartSpec) -> Self {
         self.restart = restart;
+        self
+    }
+
+    pub fn with_notice(mut self, notice: Notice) -> Self {
+        self.notice = Some(notice);
         self
     }
 
@@ -461,5 +470,59 @@ mod tests {
 
         let back: ServiceSpec = serde_json::from_value(json).unwrap();
         assert_eq!(back, spec());
+    }
+}
+
+/// Something a service announces once it is up that a person needs, such as
+/// the public url a tunnel was given. Declared rather than hooked: the engine
+/// reads the output and the adapter only says what to look for, so the text
+/// rides the event stream and every frontend shows it without special casing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Notice {
+    /// A line containing this is the one. The notice is the word of that line
+    /// containing it, so `trycloudflare.com` picks a whole url out of whatever
+    /// box cloudflared draws around it.
+    pub marker: String,
+}
+
+impl Notice {
+    pub fn new(marker: impl Into<String>) -> Self {
+        Self {
+            marker: marker.into(),
+        }
+    }
+
+    pub fn find(&self, line: &str) -> Option<String> {
+        line.split(|c: char| c.is_whitespace() || c == '|')
+            .map(|word| {
+                word.trim_matches(|c: char| {
+                    matches!(c, '"' | '\'' | ',' | ';' | '(' | ')' | '<' | '>')
+                })
+            })
+            .find(|word| word.contains(self.marker.as_str()))
+            .map(str::to_string)
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::Notice;
+
+    #[test]
+    fn the_word_carrying_the_marker_is_lifted_out_of_its_decoration() {
+        let notice = Notice::new("trycloudflare.com");
+        let line = "2025-09-02T10:00:00Z INF |  https://tidy-apple-1234.trycloudflare.com  |";
+        assert_eq!(
+            notice.find(line).as_deref(),
+            Some("https://tidy-apple-1234.trycloudflare.com")
+        );
+    }
+
+    #[test]
+    fn a_line_without_the_marker_is_not_a_notice() {
+        assert_eq!(
+            Notice::new("trycloudflare.com").find("INF Starting tunnel"),
+            None
+        );
     }
 }

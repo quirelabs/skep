@@ -34,11 +34,16 @@ impl RingBuffer {
     }
 }
 
-/// Fans one captured line out to the bounded history and to live subscribers.
+/// Whoever is waiting for the service to say one particular thing.
+pub(crate) type Watch = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Fans one captured line out to the bounded history and to live subscribers,
+/// and to the watch if there is one.
 #[derive(Clone)]
 pub(crate) struct LogSink {
     pub(crate) buffer: Arc<Mutex<RingBuffer>>,
     pub(crate) live: broadcast::Sender<LogLine>,
+    pub(crate) watch: Option<Watch>,
 }
 
 impl LogSink {
@@ -50,6 +55,9 @@ impl LogSink {
     fn push(&self, line: LogLine) {
         if let Ok(mut buffer) = self.buffer.lock() {
             buffer.push(line.clone());
+        }
+        if let Some(watch) = &self.watch {
+            watch(&line.text);
         }
         // An error only means nobody is subscribed.
         let _ = self.live.send(line);

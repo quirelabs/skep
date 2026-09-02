@@ -64,7 +64,7 @@ pub async fn registered_cold(
 ) -> (Engine, InstanceId, Vec<u16>) {
     let paths = Paths::new(shared_home());
     let chosen: Vec<u16> = ports.iter().map(|_| free_port()).collect();
-    let mut request = Request::new().with_label(label.parse().unwrap());
+    let mut request = Request::new().with_tag(comb::Tag::Branch(label.parse().unwrap()));
     for (name, port) in ports.iter().zip(&chosen) {
         request = request.with_port(*name, *port);
     }
@@ -106,7 +106,7 @@ pub async fn registered(
         .expect("the pinned release installs");
 
     let chosen: Vec<u16> = ports.iter().map(|_| free_port()).collect();
-    let mut request = Request::new().with_label(label.parse().unwrap());
+    let mut request = Request::new().with_tag(comb::Tag::Branch(label.parse().unwrap()));
     for (name, port) in ports.iter().zip(&chosen) {
         request = request.with_port(*name, *port);
     }

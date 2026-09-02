@@ -480,9 +480,10 @@ fn render(services: &[ServiceStatus]) -> String {
             // mystery.
             let ports = render_ports(service);
             // The phase matters more than the bare state during a long start.
-            let state = match &service.activity {
-                Some(activity) => format!("{} ({activity})", service.state),
-                None => service.state.to_string(),
+            let state = match (&service.activity, &service.notice) {
+                (Some(activity), _) => format!("{} ({activity})", service.state),
+                (None, Some(notice)) => format!("{} {notice}", service.state),
+                (None, None) => service.state.to_string(),
             };
             [
                 service.id.to_string(),

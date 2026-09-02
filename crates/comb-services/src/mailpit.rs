@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn a_label_makes_a_separate_instance_with_its_own_data() {
         let paths = Paths::new("/tmp/skep-spec-test");
-        let request = Request::new().with_label("scratch".parse().unwrap());
+        let request = Request::new().with_tag(comb::Tag::Branch("scratch".parse().unwrap()));
 
         let spec = Mailpit.spec(&request, &paths).unwrap();
 

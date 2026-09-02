@@ -35,6 +35,10 @@ pub struct Service {
     /// start until that is dealt with. Carries the remedy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<String>,
+    /// What the service announced once up, such as the public url a tunnel
+    /// was given. Gone the moment the service is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub ports: BTreeMap<String, u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,6 +58,7 @@ impl Service {
             },
             doing: status.activity.clone(),
             blocked: status.blocked.clone(),
+            notice: status.notice.clone(),
             ports: status.ports.clone(),
             pid: status.pid,
             action: None,
@@ -154,6 +159,7 @@ pub async fn project(
                     reason: None,
                     doing: None,
                     blocked: None,
+                    notice: None,
                     ports: BTreeMap::new(),
                     pid: None,
                     action: None,

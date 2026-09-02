@@ -65,6 +65,12 @@ pub enum EventKind {
         pid: Option<u32>,
         process: Option<String>,
     },
+    /// What the service announced, or that it no longer stands: cleared on
+    /// the same stream it arrived on, so no frontend keeps a url whose
+    /// tunnel is gone.
+    Notice {
+        text: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -37,7 +37,7 @@ pub use engine::{Engine, Overview, ServiceStatus, Snapshot};
 pub use error::{Error, Result};
 pub use event::{Event, EventKind, LogLine, LogStream};
 pub use host::{Client, Host, Lock, PROTOCOL, Request, Response};
-pub use id::{InstanceId, Label, ServiceName, Version};
+pub use id::{InstanceId, Label, ServiceName, Tag, Version};
 pub use mirror::{Applied, Glyph, Mirror, Summary};
 pub use paths::Paths;
 pub use platform::Platform;
@@ -46,7 +46,7 @@ pub use proxy::{
     HTTP_PORT, HTTPS_PORT, Sites, port_suffix, redirect, serve as serve_sites, site_url,
 };
 pub use spec::{
-    Backoff, BinarySpec, HealthCheck, Port, PrepareStep, Probe, RestartPolicy, RestartSpec,
+    Backoff, BinarySpec, HealthCheck, Notice, Port, PrepareStep, Probe, RestartPolicy, RestartSpec,
     ServiceSpec, ShutdownSpec, StopSignal,
 };
 pub use state::ServiceState;

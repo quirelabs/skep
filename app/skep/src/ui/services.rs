@@ -73,7 +73,7 @@ impl Skep {
                     .child(SharedString::from(id.version.as_str().to_string())),
             );
 
-        if let Some(label) = &id.label {
+        if let Some(label) = id.tag.as_ref().map(comb::Tag::name) {
             named = named.child(
                 div()
                     .flex_shrink_0()
@@ -550,16 +550,14 @@ impl Skep {
 
     /// A name nobody is using yet, since there is nowhere to type one.
     pub(super) fn next_name(&self, stem: &str, of: impl Fn(&Snapshot) -> String) -> String {
-        let taken: Vec<String> = self
-            .kept
-            .iter()
-            .map(&of)
-            .chain(
-                self.mirror
-                    .services()
-                    .filter_map(|service| service.id.label.as_ref().map(ToString::to_string)),
-            )
-            .collect();
+        let taken: Vec<String> =
+            self.kept
+                .iter()
+                .map(&of)
+                .chain(self.mirror.services().filter_map(|service| {
+                    service.id.tag.as_ref().map(|tag| tag.name().to_string())
+                }))
+                .collect();
         (1..)
             .map(|n| format!("{stem}-{n}"))
             .find(|name| !taken.contains(name))

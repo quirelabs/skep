@@ -69,10 +69,16 @@ impl Mirror {
                     return Applied::Resync;
                 };
                 service.state = to.clone();
+                service.since = event.at;
                 service.activity = None;
                 service.blocked = None;
                 // The stream carries no pid, so claiming one would be a guess.
                 service.pid = None;
+            }
+            (Some(id), EventKind::Notice { text }) => {
+                if let Some(service) = self.services.get_mut(id) {
+                    service.notice = text.clone();
+                }
             }
             (Some(id), EventKind::Preparing { step } | EventKind::Progress { step }) => {
                 if let Some(service) = self.services.get_mut(id) {
@@ -178,6 +184,7 @@ mod tests {
             pid: Some(42),
             activity: None,
             blocked: None,
+            notice: None,
             since: Timestamp::from_millis(0),
         }
     }

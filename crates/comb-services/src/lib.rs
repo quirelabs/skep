@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use comb::{
     Build, Client, Error, InstanceId, Label, Paths, Platform, Release, Request as Wire, Response,
-    Result, ServiceSpec, ServiceStatus, Version,
+    Result, ServiceSpec, ServiceStatus, Tag, Version,
 };
 
 pub use mailpit::Mailpit;
@@ -58,7 +58,7 @@ pub trait ServiceAdapter: Send + Sync {
 #[derive(Clone, Debug, Default)]
 pub struct Request {
     pub version: Option<Version>,
-    pub label: Option<Label>,
+    pub tag: Option<Tag>,
     pub ports: BTreeMap<String, u16>,
 }
 
@@ -72,8 +72,8 @@ impl Request {
         self
     }
 
-    pub fn with_label(mut self, label: Label) -> Self {
-        self.label = Some(label);
+    pub fn with_tag(mut self, tag: Tag) -> Self {
+        self.tag = Some(tag);
         self
     }
 
@@ -119,7 +119,7 @@ impl Request {
         Ok(InstanceId {
             service: adapter.name().parse()?,
             version: version.clone(),
-            label: self.label.clone(),
+            tag: self.tag.clone(),
         })
     }
 }
@@ -197,17 +197,15 @@ pub async fn install(adapter: &dyn ServiceAdapter, version: &Version, paths: &Pa
 /// A version pinned in config.toml counts, the same way it does when the
 /// service is started, so `skep stop postgres` names what `skep serve` ran.
 pub fn instance(service: &str, version: Option<&str>, paths: &Paths) -> Result<InstanceId> {
-    // A branch is named the way it prints: postgres:experiment.
-    let (service, label) = match service.split_once(':') {
-        Some((service, label)) => (service, Some(Label::new(label)?)),
-        None => (service, None),
-    };
+    // A branch or a target is named the way it prints: postgres:experiment,
+    // cloudflared~myapp-test.
+    let (service, tag) = Tag::split(service)?;
     let settings = project::settings(paths)?;
     let (adapter, version) = lookup(service, version, pinned(&settings, service))?;
     Ok(InstanceId {
         service: adapter.name().parse()?,
         version,
-        label,
+        tag,
     })
 }
 
@@ -367,7 +365,7 @@ pub fn branch_spec(from: &InstanceId, label: &Label, paths: &Paths) -> Result<Se
 
     let mut request = Request::new()
         .with_version(from.version.clone())
-        .with_label(label.clone());
+        .with_tag(Tag::Branch(label.clone()));
     for (port, _) in adapter.default_ports() {
         let free = comb::free_port()
             .ok_or_else(|| Error::InvalidId("no free port for the branch".to_string()))?;

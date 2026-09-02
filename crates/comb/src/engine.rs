@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use crate::event::{Event, EventKind, LogLine, LogStream};
 use crate::graph;
 use crate::id::InstanceId;
-use crate::logs::{LogSink, RingBuffer, pump};
+use crate::logs::{LogSink, RingBuffer, Watch, pump};
 use crate::paths::Paths;
 use crate::platform;
 use crate::probe;
@@ -54,6 +54,10 @@ pub struct ServiceStatus {
     /// its port. Known by looking, rather than only by failing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<String>,
+    /// What the service announced, such as the public url a tunnel was
+    /// given. Outlives the phases of a start but never the service itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
     /// When the current state was entered.
     pub since: Timestamp,
 }
@@ -99,6 +103,7 @@ struct Instance {
     history: Arc<Mutex<RingBuffer>>,
     activity: Option<String>,
     blocked: Option<String>,
+    notice: Option<String>,
     running: Option<Running>,
     /// Restart attempts since the last deliberate start.
     attempt: u32,
@@ -229,6 +234,7 @@ impl Engine {
                 history: Arc::new(Mutex::new(RingBuffer::new(LOG_HISTORY))),
                 activity: None,
                 blocked: None,
+                notice: None,
                 running: None,
                 attempt: 0,
             },
@@ -1119,6 +1125,7 @@ impl Engine {
         Ok(LogSink {
             buffer: instance.history.clone(),
             live: instance.logs.clone(),
+            watch: None,
         })
     }
 
@@ -1162,6 +1169,16 @@ impl Engine {
         let sink = LogSink {
             buffer: instance.history.clone(),
             live: instance.logs.clone(),
+            watch: spec.notice.clone().map(|notice| {
+                let (engine, id) = (self.clone(), id.clone());
+                let watch: Watch = Arc::new(move |line| {
+                    if let Some(text) = notice.find(line) {
+                        let (engine, id) = (engine.clone(), id.clone());
+                        tokio::spawn(async move { engine.noticed(&id, text).await });
+                    }
+                });
+                watch
+            }),
         };
         instance.pid = pid;
         Ok(Process {
@@ -1246,6 +1263,25 @@ impl Engine {
         self.move_to(instance, id, to)
     }
 
+    /// Keeps what a service announced. Only while it is up: an announcement
+    /// landing after the stop would outlive the thing it describes.
+    async fn noticed(&self, id: &InstanceId, text: String) {
+        let mut instances = self.inner.instances.write().await;
+        let Some(instance) = instances.get_mut(id) else {
+            return;
+        };
+        let up = !matches!(
+            instance.state,
+            ServiceState::Stopped | ServiceState::Stopping | ServiceState::Failed { .. }
+        );
+        if !up || instance.notice.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        instance.notice = Some(text.clone());
+        self.inner
+            .emit(Some(id.clone()), EventKind::Notice { text: Some(text) });
+    }
+
     /// The transition itself, for callers already holding the write lock.
     fn move_to(&self, instance: &mut Instance, id: &InstanceId, to: ServiceState) -> Result<()> {
         if !instance.state.can_transition_to(&to) {
@@ -1266,8 +1302,15 @@ impl Engine {
             instance.pid = None;
         }
         // Emitted under the write lock so sequence order matches state order.
+        let ended = matches!(to, ServiceState::Stopped | ServiceState::Failed { .. });
         self.inner
             .emit(Some(id.clone()), EventKind::StateChanged { from, to });
+        // A notice survives the phases of a start, not the end of the
+        // service: a public url with no tunnel behind it is a lie.
+        if ended && instance.notice.take().is_some() {
+            self.inner
+                .emit(Some(id.clone()), EventKind::Notice { text: None });
+        }
         Ok(())
     }
 }
@@ -1389,6 +1432,7 @@ impl Instance {
             pid: self.pid,
             activity: self.activity.clone(),
             blocked: self.blocked.clone(),
+            notice: self.notice.clone(),
             since: self.since,
         }
     }
