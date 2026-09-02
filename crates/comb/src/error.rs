@@ -152,6 +152,9 @@ pub enum Error {
         reason: String,
     },
 
+    #[error("{0} was stopped before it came up")]
+    Interrupted(InstanceId),
+
     #[error("the log buffer for {0} was poisoned by a panic")]
     Poisoned(InstanceId),
 

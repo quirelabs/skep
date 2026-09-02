@@ -104,11 +104,13 @@ struct Instance {
     attempt: u32,
 }
 
-/// The handle a caller uses to interrupt a supervisor, whether it is watching a
-/// live child or waiting out a backoff.
+/// The handle a caller uses to interrupt whoever owns the process: the start
+/// call while the service settles, then the supervisor, whether it is watching
+/// a live child or waiting out a backoff.
 struct Running {
     stop: watch::Sender<bool>,
-    task: JoinHandle<()>,
+    /// Flips once the owner has let go, with the process gone.
+    released: watch::Receiver<bool>,
 }
 
 /// A live child and the tasks draining its output. Exactly one supervisor owns
@@ -346,25 +348,22 @@ impl Engine {
     /// Moving to `Starting` first is what makes this safe to call twice: the
     /// second caller is rejected by the state machine, not by a lock.
     pub async fn start(&self, id: &InstanceId) -> Result<()> {
-        self.transition(id, ServiceState::Starting).await?;
-        self.set_attempt(id, 0).await;
+        let (mut stop, release) = self.begin(id).await?;
         let spec = self.spec_of(id).await?;
 
-        let process = match self.launch_and_settle(id, &spec).await {
+        let process = match self.launch_and_settle(id, &spec, &mut stop).await {
             Ok(process) => process,
             Err(error) => {
-                self.transition(id, ServiceState::failed(error.to_string()))
-                    .await?;
+                let _ = release.send(true);
+                // A stop that cut the start short owns the state from here.
+                if !matches!(error, Error::Interrupted(_)) {
+                    self.transition(id, ServiceState::failed(error.to_string()))
+                        .await?;
+                }
                 return Err(error);
             }
         };
-
-        // Ready lands before the supervisor exists, so a supervisor can never
-        // race the very state it is there to watch. If this transition loses to
-        // a concurrent stop, the process drops and kill_on_drop cleans up.
-        self.transition(id, ServiceState::Ready).await?;
-        self.watch(id, process).await;
-        Ok(())
+        self.watch(id, process, stop, release).await
     }
 
     /// Works from any live state. A service waiting out a backoff has no child
@@ -373,9 +372,10 @@ impl Engine {
     pub async fn stop(&self, id: &InstanceId) -> Result<()> {
         self.announce_stopping(id).await?;
 
-        if let Some(running) = self.take_running(id).await {
+        if let Some(mut running) = self.take_running(id).await {
             let _ = running.stop.send(true);
-            let _ = running.task.await;
+            // Until the owner lets go, the process may still hold its port.
+            let _ = running.released.wait_for(|gone| *gone).await;
         }
 
         // A supervisor can finish a relaunch in the instant before it sees the
@@ -524,26 +524,80 @@ impl Engine {
         }
     }
 
-    /// Hands a freshly launched process to a supervisor that owns it from here.
-    async fn watch(&self, id: &InstanceId, process: Process) {
-        let (stop, listener) = watch::channel(false);
-        let task = tokio::spawn(supervise(self.clone(), id.clone(), process, listener));
+    /// Moves to `Starting` and arms the stop handle under one lock, so a stop
+    /// arriving at any point after this has something to interrupt.
+    async fn begin(&self, id: &InstanceId) -> Result<(watch::Receiver<bool>, watch::Sender<bool>)> {
         let mut instances = self.inner.instances.write().await;
-        if let Some(instance) = instances.get_mut(id) {
-            instance.running = Some(Running { stop, task });
+        let instance = instances
+            .get_mut(id)
+            .ok_or_else(|| Error::UnknownInstance(id.clone()))?;
+        self.move_to(instance, id, ServiceState::Starting)?;
+        instance.attempt = 0;
+        let (stop, listener) = watch::channel(false);
+        let (release, released) = watch::channel(false);
+        instance.running = Some(Running { stop, released });
+        Ok((listener, release))
+    }
+
+    /// Hands a settled process to a supervisor. Ready and the supervisor land
+    /// under one lock, so no stop can fall between a service that is up and
+    /// the one thing that would hear about it.
+    async fn watch(
+        &self,
+        id: &InstanceId,
+        mut process: Process,
+        stop: watch::Receiver<bool>,
+        release: watch::Sender<bool>,
+    ) -> Result<()> {
+        let mut instances = self.inner.instances.write().await;
+        let ready = instances
+            .get_mut(id)
+            .ok_or_else(|| Error::UnknownInstance(id.clone()))
+            .and_then(|instance| self.move_to(instance, id, ServiceState::Ready));
+        if let Err(error) = ready {
+            // Lost to a stop, or the instance is gone: wind the process down
+            // as a supervisor would, then let the stop finish.
+            drop(instances);
+            process.shut_down(&self.shutdown_of(id).await).await;
+            let _ = release.send(true);
+            return Err(if *stop.borrow() {
+                Error::Interrupted(id.clone())
+            } else {
+                error
+            });
         }
+        let engine = self.clone();
+        let id = id.clone();
+        tokio::spawn(async move {
+            supervise(engine, id, process, stop).await;
+            let _ = release.send(true);
+        });
+        Ok(())
     }
 
     /// Starts the process and waits for it to answer. Dropping the process on
-    /// any failure is what stops a half started service from lingering.
-    async fn launch_and_settle(&self, id: &InstanceId, spec: &ServiceSpec) -> Result<Process> {
+    /// any failure is what stops a half started service from lingering, and a
+    /// stop arriving mid-way is answered rather than sat out.
+    async fn launch_and_settle(
+        &self,
+        id: &InstanceId,
+        spec: &ServiceSpec,
+        stop: &mut watch::Receiver<bool>,
+    ) -> Result<Process> {
         self.check_ports(id, spec).await?;
         self.provision(id, spec).await?;
         self.ensure_data_dir(id, spec).await?;
         self.prepare(id, spec).await?;
+        if *stop.borrow() {
+            return Err(Error::Interrupted(id.clone()));
+        }
         let mut process = self.launch(id).await?;
         let settled = tokio::select! {
             result = self.await_ready(id, &spec.health) => result,
+            _ = stop.changed() => {
+                process.shut_down(&self.shutdown_of(id).await).await;
+                Err(Error::Interrupted(id.clone()))
+            }
             exit = process.child.wait() => {
                 let reason = match exit {
                     Ok(status) => platform::describe_exit(&status),
@@ -1144,11 +1198,12 @@ impl Engine {
             }
 
             self.transition(id, ServiceState::Starting).await.ok()?;
-            match self.launch_and_settle(id, &spec).await {
+            match self.launch_and_settle(id, &spec, stop).await {
                 Ok(process) => {
                     self.transition(id, ServiceState::Ready).await.ok()?;
                     return Some(process);
                 }
+                Err(Error::Interrupted(_)) => return None,
                 Err(error) => {
                     // A failed relaunch is just another attempt.
                     self.transition(id, ServiceState::failed(error.to_string()))
@@ -1162,13 +1217,6 @@ impl Engine {
     async fn take_running(&self, id: &InstanceId) -> Option<Running> {
         let mut instances = self.inner.instances.write().await;
         instances.get_mut(id).and_then(|i| i.running.take())
-    }
-
-    async fn set_attempt(&self, id: &InstanceId, attempt: u32) {
-        let mut instances = self.inner.instances.write().await;
-        if let Some(instance) = instances.get_mut(id) {
-            instance.attempt = attempt;
-        }
     }
 
     async fn bump_attempt(&self, id: &InstanceId) -> Option<u32> {
@@ -1195,6 +1243,11 @@ impl Engine {
         let instance = instances
             .get_mut(id)
             .ok_or_else(|| Error::UnknownInstance(id.clone()))?;
+        self.move_to(instance, id, to)
+    }
+
+    /// The transition itself, for callers already holding the write lock.
+    fn move_to(&self, instance: &mut Instance, id: &InstanceId, to: ServiceState) -> Result<()> {
         if !instance.state.can_transition_to(&to) {
             return Err(Error::IllegalTransition {
                 instance: id.clone(),

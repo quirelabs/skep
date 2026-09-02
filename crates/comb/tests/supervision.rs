@@ -5,8 +5,10 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use comb::{Engine, Error, EventKind, LogStream, ServiceState, ShutdownSpec, StopSignal};
-use support::{TestHome, fake_spec, wait_for_log};
+use comb::{
+    Engine, Error, EventKind, LogStream, Port, Probe, ServiceState, ShutdownSpec, StopSignal,
+};
+use support::{TestHome, fake_spec, free_port, health, wait_for_log};
 
 #[tokio::test]
 async fn starts_a_process_and_reports_the_pid_it_actually_has() {
@@ -159,5 +161,89 @@ async fn restart_replaces_the_process() {
     assert_eq!(status.state, ServiceState::Ready);
     assert_ne!(status.pid.unwrap(), before);
 
+    engine.stop(&id).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_stop_during_a_slow_start_wins() {
+    let home = TestHome::new();
+    let engine = Engine::new();
+    let port = free_port();
+    // Listens only after a long delay, so the start sits in its probe loop.
+    let spec = fake_spec(
+        &home,
+        "valkey@8",
+        &["--listen", &port.to_string(), "--listen-delay-ms", "4000"],
+    )
+    .with_ports([Port::new("main", port)])
+    .with_health(health(Probe::Tcp { port }, Duration::from_secs(10)));
+    let id = spec.id.clone();
+    engine.register(spec).await.unwrap();
+    let mut logs = engine.subscribe_logs(&id).await.unwrap();
+
+    let starting = {
+        let (engine, id) = (engine.clone(), id.clone());
+        tokio::spawn(async move { engine.start(&id).await })
+    };
+    let launched = wait_for_log(&mut logs, |line| line.text.starts_with("ready pid=")).await;
+    let pid = launched.text.trim_start_matches("ready pid=").to_string();
+
+    let stopping = Instant::now();
+    engine.stop(&id).await.unwrap();
+
+    assert!(
+        stopping.elapsed() < Duration::from_secs(2),
+        "the stop should interrupt the start, not sit out its budget"
+    );
+    assert_eq!(
+        engine.status_of(&id).await.unwrap().state,
+        ServiceState::Stopped
+    );
+    let error = starting.await.unwrap().unwrap_err();
+    assert!(matches!(error, Error::Interrupted(_)), "{error}");
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &pid])
+        .status()
+        .unwrap()
+        .success();
+    assert!(!alive, "the half-started process {pid} should be gone");
+}
+
+#[tokio::test]
+async fn a_restart_during_a_slow_start_replaces_the_process() {
+    let home = TestHome::new();
+    let engine = Engine::new();
+    let port = free_port();
+    let spec = fake_spec(
+        &home,
+        "valkey@8",
+        &["--listen", &port.to_string(), "--listen-delay-ms", "300"],
+    )
+    .with_ports([Port::new("main", port)])
+    .with_health(health(Probe::Tcp { port }, Duration::from_secs(10)));
+    let id = spec.id.clone();
+    engine.register(spec).await.unwrap();
+    let mut logs = engine.subscribe_logs(&id).await.unwrap();
+
+    let starting = {
+        let (engine, id) = (engine.clone(), id.clone());
+        tokio::spawn(async move { engine.start(&id).await })
+    };
+    let first = wait_for_log(&mut logs, |line| line.text.starts_with("ready pid=")).await;
+
+    // Before the fix this met the engine's own child on the port.
+    engine.restart(&id).await.unwrap();
+
+    assert!(matches!(
+        starting.await.unwrap().unwrap_err(),
+        Error::Interrupted(_)
+    ));
+    let status = engine.status_of(&id).await.unwrap();
+    assert_eq!(status.state, ServiceState::Ready);
+    assert_ne!(
+        format!("ready pid={}", status.pid.unwrap()),
+        first.text,
+        "the restart should have brought up a fresh process"
+    );
     engine.stop(&id).await.unwrap();
 }
