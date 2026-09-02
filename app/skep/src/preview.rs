@@ -79,15 +79,27 @@ impl Navigation {
     }
 }
 
+/// What the pane holds. Two pages share one pane, so each has to be able to
+/// tell whether coming back to it means a reveal or a load.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Held {
+    /// A message, and a digest of the html it was given, since the same
+    /// message comes back different once its images are allowed.
+    Message {
+        id: String,
+        body: u32,
+    },
+    Site(String),
+}
+
 pub struct Preview {
     view: Retained<WKWebView>,
     parent: Retained<NSView>,
     /// Held because the webview does not keep its delegate alive.
     _navigation: Retained<Navigation>,
-    /// Whether a message has been put in it. Hiding does not empty it, so
-    /// coming back to it is a matter of showing it again rather than loading
-    /// it again.
-    loaded: bool,
+    /// Hiding does not empty it, so coming back to what it holds is a matter
+    /// of showing it again rather than loading it again.
+    holding: Option<Held>,
     showing: bool,
 }
 
@@ -141,32 +153,36 @@ impl Preview {
             view,
             parent,
             _navigation: navigation,
-            loaded: false,
+            holding: None,
             showing: false,
         })
     }
 
+    pub fn holds(&self, held: &Held) -> bool {
+        self.holding.as_ref() == Some(held)
+    }
+
     /// Points it at a site. Only ever something on this machine that the
     /// person running skep put there themselves.
-    pub fn show_url(&mut self, url: &str) {
+    pub fn show_site(&mut self, host: String, url: &str) {
         let Some(target) = NSURL::URLWithString(&NSString::from_str(url)) else {
             return;
         };
         let request = NSURLRequest::requestWithURL(&target);
         unsafe { self.view.loadRequest(&request) };
         self.view.setHidden(false);
-        self.loaded = true;
+        self.holding = Some(Held::Site(host));
         self.showing = true;
     }
 
     /// Puts a message in it. The html is guarded before it gets here.
-    pub fn show(&mut self, html: &str) {
+    pub fn show_message(&mut self, held: Held, html: &str) {
         unsafe {
             self.view
                 .loadHTMLString_baseURL(&NSString::from_str(html), None);
         }
         self.view.setHidden(false);
-        self.loaded = true;
+        self.holding = Some(held);
         self.showing = true;
     }
 
@@ -174,10 +190,18 @@ impl Preview {
     /// not cost a reload, and a message that reloaded every time would flicker
     /// and refetch on every glance.
     pub fn reveal(&mut self) {
-        if self.loaded && !self.showing {
+        if self.holding.is_some() && !self.showing {
             self.view.setHidden(false);
             self.showing = true;
         }
+    }
+
+    /// Drops what it holds without loading anything else, so the next look
+    /// at the same thing is a fresh load rather than whatever page WebKit
+    /// was left showing.
+    pub fn forget(&mut self) {
+        self.hide();
+        self.holding = None;
     }
 
     pub fn hide(&mut self) {

@@ -73,13 +73,23 @@ pub enum Update {
         fingerprint: String,
         trusted: bool,
     },
-    MailSource(String),
-    MailChecks(
-        Box<(
+    /// Both name the message they are about, so an answer that arrives after
+    /// the person has moved on lands nowhere rather than on the wrong one.
+    MailSource {
+        id: String,
+        source: String,
+    },
+    MailChecks {
+        id: String,
+        checks: Box<(
             comb_services::mail::Compatibility,
             comb_services::mail::Links,
         )>,
-    ),
+    },
+    /// The list changed and nothing else did: what was in the way still is.
+    SiteList(std::collections::BTreeMap<String, u16>),
+    /// A site could not be written down, and why.
+    SiteRefused(String),
     /// Every hostname this machine serves, and anything stopping it.
     Sites {
         sites: std::collections::BTreeMap<String, u16>,
@@ -293,20 +303,10 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
             {
                 Ok(()) => {
                     engine.add_sites([(host, port)].into_iter().collect());
-                    let _ = reports.send(Update::Sites {
-                        sites: engine.site_list(),
-                        trouble: Vec::new(),
-                        trusted: comb::Authority::open(&paths)
-                            .map(|authority| authority.is_trusted())
-                            .unwrap_or(false),
-                        public_https: comb::public_https_port(
-                            &comb::Layout::system(comb::SUFFIX).control,
-                        )
-                        .await,
-                    });
+                    let _ = reports.send(Update::SiteList(engine.site_list()));
                 }
                 Err(error) => {
-                    let _ = reports.send(Update::MailTrouble(error.to_string()));
+                    let _ = reports.send(Update::SiteRefused(error.to_string()));
                 }
             }
             Ok(())
@@ -382,7 +382,7 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
             if let Ok(port) = mail_port(engine).await {
                 match comb_services::mail::source(port, &id).await {
                     Ok(source) => {
-                        let _ = reports.send(Update::MailSource(source));
+                        let _ = reports.send(Update::MailSource { id, source });
                     }
                     Err(error) => {
                         let _ = reports.send(Update::MailTrouble(error.to_string()));
@@ -395,10 +395,10 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
             if let Ok(port) = mail_port(engine).await {
                 let clients = comb_services::mail::compatibility(port, &id).await;
                 let links = comb_services::mail::links(port, &id).await;
-                let _ = reports.send(Update::MailChecks(Box::new((
-                    clients.unwrap_or_default(),
-                    links.unwrap_or_default(),
-                ))));
+                let _ = reports.send(Update::MailChecks {
+                    id,
+                    checks: Box::new((clients.unwrap_or_default(), links.unwrap_or_default())),
+                });
             }
             Ok(())
         }
