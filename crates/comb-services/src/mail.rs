@@ -627,6 +627,20 @@ pub fn render(html: &str, images: Images) -> Rendered {
             continue;
         }
 
+        // A stylesheet fetches through url() just as an inline style does.
+        if name == "style" && !tag.starts_with('/') {
+            let inside = &rest[end + 1..];
+            let close = inside
+                .to_ascii_lowercase()
+                .find("</style>")
+                .unwrap_or(inside.len());
+            out.push_str("<style>");
+            out.push_str(&without_urls(&inside[..close]));
+            out.push_str("</style>");
+            rest = &inside[(close + "</style>".len()).min(inside.len())..];
+            continue;
+        }
+
         if name == "img" {
             match remote_image(tag) {
                 Some(true) => held.pixels += 1,
@@ -692,7 +706,14 @@ fn strip_attributes(tag: &str, images: Images) -> String {
         name.starts_with("on")
             || matches!(
                 name.as_str(),
-                "src" | "srcset" | "poster" | "background" | "data" | "formaction" | "ping"
+                "src"
+                    | "srcset"
+                    | "poster"
+                    | "background"
+                    | "data"
+                    | "action"
+                    | "formaction"
+                    | "ping"
             )
     };
 
@@ -840,7 +861,9 @@ pub fn to_text(html: &str) -> String {
 
 /// Skips a whole element, contents and all.
 fn skip_block<'a>(lowered: &str, rest: &'a str, name: &str) -> Option<&'a str> {
-    if !lowered.starts_with(&format!("<{name}")) {
+    // The name must end where the tag name ends: `<head` is not `<header`.
+    let after = lowered.strip_prefix('<')?.strip_prefix(name)?;
+    if !after.starts_with(|c: char| c == '>' || c == '/' || c.is_whitespace()) {
         return None;
     }
     let close = format!("</{name}>");
@@ -1014,6 +1037,33 @@ mod tests {
     fn a_head_is_not_the_message() {
         let html = "<html><head><title>Ignore me</title></head><body><p>Read me</p></body></html>";
         assert_eq!(to_text(html), "Read me");
+    }
+
+    #[test]
+    fn a_header_is_not_a_head() {
+        let html = "<body><header>Shop</header><p>Your code is 1234</p></body>";
+        let text = to_text(html);
+        assert!(text.contains("1234"), "{text:?}");
+        assert!(text.contains("Shop"), "{text:?}");
+    }
+
+    #[test]
+    fn a_form_cannot_send_anywhere() {
+        let html =
+            r#"<form action="https://x.test/collect" method="post"><button>Go</button></form>"#;
+        let shown = safe_html(html).html;
+        assert!(!shown.contains("x.test"), "{shown}");
+        assert!(shown.contains("Go"), "{shown}");
+    }
+
+    #[test]
+    fn a_stylesheet_cannot_fetch_either() {
+        let html =
+            "<style>body{background:url(https://track.test/p.gif);color:red}</style><p>hi</p>";
+        let shown = safe_html(html).html;
+        assert!(!shown.contains("track.test"), "{shown}");
+        assert!(shown.contains("color:red"), "{shown}");
+        assert!(shown.contains("<p>hi</p>"), "{shown}");
     }
 
     #[test]

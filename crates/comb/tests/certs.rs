@@ -71,6 +71,27 @@ fn a_half_written_authority_is_replaced_rather_than_nursed() {
 }
 
 #[test]
+fn a_leaf_does_not_outlive_the_root_that_signed_it() {
+    let home = TestHome::new();
+    let paths = Paths::new(home.path());
+
+    let before = Authority::open(&paths)
+        .unwrap()
+        .issue("myapp.test")
+        .unwrap();
+    fs::remove_file(paths.ca_dir().join("root.pem")).unwrap();
+    let after = Authority::open(&paths)
+        .unwrap()
+        .issue("myapp.test")
+        .unwrap();
+
+    assert_ne!(
+        before.certificate_pem, after.certificate_pem,
+        "a leaf signed by a root that no longer exists would fail in every browser"
+    );
+}
+
+#[test]
 fn the_root_is_a_certificate_authority() {
     let home = TestHome::new();
     let authority = Authority::open(&Paths::new(home.path())).unwrap();

@@ -160,7 +160,7 @@ fn untrust() -> Result<()> {
 }
 
 fn resolve(name: &str) -> Result<InstanceId> {
-    Ok(resolve_instance(name, None)?)
+    Ok(resolve_instance(name, None, &Paths::from_env())?)
 }
 
 /// Brings up everything the project asks for. One service failing never stops

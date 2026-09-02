@@ -54,9 +54,9 @@ pub fn sites(settings: &Project, project: &Project) -> Result<comb::Sites> {
 /// toml_edit: comments, blank lines and spacing nobody would choose twice all
 /// survive, and only the one table asked for changes.
 pub fn add_site(path: &Path, host: &str, port: u16) -> Result<()> {
-    let host = comb::valid_hostname(host)?;
+    let host = comb::valid_hostname(host)?.to_ascii_lowercase();
     let mut document = read(path)?;
-    sites_table(&mut document).insert(host, toml_edit::value(i64::from(port)));
+    sites_table(path, &mut document)?.insert(&host, toml_edit::value(i64::from(port)));
     write(path, &document)
 }
 
@@ -64,7 +64,9 @@ pub fn add_site(path: &Path, host: &str, port: u16) -> Result<()> {
 /// tell somebody the difference.
 pub fn remove_site(path: &Path, host: &str) -> Result<bool> {
     let mut document = read(path)?;
-    let had = sites_table(&mut document).remove(host).is_some();
+    let had = sites_table(path, &mut document)?
+        .remove(&host.to_ascii_lowercase())
+        .is_some();
     if had {
         write(path, &document)?;
     }
@@ -72,9 +74,18 @@ pub fn remove_site(path: &Path, host: &str) -> Result<bool> {
 }
 
 fn read(path: &Path) -> Result<toml_edit::DocumentMut> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    // Only a missing file is an empty one. Anything else unreadable must not
+    // be silently replaced by what gets written back.
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(Error::Io(error)),
+    };
     text.parse::<toml_edit::DocumentMut>()
-        .map_err(|error| Error::InvalidId(error.to_string()))
+        .map_err(|error| Error::Project {
+            path: path.display().to_string(),
+            message: error.to_string(),
+        })
 }
 
 fn write(path: &Path, document: &toml_edit::DocumentMut) -> Result<()> {
@@ -84,7 +95,10 @@ fn write(path: &Path, document: &toml_edit::DocumentMut) -> Result<()> {
     std::fs::write(path, document.to_string()).map_err(Error::Io)
 }
 
-fn sites_table(document: &mut toml_edit::DocumentMut) -> &mut toml_edit::Table {
+fn sites_table<'a>(
+    path: &Path,
+    document: &'a mut toml_edit::DocumentMut,
+) -> Result<&'a mut toml_edit::Table> {
     if !document.contains_key("sites") {
         let mut fresh = toml_edit::Table::new();
         // Written as [sites] rather than folded onto one line, which is the
@@ -92,9 +106,15 @@ fn sites_table(document: &mut toml_edit::DocumentMut) -> &mut toml_edit::Table {
         fresh.set_implicit(false);
         document.insert("sites", toml_edit::Item::Table(fresh));
     }
+    // `sites = { ... }` on one line loads fine but is not a table to edit in
+    // place, and nobody's file gets rewritten into a shape they did not pick.
     document["sites"]
         .as_table_mut()
-        .expect("sites is a table because it was just made one")
+        .ok_or_else(|| Error::Project {
+            path: path.display().to_string(),
+            message: "sites is written inline; put it under a [sites] heading to edit it here"
+                .to_string(),
+        })
 }
 
 /// Walks up from `start`, so the command works from any subdirectory.
@@ -224,5 +244,42 @@ mod tests {
     #[test]
     fn an_empty_file_is_a_project_with_nothing_in_it() {
         assert!(parse("").unwrap().services.is_empty());
+    }
+
+    fn scratch(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("skep-sites-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("skep.toml")
+    }
+
+    #[test]
+    fn a_site_is_kept_in_lowercase_and_found_in_any_case() {
+        let path = scratch("case");
+        add_site(&path, "Shop.test", 3000).unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("\"shop.test\"")
+        );
+        assert!(remove_site(&path, "SHOP.TEST").unwrap());
+    }
+
+    #[test]
+    fn an_inline_sites_table_is_a_sentence_rather_than_a_panic() {
+        let path = scratch("inline");
+        std::fs::write(&path, "sites = { \"a.test\" = 1 }\n").unwrap();
+        let error = add_site(&path, "b.test", 2).unwrap_err().to_string();
+        assert!(error.contains("inline"), "{error}");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("a.test"));
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_not_replaced() {
+        let path = scratch("unreadable");
+        // A directory where the file should be reads as an error, not as empty.
+        std::fs::create_dir_all(&path).unwrap();
+        assert!(add_site(&path, "a.test", 1).is_err());
+        assert!(path.is_dir(), "the write must not have happened");
     }
 }

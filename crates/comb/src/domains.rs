@@ -214,7 +214,7 @@ pub fn invoking_user() -> Owner {
 /// write permission the engine gets EACCES and reports no helper at all.
 pub fn hand_over(path: &Path, owner: Owner) -> Result<()> {
     platform::give_to(path, owner.uid, owner.gid).map_err(Error::Io)?;
-    platform::restrict(path, 0o660).map_err(Error::Io)
+    platform::restrict(path, 0o600).map_err(Error::Io)
 }
 
 pub fn become_user(owner: Owner) -> Result<()> {

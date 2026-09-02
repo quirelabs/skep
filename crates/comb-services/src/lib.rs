@@ -194,13 +194,16 @@ pub async fn install(adapter: &dyn ServiceAdapter, version: &Version, paths: &Pa
 
 /// Turns what a person or an agent typed into the instance the engine knows.
 /// Accepts `postgres`, `postgres@16`, or a name and version given separately.
-pub fn instance(service: &str, version: Option<&str>) -> Result<InstanceId> {
+/// A version pinned in config.toml counts, the same way it does when the
+/// service is started, so `skep stop postgres` names what `skep serve` ran.
+pub fn instance(service: &str, version: Option<&str>, paths: &Paths) -> Result<InstanceId> {
     // A branch is named the way it prints: postgres:experiment.
     let (service, label) = match service.split_once(':') {
         Some((service, label)) => (service, Some(Label::new(label)?)),
         None => (service, None),
     };
-    let (adapter, version) = lookup(service, version)?;
+    let settings = project::settings(paths)?;
+    let (adapter, version) = lookup(service, version, pinned(&settings, service))?;
     Ok(InstanceId {
         service: adapter.name().parse()?,
         version,
@@ -227,10 +230,7 @@ pub fn spec_for(
     let settings = project::settings(paths)?;
     let (name, _) = service.split_once('@').unwrap_or((service, ""));
     let configured = settings.services.get(name);
-
-    // An explicit version beats a configured one, which beats the newest pin.
-    let wanted = version.or(configured.and_then(|entry| entry.version.as_deref()));
-    let (adapter, version) = lookup(service, wanted)?;
+    let (adapter, version) = lookup(service, version, pinned(&settings, service))?;
 
     let mut chosen: BTreeMap<String, (u16, String)> = BTreeMap::new();
     if let Some(entry) = configured {
@@ -271,7 +271,22 @@ pub fn spec_for(
     Ok(spec)
 }
 
-fn lookup(service: &str, version: Option<&str>) -> Result<(&'static dyn ServiceAdapter, Version)> {
+/// The version config.toml pins for a service, if it pins one.
+fn pinned<'a>(settings: &'a project::Project, service: &str) -> Option<&'a str> {
+    let (name, _) = service.split_once('@').unwrap_or((service, ""));
+    settings
+        .services
+        .get(name)
+        .and_then(|entry| entry.version.as_deref())
+}
+
+/// A version given separately beats one written inline as `postgres@16`,
+/// which beats one pinned in config.toml, which beats the newest known.
+fn lookup(
+    service: &str,
+    version: Option<&str>,
+    configured: Option<&str>,
+) -> Result<(&'static dyn ServiceAdapter, Version)> {
     let (name, inline) = match service.split_once('@') {
         Some((name, version)) => (name, Some(version)),
         None => (service, None),
@@ -280,7 +295,7 @@ fn lookup(service: &str, version: Option<&str>) -> Result<(&'static dyn ServiceA
         name: name.to_string(),
         known: names().join(", "),
     })?;
-    let version = match version.or(inline) {
+    let version = match version.or(inline).or(configured) {
         Some(text) => resolve(adapter, text)?,
         None => Version::new(adapter.default_version())?,
     };
@@ -368,7 +383,7 @@ pub fn branch_spec(from: &InstanceId, label: &Label, paths: &Paths) -> Result<Se
 
 /// The port a service is mainly known by, which the `port` shorthand sets.
 pub fn main_port(service: &str) -> Result<&'static str> {
-    let (adapter, _) = lookup(service, None)?;
+    let (adapter, _) = lookup(service, None, None)?;
     adapter
         .default_ports()
         .first()
@@ -468,6 +483,26 @@ mod tests {
             .id
             .to_string(),
             "postgres@15.14.0"
+        );
+    }
+
+    #[test]
+    fn a_pinned_version_names_the_instance_serve_would_run() {
+        let paths = home_with("pinned", "[services.postgres]\nversion = \"16\"\n");
+
+        let id = instance("postgres", None, &paths).unwrap();
+        let spec = spec_default("postgres", None, &paths).unwrap();
+
+        assert_eq!(id, spec.id, "stop must name what serve started");
+        assert!(id.version.to_string().starts_with("16."), "{id}");
+        // What is typed still beats what is pinned.
+        let typed = instance("postgres@17", None, &paths).unwrap();
+        assert!(typed.version.to_string().starts_with("17."), "{typed}");
+        let typed = spec_default("postgres@17", None, &paths).unwrap();
+        assert!(
+            typed.id.version.to_string().starts_with("17."),
+            "{}",
+            typed.id
         );
     }
 

@@ -242,7 +242,7 @@ impl Skep {
         &self,
         Parameters(Tail { service, lines }): Parameters<Tail>,
     ) -> Result<CallToolResult, ErrorData> {
-        let instance = match comb_services::instance(&service, None) {
+        let instance = match comb_services::instance(&service, None, &Paths::from_env()) {
             Ok(instance) => instance,
             Err(error) => return Ok(sentence(error.to_string())),
         };
@@ -275,7 +275,7 @@ impl Skep {
         &self,
         Parameters(Keep { service, name }): Parameters<Keep>,
     ) -> Result<CallToolResult, ErrorData> {
-        let instance = match comb_services::instance(&service, None) {
+        let instance = match comb_services::instance(&service, None, &Paths::from_env()) {
             Ok(instance) => instance,
             Err(error) => return Ok(sentence(error.to_string())),
         };
@@ -304,7 +304,7 @@ impl Skep {
         &self,
         Parameters(Named { service }): Parameters<Named>,
     ) -> Result<CallToolResult, ErrorData> {
-        let instance = match comb_services::instance(&service, None) {
+        let instance = match comb_services::instance(&service, None, &Paths::from_env()) {
             Ok(instance) => instance,
             Err(error) => return Ok(sentence(error.to_string())),
         };
@@ -337,7 +337,7 @@ impl Skep {
         }): Parameters<Sprout>,
     ) -> Result<CallToolResult, ErrorData> {
         let (parent, label) = match (
-            comb_services::instance(&service, None),
+            comb_services::instance(&service, None, &Paths::from_env()),
             comb::Label::new(label),
         ) {
             (Ok(parent), Ok(label)) => (parent, label),
@@ -382,7 +382,7 @@ impl Skep {
         &self,
         Parameters(Named { service }): Parameters<Named>,
     ) -> Result<CallToolResult, ErrorData> {
-        let instance = match comb_services::instance(&service, None) {
+        let instance = match comb_services::instance(&service, None, &Paths::from_env()) {
             Ok(instance) => instance,
             Err(error) => return Ok(sentence(error.to_string())),
         };
@@ -453,7 +453,7 @@ impl Skep {
         service: &str,
         request: impl FnOnce(comb::InstanceId) -> Request,
     ) -> Result<CallToolResult, ErrorData> {
-        let instance = match comb_services::instance(service, None) {
+        let instance = match comb_services::instance(service, None, &Paths::from_env()) {
             Ok(instance) => instance,
             Err(error) => return Ok(sentence(error.to_string())),
         };

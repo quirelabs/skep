@@ -855,7 +855,9 @@ impl Engine {
     }
 
     pub async fn remove_snapshot(&self, id: &InstanceId, name: &str) -> Result<()> {
-        let into = self.inner.paths.snapshot_dir(id, name);
+        // The name becomes a path, so `..` is refused before it is joined.
+        let name = crate::id::Label::new(name)?;
+        let into = self.inner.paths.snapshot_dir(id, name.as_str());
         if !into.is_dir() {
             return Err(Error::NoSuchSnapshot {
                 instance: id.clone(),
@@ -888,7 +890,8 @@ impl Engine {
 
         match snapshot {
             Some(name) => {
-                let source = self.inner.paths.snapshot_dir(from, name);
+                let name = crate::id::Label::new(name)?;
+                let source = self.inner.paths.snapshot_dir(from, name.as_str());
                 if !source.is_dir() {
                     return Err(Error::NoSuchSnapshot {
                         instance: from.clone(),

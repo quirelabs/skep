@@ -52,19 +52,23 @@ define_class!(
                 .map(|scheme| scheme.to_string())
                 .unwrap_or_default();
 
-            // A link somebody pressed leaves for the browser. Everything else
-            // is the pane loading what it was told to load, which is either a
-            // message with no url at all or a site being previewed.
-            let pressed = unsafe { action.navigationType() }
-                == objc2_web_kit::WKNavigationType::LinkActivated;
-            if pressed && (scheme == "http" || scheme == "https") {
-                if let Some(url) = target {
-                    NSWorkspace::sharedWorkspace().openURL(&url);
-                }
-                (*handler).call((WKNavigationActionPolicy::Cancel,));
-            } else {
-                (*handler).call((WKNavigationActionPolicy::Allow,));
+            // A link somebody pressed leaves for the browser. The load itself
+            // is allowed, and nothing else is: a form in a message must not be
+            // able to send anywhere, whatever the sanitiser let through.
+            let kind = unsafe { action.navigationType() };
+            let pressed = kind == objc2_web_kit::WKNavigationType::LinkActivated;
+            if let Some(url) = target
+                && pressed
+                && (scheme == "http" || scheme == "https")
+            {
+                NSWorkspace::sharedWorkspace().openURL(&url);
             }
+            let policy = if kind == objc2_web_kit::WKNavigationType::Other {
+                WKNavigationActionPolicy::Allow
+            } else {
+                WKNavigationActionPolicy::Cancel
+            };
+            (*handler).call((policy,));
         }
     }
 );

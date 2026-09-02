@@ -308,8 +308,14 @@ pub fn drop_privileges(uid: u32, gid: u32) -> io::Result<()> {
     if uid == 0 {
         return Err(io::Error::other("refusing to drop privileges to root"));
     }
-    // Safety: both calls only change this process's credentials.
+    // Safety: these calls only change this process's credentials.
     unsafe {
+        // Root's supplementary groups (wheel, admin) go too, or the drop is
+        // only partial. A process that was never root has none to give up
+        // and is not allowed to call this.
+        if libc::geteuid() == 0 && libc::setgroups(1, &gid) != 0 {
+            return Err(io::Error::last_os_error());
+        }
         if libc::setgid(gid) != 0 {
             return Err(io::Error::last_os_error());
         }

@@ -137,7 +137,7 @@ pub async fn project(
                     error,
                 };
             }
-            let id = match comb_services::instance(name, wanted.version.as_deref()) {
+            let id = match comb_services::instance(name, wanted.version.as_deref(), &paths) {
                 Ok(id) => id.to_string(),
                 Err(error) => {
                     return Entry::Problem {

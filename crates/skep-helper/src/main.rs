@@ -123,7 +123,10 @@ async fn run(settings: Settings) -> Result<(), String> {
 
     let forwards = settings.forwards.clone();
     tokio::spawn(async move {
-        while let Ok((stream, _)) = control.accept().await {
+        loop {
+            let Some((stream, _)) = accepted(control.accept().await).await else {
+                continue;
+            };
             let forwards = forwards.clone();
             tokio::spawn(async move {
                 let _ = answer(stream, forwards).await;
@@ -134,7 +137,10 @@ async fn run(settings: Settings) -> Result<(), String> {
     let mut serving = Vec::new();
     for (listener, target) in listeners {
         serving.push(tokio::spawn(async move {
-            while let Ok((incoming, _)) = listener.accept().await {
+            loop {
+                let Some((incoming, _)) = accepted(listener.accept().await).await else {
+                    continue;
+                };
                 tokio::spawn(async move {
                     let _ = pipe(incoming, target).await;
                 });
@@ -145,6 +151,19 @@ async fn run(settings: Settings) -> Result<(), String> {
         let _ = task.await;
     }
     Ok(())
+}
+
+/// An accept that failed, on descriptors or an aborted handshake, is not a
+/// reason to stop serving the port: a pause and another try, never an exit
+/// that leaves launchd restarting the helper in a loop.
+async fn accepted<T>(result: std::io::Result<T>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(_) => {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            None
+        }
+    }
 }
 
 /// The whole job: copy bytes both ways until one end stops.

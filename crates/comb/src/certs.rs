@@ -62,6 +62,12 @@ impl Authority {
         let key_file = root_key_file(&dir);
         if !root_file.is_file() || !key_file.is_file() {
             create_root(&root_file, &key_file)?;
+            // Leaves signed by the old root would otherwise be served for a
+            // year, failing in every browser.
+            let hosts = dir.join("hosts");
+            if hosts.is_dir() {
+                fs::remove_dir_all(&hosts).map_err(Error::Io)?;
+            }
         }
 
         let root_pem = fs::read_to_string(&root_file).map_err(Error::Io)?;
