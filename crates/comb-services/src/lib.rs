@@ -1,6 +1,7 @@
 //! Built-in service adapters. An adapter describes a service and how to check
 //! it; the engine owns spawning and supervision and never calls back in here.
 
+mod cloudflared;
 pub mod mail;
 mod mailpit;
 mod mongodb;
@@ -16,6 +17,7 @@ use comb::{
     Result, ServiceSpec, ServiceStatus, Tag, Version,
 };
 
+pub use cloudflared::{Cloudflared, PUBLIC_SUFFIX as TUNNEL_SUFFIX};
 pub use mailpit::Mailpit;
 pub use mongodb::Mongodb;
 pub use mysql::Mysql;
@@ -60,6 +62,8 @@ pub struct Request {
     pub version: Option<Version>,
     pub tag: Option<Tag>,
     pub ports: BTreeMap<String, u16>,
+    /// What a targeted instance points at: the url a tunnel exposes.
+    pub origin: Option<String>,
 }
 
 impl Request {
@@ -74,6 +78,11 @@ impl Request {
 
     pub fn with_tag(mut self, tag: Tag) -> Self {
         self.tag = Some(tag);
+        self
+    }
+
+    pub fn with_origin(mut self, origin: impl Into<String>) -> Self {
+        self.origin = Some(origin.into());
         self
     }
 
@@ -393,16 +402,38 @@ pub fn names() -> Vec<&'static str> {
     catalog().iter().map(|adapter| adapter.name()).collect()
 }
 
-/// Every service comb ships with.
+/// Every service comb ships with: the ones that stand on their own and are
+/// registered, stopped, the moment a host comes up.
 pub fn catalog() -> &'static [&'static dyn ServiceAdapter] {
     &[&Mailpit, &Mongodb, &Mysql, &Postgres, &Valkey]
+}
+
+/// The adapters that only make sense pointed at something, such as a tunnel.
+/// Kept apart so the singleton path never has to know what a target is: a
+/// host registers the catalog and nothing here.
+pub fn targeted() -> &'static [&'static dyn ServiceAdapter] {
+    &[&Cloudflared]
 }
 
 pub fn find(name: &str) -> Option<&'static dyn ServiceAdapter> {
     catalog()
         .iter()
+        .chain(targeted())
         .copied()
         .find(|adapter| adapter.name() == name)
+}
+
+/// A tunnel's spec: cloudflared pointed at `origin`, named for what it serves,
+/// on a metrics port of its own so two tunnels never collide.
+pub fn share_spec(name: &Label, origin: &str, paths: &Paths) -> Result<ServiceSpec> {
+    let adapter: &dyn ServiceAdapter = &Cloudflared;
+    let metrics = comb::free_port()
+        .ok_or_else(|| Error::InvalidId("no free port for the tunnel".to_string()))?;
+    let request = Request::new()
+        .with_tag(Tag::Target(name.clone()))
+        .with_origin(origin)
+        .with_port("metrics", metrics);
+    adapter.spec(&request, paths)
 }
 
 #[cfg(test)]
@@ -520,8 +551,21 @@ mod tests {
     }
 
     #[test]
+    fn two_tunnels_never_share_a_metrics_port() {
+        let paths = home_with("tunnels", "");
+        let one = share_spec(&Label::new("a").unwrap(), "http://127.0.0.1:1", &paths).unwrap();
+        let two = share_spec(&Label::new("b").unwrap(), "http://127.0.0.1:2", &paths).unwrap();
+        assert_ne!(one.primary_port(), two.primary_port());
+        assert_eq!(one.id.to_string(), "cloudflared@2026.8.3~a");
+        // A targeted adapter is findable but never in the catalog a host
+        // registers on its own.
+        assert!(find("cloudflared").is_some());
+        assert!(!names().contains(&"cloudflared"));
+    }
+
+    #[test]
     fn the_catalog_is_consistent() {
-        for adapter in catalog() {
+        for adapter in catalog().iter().chain(targeted()) {
             assert_eq!(find(adapter.name()).map(|a| a.name()), Some(adapter.name()));
             assert!(!adapter.pins().is_empty(), "{} has no pins", adapter.name());
             // A default nobody pinned would fail only at install time.

@@ -496,7 +496,7 @@ impl Notice {
         line.split(|c: char| c.is_whitespace() || c == '|')
             .map(|word| {
                 word.trim_matches(|c: char| {
-                    matches!(c, '"' | '\'' | ',' | ';' | '(' | ')' | '<' | '>')
+                    matches!(c, '"' | '\'' | ',' | ';' | '.' | '(' | ')' | '<' | '>')
                 })
             })
             .find(|word| word.contains(self.marker.as_str()))
@@ -515,6 +515,15 @@ mod notice_tests {
         assert_eq!(
             notice.find(line).as_deref(),
             Some("https://tidy-apple-1234.trycloudflare.com")
+        );
+    }
+
+    #[test]
+    fn a_mention_of_the_host_is_not_the_url() {
+        let notice = Notice::new(".trycloudflare.com");
+        assert_eq!(
+            notice.find("INF Requesting new quick Tunnel on trycloudflare.com..."),
+            None
         );
     }
 

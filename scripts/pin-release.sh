@@ -50,6 +50,9 @@ mysql:macos-arm64)
 mongodb:macos-arm64)
     url="https://fastdl.mongodb.org/osx/mongodb-macos-arm64-${version}.tgz"
     ;;
+cloudflared:macos-arm64)
+    url="https://github.com/cloudflare/cloudflared/releases/download/${version}/cloudflared-darwin-arm64.tgz"
+    ;;
 valkey:*)
     # Source only: upstream ships no prebuilt binaries for any platform.
     url="https://github.com/valkey-io/valkey/archive/refs/tags/${version}.tar.gz"
