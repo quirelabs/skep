@@ -154,6 +154,8 @@ pub struct Skep {
     cursor: Point<Pixels>,
     /// Whether a site opens in the browser rather than in the pane.
     sites_in_browser: bool,
+    /// The light in the window. One picture, stretched to fit.
+    sky: Option<std::sync::Arc<gpui::Image>>,
     authority_trusted: bool,
     /// The port sites are reachable on, 8443 until the helper forwards 443.
     site_port: u16,
@@ -188,6 +190,8 @@ impl Skep {
                 if let Some(this) = this.upgrade() {
                     this.update(cx, |skep, cx| {
                         skep.theme = Theme::for_appearance(appearance);
+                        // Drawn from the palette, so it is drawn again.
+                        skep.sky = None;
                         cx.notify();
                     });
                 }
@@ -246,6 +250,7 @@ impl Skep {
             was_active: true,
             cursor: point(px(-1.), px(-1.)),
             sites_in_browser: false,
+            sky: None,
             authority_trusted: false,
             site_port: comb::HTTPS_PORT,
             commands: bridge.commands,
@@ -554,21 +559,24 @@ impl Render for Skep {
             }
         }
 
-        let theme = self.theme.clone();
+        if self.sky.is_none() {
+            self.sky = paint::sky(&self.theme);
+        }
+
         div()
             .relative()
             .flex()
             .size_full()
+            .bg(self.theme.backdrop())
             .text_color(self.theme.text)
             .body()
-            .child(
-                gpui::canvas(
-                    |_, _, _| (),
-                    move |bounds, _, window, _| paint::backdrop(bounds, &theme, window),
-                )
-                .absolute()
-                .size_full(),
-            )
+            .children(self.sky.as_ref().map(|image| {
+                use gpui::StyledImage as _;
+                gpui::img(image.clone())
+                    .object_fit(gpui::ObjectFit::Fill)
+                    .absolute()
+                    .size_full()
+            }))
             .on_mouse_move(cx.listener(|skep, event: &MouseMoveEvent, _, cx| {
                 // A cell's worth of movement before anything is redrawn: the
                 // light is made of cells, so finer than that repaints for

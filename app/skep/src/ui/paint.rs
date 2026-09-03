@@ -1,7 +1,8 @@
 //! Things drawn rather than laid out: the dither, the snow, and the marks.
 
+use std::f32::consts::TAU;
+
 use super::*;
-use gpui::{linear_color_stop, linear_gradient};
 
 /// No signal. Cells kept or dropped by a hash of where they are and which
 /// frame it is, so the field is different every frame and never repeats a
@@ -146,81 +147,146 @@ pub(super) fn faded(color: Hsla, alpha: f32) -> Hsla {
     Hsla { a: alpha, ..color }
 }
 
-/// The window's own light: a warm bloom up out of the bottom right, where the
-/// canvas is emptiest, and a cool one behind the rail so that side stays close
-/// to neutral. Then a grain over the whole of it.
+/// The light in the window, drawn once into an image rather than painted
+/// every frame.
 ///
-/// Each wash fades to its own colour at zero alpha rather than to nothing,
-/// because fading to transparent black drags a grey through the middle of the
-/// blend. Interpolated in Oklab for the same reason: sRGB dips in the middle
-/// and the bloom develops a dull band across it. Nothing here moves. A slow
-/// wash behind a window somebody leaves open all day is a thing to notice
-/// twice and then resent.
-pub(super) fn backdrop(bounds: Bounds<Pixels>, theme: &Theme, window: &mut Window) {
-    window.paint_quad(gpui::fill(bounds, theme.backdrop()));
-    let (warm, cool) = theme.wash;
-    // 0 is up and the angle turns clockwise, so the stop a gradient starts
-    // from sits at the corner the angle points away from: 315 begins at the
-    // bottom right, 135 at the top left.
-    for (colour, angle, reach) in [(warm, 315., 0.78), (cool, 135., 0.5)] {
-        window.paint_quad(gpui::fill(
-            bounds,
-            linear_gradient(
-                angle,
-                linear_color_stop(colour, 0.),
-                linear_color_stop(faded(colour, 0.), reach),
-            )
-            .color_space(gpui::ColorSpace::Oklab),
-        ));
+/// It is one picture because of what it is: three colours lying in soft bands
+/// that bleed into each other, with grain through all of it. Bands are
+/// per-pixel arithmetic and grain is a value per pixel, and neither is a
+/// rectangle, so neither can be a quad. An earlier attempt drew the grain as
+/// quads and had to make each one three pixels across to keep the count sane,
+/// which is how a film grain became a chequerboard.
+///
+/// Drawn once at a fixed size and stretched to whatever the window is. Every
+/// distance in it is a fraction of the window rather than a number of pixels,
+/// so it has no size of its own to get right, and a window being dragged
+/// wider does not cost a picture a frame. Stretching softens the grain a
+/// little, which is what grain on film does anyway.
+pub(super) fn sky(theme: &Theme) -> Option<std::sync::Arc<gpui::Image>> {
+    const WIDE: usize = 1100;
+    const TALL: usize = 700;
+    let (wide, tall) = (WIDE, TALL);
+    let base = channels(theme.backdrop());
+    let colours: Vec<[f32; 3]> = theme.sky.iter().copied().map(channels).collect();
+    let (carry, grain) = theme.weather;
+
+    // Each band is a line across the window that rises and falls, with a
+    // thickness and a colour. Low, because the work happens at the top.
+    let bands: [(f32, f32, f32, f32); 3] = [
+        // centre, how far it rises, how wide it bleeds, how strong
+        (0.74, 0.10, 0.30, 1.00),
+        (0.90, 0.07, 0.26, 0.85),
+        (0.82, 0.13, 0.34, 0.70),
+    ];
+    // Two waves apiece, at speeds that do not divide into one another, so the
+    // line never repeats across the window and no band mirrors another.
+    let waves: [(f32, f32, f32, f32); 3] = [
+        (2.1, 0.0, 0.9, 1.7),
+        (1.4, 2.2, 3.1, 0.4),
+        (2.8, 4.1, 1.1, 5.3),
+    ];
+
+    // The wave of each band depends only on the column, so it is worked out
+    // once per column rather than once per pixel.
+    let mut centres = vec![[0f32; 3]; wide];
+    for (column, row) in centres.iter_mut().enumerate() {
+        let across = column as f32 / wide as f32;
+        for (index, band) in bands.iter().enumerate() {
+            let (fast, fast_phase, slow, slow_phase) = waves[index];
+            let ripple = 0.68 * (across * fast * TAU + fast_phase).sin()
+                + 0.32 * (across * slow * TAU + slow_phase).sin();
+            row[index] = band.0 - band.1 * ripple;
+        }
     }
-    grain(bounds, theme.grain, window);
-}
 
-/// The tooth of the paper. An even field of single pixels on an ordered
-/// matrix, faint enough to be felt rather than seen, which is what stops a
-/// gradient from reading as a gradient. Capped and coarsened the same way the
-/// empty-state dither is, so a large window costs no more than a small one.
-fn grain(bounds: Bounds<Pixels>, ink: Hsla, window: &mut Window) {
-    const STEP: f32 = 3.;
-    const MOST: usize = 9_000;
-    const MATRIX: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
-
-    let wide = f32::from(bounds.size.width);
-    let tall = f32::from(bounds.size.height);
-    if wide <= 0. || tall <= 0. {
-        return;
-    }
-    let columns = (wide / STEP).floor().max(1.) as usize;
-    let rows = (tall / STEP).floor().max(1.) as usize;
-    let skip = (columns * rows).div_ceil(MOST).max(1);
-
-    let mut placed = 0usize;
-    for row in 0..rows {
-        for column in 0..columns {
-            if !(row * columns + column).is_multiple_of(skip) {
-                continue;
+    let mut pixels = vec![0u8; wide * tall * 3];
+    for y in 0..tall {
+        let down = y as f32 / tall as f32;
+        // The top of the window is left alone, and the colour gathers towards
+        // the bottom, which is where there is room for it.
+        let low = smooth((down - 0.28) / 0.72);
+        for (x, centre) in centres.iter().enumerate() {
+            let mut colour = base;
+            for (index, band) in bands.iter().enumerate() {
+                let away = (down - centre[index]).abs() / band.2;
+                if away >= 1. {
+                    continue;
+                }
+                let weight = smooth(1. - away) * band.3 * carry * low;
+                for channel in 0..3 {
+                    colour[channel] += (colours[index][channel] - colour[channel]) * weight;
+                }
             }
-            // Only the lighter half of the matrix, so the field is a tooth
-            // rather than a chequer.
-            if MATRIX[row % 4][column % 4] > 7 {
-                continue;
-            }
-            window.paint_quad(gpui::fill(
-                Bounds {
-                    origin: gpui::point(
-                        bounds.origin.x + px(column as f32 * STEP),
-                        bounds.origin.y + px(row as f32 * STEP),
-                    ),
-                    size: gpui::size(px(1.), px(1.)),
-                },
-                ink,
-            ));
-            placed += 1;
-            if placed >= MOST {
-                return;
+            // Grain last, so it sits in the colour rather than under it. One
+            // value per pixel, which is what makes it grain and not a
+            // pattern.
+            let speck = (noise(x, y) - 0.5) * grain;
+            let at = (y * wide + x) * 3;
+            for channel in 0..3 {
+                let value = ((colour[channel] + speck).clamp(0., 1.) * 255.) as u8;
+                // Bitmaps are written blue first.
+                pixels[at + 2 - channel] = value;
             }
         }
     }
+
+    Some(std::sync::Arc::new(gpui::Image::from_bytes(
+        gpui::ImageFormat::Bmp,
+        bitmap(wide, tall, &pixels),
+    )))
+}
+
+/// A smooth nought to one, so a band has no edge to see.
+fn smooth(at: f32) -> f32 {
+    let at = at.clamp(0., 1.);
+    at * at * (3. - 2. * at)
+}
+
+/// A repeatable speck per pixel. Not a good hash, and it does not need to be:
+/// it needs to look like nothing, and to look like the same nothing whenever
+/// the window is drawn again at the same size.
+fn noise(x: usize, y: usize) -> f32 {
+    let mut value = (x as u32).wrapping_mul(374_761_393) ^ (y as u32).wrapping_mul(668_265_263);
+    value = (value ^ (value >> 13)).wrapping_mul(1_274_126_177);
+    ((value ^ (value >> 16)) & 0xffff) as f32 / 65_535.
+}
+
+fn channels(colour: Hsla) -> [f32; 3] {
+    let rgba: gpui::Rgba = colour.into();
+    [rgba.r, rgba.g, rgba.b]
+}
+
+/// The one image format that can be written without anything to write it: a
+/// header and the pixels, uncompressed, bottom row first.
+fn bitmap(wide: usize, tall: usize, pixels: &[u8]) -> Vec<u8> {
+    const HEADER: usize = 54;
+    // Every row is padded to a multiple of four bytes.
+    let stride = (wide * 3).div_ceil(4) * 4;
+    let size = HEADER + stride * tall;
+
+    let mut out = Vec::with_capacity(size);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&(size as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(HEADER as u32).to_le_bytes());
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&(wide as i32).to_le_bytes());
+    out.extend_from_slice(&(tall as i32).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&24u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&((stride * tall) as u32).to_le_bytes());
+    out.extend_from_slice(&2835i32.to_le_bytes());
+    out.extend_from_slice(&2835i32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+
+    for y in (0..tall).rev() {
+        let row = &pixels[y * wide * 3..(y + 1) * wide * 3];
+        out.extend_from_slice(row);
+        out.resize(out.len() + stride - wide * 3, 0);
+    }
+    out
 }
 
 /// A glow under the cursor, drawn in cells rather than smoothly.
@@ -281,5 +347,90 @@ pub(super) fn glow(bounds: Bounds<Pixels>, at: Point<Pixels>, ink: Hsla, window:
                 faded(ink, ink.a * stepped),
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::Theme;
+
+    /// Reads a bitmap back the way a decoder would, so the header this writes
+    /// by hand is checked against what it claims rather than assumed.
+    fn read(bytes: &[u8]) -> (usize, usize, Vec<[u8; 3]>) {
+        assert_eq!(&bytes[0..2], b"BM");
+        let at = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+        assert_eq!(at(2), bytes.len(), "the file says how long it is");
+        let offset = at(10);
+        let wide = at(18);
+        let tall = at(22);
+        assert_eq!(u16::from_le_bytes(bytes[28..30].try_into().unwrap()), 24);
+        let stride = (wide * 3).div_ceil(4) * 4;
+
+        // Rows are written bottom first, so reading top down means walking
+        // back up them.
+        let mut pixels = Vec::with_capacity(wide * tall);
+        for y in 0..tall {
+            let row = offset + (tall - 1 - y) * stride;
+            for x in 0..wide {
+                let at = row + x * 3;
+                pixels.push([bytes[at + 2], bytes[at + 1], bytes[at]]);
+            }
+        }
+        (wide, tall, pixels)
+    }
+
+    #[test]
+    fn the_sky_is_a_bitmap_a_decoder_can_read() {
+        let image = sky(&Theme::dark()).expect("a sky");
+        let (wide, tall, pixels) = read(&image.bytes);
+        assert!(wide > 0 && tall > 0);
+        assert_eq!(pixels.len(), wide * tall);
+    }
+
+    /// Drawn once, so it is allowed to cost something. Felt only at startup
+    /// and when the machine changes appearance, and measured in a debug
+    /// build, which is the slow case and the one that gets run.
+    #[test]
+    fn the_sky_is_drawn_quickly_enough_to_be_drawn_at_startup() {
+        let started = std::time::Instant::now();
+        let image = sky(&Theme::dark()).expect("a sky");
+        let took = started.elapsed();
+        assert!(!image.bytes.is_empty());
+        assert!(
+            took < std::time::Duration::from_millis(400),
+            "the sky took {took:?}"
+        );
+    }
+
+    #[test]
+    fn the_colour_gathers_at_the_bottom_and_leaves_the_top_alone() {
+        let image = sky(&Theme::dark()).expect("a sky");
+        let (wide, tall, pixels) = read(&image.bytes);
+        let warmth = |pixel: &[u8; 3]| i32::from(pixel[0]) - i32::from(pixel[2]);
+        let band = wide * (tall / 10);
+
+        let top: i32 = pixels[..band].iter().map(warmth).sum::<i32>() / band as i32;
+        let bottom: i32 = pixels[pixels.len() - band..]
+            .iter()
+            .map(warmth)
+            .sum::<i32>()
+            / band as i32;
+
+        assert!(
+            bottom > top,
+            "the bottom should carry the warm end of the sky: top {top}, bottom {bottom}"
+        );
+    }
+
+    /// A row whose width does not divide by four is the case the padding
+    /// exists for, and getting it wrong shears the picture diagonally.
+    #[test]
+    fn a_row_that_needs_padding_is_still_square() {
+        let pixels = vec![7u8; 5 * 2 * 3];
+        let bytes = bitmap(5, 2, &pixels);
+        let (wide, tall, read_back) = read(&bytes);
+        assert_eq!((wide, tall), (5, 2));
+        assert!(read_back.iter().all(|pixel| pixel == &[7, 7, 7]));
     }
 }
