@@ -138,7 +138,7 @@ impl Skep {
                     .justify_center()
                     .size(px(28.))
                     .flex_shrink_0()
-                    .rounded_md()
+                    .rounded(px(CARD))
                     .cursor_pointer()
                     .hover(|style| style.bg(self.theme.raised))
                     .child(
@@ -176,8 +176,7 @@ impl Skep {
             .items_center()
             .justify_between()
             .w_full()
-            .pl_4()
-            .pr_6()
+            .px(px(MARGIN))
             .h(px(TITLEBAR))
             .flex_shrink_0()
             .border_b_1()
@@ -217,7 +216,7 @@ impl Skep {
             .mx_2()
             .px_3()
             .py_2()
-            .rounded_md()
+            .rounded(px(CARD))
             .text_color(colour);
 
         // The selected row is a surface rather than an accent fill: the

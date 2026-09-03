@@ -34,6 +34,19 @@ mod sites;
 
 use mail::MailView;
 
+/// One radius for each size of thing, so nothing is rounded by accident.
+/// A chip is a number or a word with a box around it, a card is something you
+/// could pick up, and the page is the page. Each step is four more than the
+/// last, which is enough to read as a different size of thing.
+pub(super) const CHIP: f32 = 5.;
+pub(super) const CARD: f32 = 9.;
+
+/// The margin down both sides of every page, and the gap between the things
+/// inside it. Rows, headers and everything else start on this line.
+pub(super) const MARGIN: f32 = 24.;
+/// A branch is indented by one step from its parent.
+pub(super) const INDENT: f32 = 20.;
+
 /// The curve where the page meets the rail. Only that edge is rounded, so the
 /// rail appears to wrap around the page rather than sit beside it. No line
 /// along it: the curve and the change of surface are the edge, and a rule as
@@ -441,7 +454,12 @@ impl Skep {
         let wanted: Vec<(String, String)> = self
             .sites
             .keys()
-            .filter(|host| !self.shots.contains_key(*host))
+            // Only what is actually answering. Photographing a site with
+            // nothing behind it captures the proxy's own page explaining
+            // that nothing is there, which is worse than no picture at all.
+            .filter(|host| {
+                self.answering.get(*host) == Some(&true) && !self.shots.contains_key(*host)
+            })
             .map(|host| (host.clone(), comb::site_url(host, self.site_port)))
             .collect();
         if !wanted.is_empty() {

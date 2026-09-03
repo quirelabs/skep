@@ -6,7 +6,7 @@ use comb::EventKind;
 use super::paint::{dither, faded};
 use super::*;
 
-pub(super) const LOG_HEIGHT: f32 = 208.;
+pub(super) const LOG_HEIGHT: f32 = 248.;
 pub(super) const LOG_LIMIT: usize = 400;
 /// Wide enough for four digits, which is more lines than are kept.
 pub(super) const GUTTER: f32 = 34.;
@@ -159,7 +159,7 @@ impl Skep {
                     .flex_shrink_0()
                     .caption()
                     .px_1()
-                    .rounded_sm()
+                    .rounded(px(CHIP))
                     .bg(theme.base)
                     .text_color(theme.muted)
                     .child(SharedString::from(label.as_str().to_string())),
@@ -307,6 +307,17 @@ impl Skep {
         let id = status.id.clone();
         let open = self.expanded.as_ref() == Some(&id);
 
+        // A row that has something to say says it across itself: the state's
+        // own colour, strongest at the edge it starts from and gone by the
+        // time it reaches the words. Only for the states worth noticing, so
+        // a list of stopped services stays quiet.
+        let wash = match &status.state {
+            ServiceState::Ready => Some(theme.running),
+            ServiceState::Failed { .. } => Some(theme.failed),
+            _ if status.blocked.is_some() => Some(theme.failed),
+            _ => None,
+        };
+
         let head = div()
             .id(("row", index))
             .group("row")
@@ -325,13 +336,24 @@ impl Skep {
                     .opacity(0.)
                     .group_hover("row", |style| style.opacity(1.)),
             )
+            .children(wash.map(|colour| {
+                div().absolute().inset_0().bg(gpui::linear_gradient(
+                    90.,
+                    gpui::linear_color_stop(faded(colour, 0.10), 0.),
+                    gpui::linear_color_stop(faded(colour, 0.), 0.42),
+                ))
+            }))
             .flex()
             .w_full()
             .min_w_0()
             .items_center()
             .gap_3()
-            .pl(px(if status.id.is_branch() { 44. } else { 24. }))
-            .pr_6()
+            .pl(px(if status.id.is_branch() {
+                MARGIN + INDENT
+            } else {
+                MARGIN
+            }))
+            .pr(px(MARGIN))
             .py_3()
             .cursor_pointer()
             .hover(|style| style.bg(theme.raised))
@@ -393,7 +415,7 @@ impl Skep {
         div()
             .flex_shrink_0()
             .px_1p5()
-            .rounded_sm()
+            .rounded(px(CHIP))
             .bg(self.theme.raised)
             .border_1()
             .border_color(self.theme.border)
@@ -638,13 +660,42 @@ impl Skep {
                     .child(self.copy_all(cx))
             }))
             .children(rendered)
-            .children(empty.then(|| self.nothing("no output yet")))
+            .children(empty.then(|| self.waiting("no output yet")))
             .with_animation(
                 ("open", index),
                 Animation::new(MOTION).with_easing(ease_in_out),
                 |body, delta| body.h(px(LOG_HEIGHT * delta)),
             )
             .into_any_element()
+    }
+
+    /// The log with nothing in it yet.
+    ///
+    /// Not the empty-screen field: that is for a whole page with nothing on
+    /// it, and in a band this wide and this short it filled the space with
+    /// noise and read as damage. A recessed card with one quiet line in it
+    /// says the same thing and looks like somewhere output will arrive.
+    pub(super) fn waiting(&self, what: &'static str) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_1()
+            .min_h(px(0.))
+            .w_full()
+            .p(px(MARGIN / 2.))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(CARD))
+                    .bg(self.theme.base)
+                    .border_1()
+                    .border_color(self.theme.border)
+                    .caption()
+                    .text_color(self.theme.idle)
+                    .child(SharedString::from(what)),
+            )
     }
 
     /// Snapshots and branches, where stopping and restarting already are:
@@ -823,7 +874,7 @@ impl Skep {
             .text_color(self.theme.accent)
             .border_1()
             .border_color(self.theme.border)
-            .rounded_sm()
+            .rounded(px(CHIP))
             .cursor_pointer()
             .hover(|style| style.border_color(self.theme.accent))
             .on_click(cx.listener(move |skep, _, _, cx| run(skep, cx)))
@@ -894,7 +945,7 @@ impl Skep {
             .text_color(self.theme.accent)
             .border_1()
             .border_color(self.theme.border)
-            .rounded_sm()
+            .rounded(px(CHIP))
             .cursor_pointer()
             .hover(|style| style.border_color(self.theme.accent))
             .on_click(move |_, _, cx| {

@@ -6,7 +6,7 @@ use super::paint::{dither, snow};
 /// A tile keeps a page's proportions, because it is a picture of one.
 const TILE_WIDE: f32 = 260.;
 const TILE_TALL: f32 = 163.;
-const TILE_RADIUS: f32 = 8.;
+const TILE_RADIUS: f32 = CARD;
 use super::*;
 
 /// A site being written. Kept as text rather than as a port number, because
@@ -61,8 +61,35 @@ impl Skep {
                         .border_color(theme.border)
                         .text_color(theme.accent)
                         .hover(|style| style.bg(theme.raised).border_color(theme.accent))
-                        .child(svg().path("icons/plus.svg").size(px(32.)).flex_shrink_0())
-                        .child(div().label().child(SharedString::from("Add a site"))),
+                        .child(
+                            svg()
+                                .path("icons/plus.svg")
+                                .size(px(32.))
+                                .flex_shrink_0()
+                                // Its own colour: a parent's text colour does
+                                // not reach inside an svg.
+                                .text_color(theme.muted),
+                        ),
+                )
+                // The same two lines every other tile carries, so the grid
+                // reads across as well as down: a name where a name goes, and
+                // what it is for where a state goes.
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .w_full()
+                        .min_w_0()
+                        .child(div().size(px(6.)).rounded_full().flex_shrink_0())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .label()
+                                .child(SharedString::from("Add a site")),
+                        ),
                 )
                 .child(
                     div()
@@ -75,96 +102,120 @@ impl Skep {
                 .into_any_element();
         };
 
-        // The caret sits in whichever field is taking the keys, so there is
-        // never a question about where typing goes.
-        let field = |text: &str, here: bool, hint: &'static str, width: Option<f32>| {
-            let shown = if text.is_empty() && !here {
-                hint.to_string()
-            } else if here {
-                format!("{text}|")
-            } else {
-                text.to_string()
-            };
-            let mut cell = div()
-                .px_2()
-                .py_0p5()
-                .rounded_sm()
+        // Two named fields in the tile's own place, one under the other, so
+        // the grid still reads across and the thing being made is the size
+        // and shape of the thing it will become. A caret marks whichever
+        // field is taking the keys, so there is never a question about where
+        // typing goes.
+        let field = |name: &'static str, text: &str, here: bool, hint: &'static str| {
+            let empty = text.is_empty();
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .w_full()
                 .min_w_0()
-                .truncate()
-                .text_color(if text.is_empty() && !here {
-                    theme.idle
-                } else {
-                    theme.text
-                })
-                .bg(if here {
-                    theme.base
-                } else {
-                    gpui::transparent_black()
-                })
-                .child(SharedString::from(shown));
-            match width {
-                Some(width) => cell = cell.w(px(width)).flex_shrink_0(),
-                None => cell = cell.flex_1(),
-            }
-            cell
+                .child(
+                    div()
+                        .caption()
+                        .text_color(if here { theme.text } else { theme.idle })
+                        .child(SharedString::from(name)),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .truncate()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(CHIP))
+                        .bg(theme.base)
+                        .border_1()
+                        .border_color(if here { theme.accent } else { theme.border })
+                        .label()
+                        .font_family(MONO)
+                        .text_color(if empty && !here {
+                            theme.idle
+                        } else {
+                            theme.text
+                        })
+                        .child(SharedString::from(if empty && !here {
+                            hint.to_string()
+                        } else if here {
+                            format!("{text}|")
+                        } else {
+                            text.to_string()
+                        })),
+                )
         };
 
-        let mut row = div()
+        let said: SharedString = match &draft.complaint {
+            Some(complaint) => complaint.clone().into(),
+            None if draft.host.is_empty() => "a name ending in .test resolves on its own".into(),
+            None => "return to add, tab to move, escape to give up".into(),
+        };
+
+        div()
             .id("new-site")
             .track_focus(&self.entry)
             .flex()
             .flex_col()
-            .w_full()
-            .px_6()
-            .py_2()
-            .gap_1()
-            .bg(theme.raised)
+            .gap_2()
+            .w(px(TILE_WIDE))
+            .flex_shrink_0()
             .on_key_down(cx.listener(Self::typing))
             .child(
                 div()
                     .flex()
-                    .items_center()
+                    .flex_col()
+                    .justify_center()
                     .gap_3()
+                    .w_full()
+                    .h(px(TILE_TALL))
+                    .p(px(MARGIN / 2.))
+                    .rounded(px(TILE_RADIUS))
+                    .bg(theme.raised)
+                    .border_1()
+                    .border_color(theme.accent)
+                    .child(field("Hostname", &draft.host, !draft.on_port, "myapp.test"))
+                    .child(field("Port", &draft.port, draft.on_port, "3000")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .w_full()
                     .min_w_0()
                     .child(
                         div()
                             .size(px(6.))
-                            .flex_shrink_0()
                             .rounded_full()
+                            .flex_shrink_0()
                             .bg(theme.accent),
                     )
-                    .child(field(&draft.host, !draft.on_port, "myapp.test", None))
-                    .child(field(&draft.port, draft.on_port, "3000", Some(90.)))
                     .child(
                         div()
-                            .w(px(150.))
-                            .flex_shrink_0()
-                            .caption()
-                            .text_color(theme.muted)
-                            .child(SharedString::from("return to add")),
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .label()
+                            .child(SharedString::from("New site")),
                     ),
             )
             .child(
                 div()
+                    .w_full()
+                    .truncate()
                     .caption()
-                    .text_color(theme.muted)
-                    .child(SharedString::from(
-                        "A hostname ending in .test resolves on its own; any other name needs \
-                         an /etc/hosts entry. The port is the one your app is already \
-                         listening on. Tab moves between them, escape gives up.",
-                    )),
-            );
-
-        if let Some(complaint) = &draft.complaint {
-            row = row.child(
-                div()
-                    .caption()
-                    .text_color(theme.muted)
-                    .child(SharedString::from(complaint.clone())),
-            );
-        }
-        row.into_any_element()
+                    .text_color(if draft.complaint.is_some() {
+                        theme.failed
+                    } else {
+                        theme.idle
+                    })
+                    .child(said),
+            )
+            .into_any_element()
     }
 
     /// Two short fields do not need an editor. What they need is for the keys
@@ -291,7 +342,7 @@ impl Skep {
                                 .label()
                                 .px_2()
                                 .py_1()
-                                .rounded_md()
+                                .rounded(px(CARD))
                                 .bg(theme.raised)
                                 .text_color(theme.muted)
                                 .child(SharedString::from("no signal")),
@@ -413,8 +464,8 @@ impl Skep {
                     .flex()
                     .flex_wrap()
                     .content_start()
-                    .gap_4()
-                    .p_6()
+                    .gap(px(MARGIN))
+                    .p(px(MARGIN))
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()

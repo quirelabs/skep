@@ -270,7 +270,7 @@ impl Skep {
                             .gap_2()
                             .px_2()
                             .py_1()
-                            .rounded_md()
+                            .rounded(px(CARD))
                             .bg(theme.base)
                             .cursor_pointer()
                             .hover(|style| style.border_color(theme.accent))
@@ -373,7 +373,7 @@ impl Skep {
             .text_color(self.theme.accent)
             .border_1()
             .border_color(self.theme.border)
-            .rounded_sm()
+            .rounded(px(CHIP))
             .cursor_pointer()
             .hover(|style| style.border_color(self.theme.accent))
             .on_click(cx.listener(|skep, _, _, cx| {

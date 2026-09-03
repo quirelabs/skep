@@ -192,7 +192,7 @@ impl Skep {
                                     .id("clear-mail")
                                     .px_2()
                                     .py_1()
-                                    .rounded_md()
+                                    .rounded(px(CARD))
                                     .label()
                                     .cursor_pointer()
                                     .text_color(theme.muted)
@@ -504,7 +504,7 @@ impl Skep {
                 // The outer columns are the same, so the mark has an axis.
                 let bit = row * 2 + column.min(2 - column);
                 let filled = bits >> bit & 1 == 1;
-                across = across.child(div().size(px(4.)).rounded_sm().bg(if filled {
+                across = across.child(div().size(px(4.)).rounded(px(CHIP)).bg(if filled {
                     ink
                 } else {
                     gpui::transparent_black()
@@ -667,7 +667,7 @@ impl Skep {
                     .id(SharedString::from(format!("mail-tab-{name}")))
                     .px_2()
                     .py_0p5()
-                    .rounded_md()
+                    .rounded(px(CARD))
                     .caption()
                     .cursor_pointer()
                     .text_color(if here { theme.text } else { theme.muted })
@@ -980,7 +980,7 @@ impl Skep {
                 .w_full()
                 .min_w_0()
                 .px_1()
-                .rounded_sm()
+                .rounded(px(CHIP))
                 .label()
                 .font_family(MONO)
                 .cursor_pointer();
@@ -1045,7 +1045,7 @@ impl Skep {
                     .min_w_0()
                     .px_2()
                     .py_1()
-                    .rounded_md()
+                    .rounded(px(CARD))
                     .cursor_pointer()
                     .bg(theme.base)
                     .hover(|style| style.bg(theme.border))
