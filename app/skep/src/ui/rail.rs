@@ -209,8 +209,6 @@ impl Skep {
 
         let mut item = div()
             .id(("rail", index))
-            .relative()
-            .child(self.lit())
             .flex()
             .items_center()
             .w(px(RAIL_WIDE - 16.))

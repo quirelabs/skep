@@ -448,6 +448,9 @@ impl Skep {
             } else {
                 self.theme.border
             });
+        if !here {
+            frame = frame.hover(|style| style.border_color(self.theme.muted));
+        }
 
         match self.shots.get(host).cloned() {
             Some(picture) => {
@@ -490,8 +493,6 @@ impl Skep {
 
         div()
             .id(SharedString::from(format!("site-{host}")))
-            .relative()
-            .child(self.lit())
             .flex()
             .flex_col()
             .gap_2()

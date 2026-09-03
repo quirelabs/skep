@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use comb::{Applied, InstanceId, Label, LogLine, Mirror, ServiceState, ServiceStatus, Snapshot};
 use gpui::{
     Animation, AnimationExt, AnyElement, Bounds, ClipboardItem, Context, FontWeight, Hsla,
-    InteractiveElement, IntoElement, MouseMoveEvent, ParentElement, Pixels, Point, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div,
-    ease_in_out, point, pulsating_between, px, svg,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Window, div, ease_in_out, pulsating_between,
+    px, svg,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -35,8 +35,13 @@ mod sites;
 use mail::MailView;
 
 /// The curve where the page meets the rail. Only that edge is rounded, so the
-/// rail appears to wrap around the page rather than sit beside it.
+/// rail appears to wrap around the page rather than sit beside it. No line
+/// along it: the curve and the change of surface are the edge, and a rule as
+/// well made the two halves read as two documents.
 const PANEL_RADIUS: f32 = 12.;
+/// How much of the page's tooth shows. Enough to feel under a fingertip,
+/// not enough to see as a texture.
+const TOOTH: f32 = 0.11;
 use paint::fingerprint;
 use rail::{RAIL_WIDE, TITLEBAR};
 use services::LOG_LIMIT;
@@ -149,13 +154,12 @@ pub struct Skep {
     /// can look again. The same deliberate act as opening the tab, rather than
     /// a timer nobody asked for.
     was_active: bool,
-    /// Where the pointer is, in window coordinates, so anything that draws can
-    /// ask whether the cursor is over it without every row tracking its own.
-    cursor: Point<Pixels>,
     /// Whether a site opens in the browser rather than in the pane.
     sites_in_browser: bool,
     /// The light in the window. One picture, stretched to fit.
     sky: Option<std::sync::Arc<gpui::Image>>,
+    /// The page's own tooth, so both halves of the window are one material.
+    tooth: Option<std::sync::Arc<gpui::Image>>,
     authority_trusted: bool,
     /// The port sites are reachable on, 8443 until the helper forwards 443.
     site_port: u16,
@@ -190,8 +194,9 @@ impl Skep {
                 if let Some(this) = this.upgrade() {
                     this.update(cx, |skep, cx| {
                         skep.theme = Theme::for_appearance(appearance);
-                        // Drawn from the palette, so it is drawn again.
+                        // Drawn from the palette, so they are drawn again.
                         skep.sky = None;
+                        skep.tooth = None;
                         cx.notify();
                     });
                 }
@@ -248,9 +253,9 @@ impl Skep {
             shots: BTreeMap::new(),
             scout: Rc::new(RefCell::new(None)),
             was_active: true,
-            cursor: point(px(-1.), px(-1.)),
             sites_in_browser: false,
             sky: None,
+            tooth: None,
             authority_trusted: false,
             site_port: comb::HTTPS_PORT,
             commands: bridge.commands,
@@ -451,21 +456,6 @@ impl Skep {
         }
     }
 
-    /// The light that follows the cursor. Added as the first child of
-    /// anything that should light up, so it lies under the content rather
-    /// than over it and nothing it touches becomes harder to read. It paints
-    /// only when the cursor is within its own bounds, so a list of rows costs
-    /// one comparison apiece.
-    fn lit(&self) -> impl IntoElement {
-        let (at, ink) = (self.cursor, self.theme.glimmer);
-        gpui::canvas(
-            |_, _, _| (),
-            move |bounds, _, window, _| paint::glow(bounds, at, ink, window),
-        )
-        .absolute()
-        .size_full()
-    }
-
     fn remember(&mut self, line: LogLine) {
         // Subscribing before reading the tail can repeat one line. Dropping a
         // repeat is cheaper than dropping a line.
@@ -562,6 +552,9 @@ impl Render for Skep {
         if self.sky.is_none() {
             self.sky = paint::sky(&self.theme);
         }
+        if self.tooth.is_none() {
+            self.tooth = paint::tooth(&self.theme);
+        }
 
         div()
             .relative()
@@ -577,17 +570,6 @@ impl Render for Skep {
                     .absolute()
                     .size_full()
             }))
-            .on_mouse_move(cx.listener(|skep, event: &MouseMoveEvent, _, cx| {
-                // A cell's worth of movement before anything is redrawn: the
-                // light is made of cells, so finer than that repaints for
-                // nothing.
-                let moved = (event.position.x - skep.cursor.x).abs()
-                    + (event.position.y - skep.cursor.y).abs();
-                if moved >= px(3.) {
-                    skep.cursor = event.position;
-                    cx.notify();
-                }
-            }))
             .child(self.rail(cx))
             .child(
                 // Full height and width, so a screen's title sits on the same
@@ -595,6 +577,7 @@ impl Render for Skep {
                 // The panel is rounded only where it meets the rail, which is
                 // what makes the rail read as wrapping around it.
                 div()
+                    .relative()
                     .flex()
                     .flex_1()
                     .min_w_0()
@@ -603,8 +586,16 @@ impl Render for Skep {
                     .rounded_tl(px(PANEL_RADIUS))
                     .rounded_bl(px(PANEL_RADIUS))
                     .bg(self.theme.surface)
-                    .border_l_1()
-                    .border_color(self.theme.border)
+                    // First, so it lies under everything the page draws and
+                    // nothing has to be read through it.
+                    .children(self.tooth.as_ref().map(|image| {
+                        use gpui::StyledImage as _;
+                        gpui::img(image.clone())
+                            .object_fit(gpui::ObjectFit::Fill)
+                            .absolute()
+                            .size_full()
+                            .opacity(TOOTH)
+                    }))
                     .child(match self.page {
                         Page::Services => self.content(cx),
                         Page::Sites => self.sites_page(cx),

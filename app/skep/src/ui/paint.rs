@@ -230,6 +230,41 @@ pub(super) fn sky(theme: &Theme) -> Option<std::sync::Arc<gpui::Image>> {
     )))
 }
 
+/// The same tooth the sky has, on its own, for laying over the page.
+///
+/// The rail sits on the picture and has grain in it; the page sits on a
+/// surface and had none, and that was the whole of the divide between the two
+/// halves of the window. Colour would have been wrong there, since the page
+/// is where the reading happens, but material is not colour: this is only the
+/// grain, mixed around the page's own colour so it adds tooth without pulling
+/// the surface anywhere.
+///
+/// Small and stretched, like the sky, because grain has no size it has to be.
+pub(super) fn tooth(theme: &Theme) -> Option<std::sync::Arc<gpui::Image>> {
+    const WIDE: usize = 900;
+    const TALL: usize = 560;
+    /// How far a speck strays from the page's colour, before the layer's own
+    /// faintness takes most of it back.
+    const STRAY: f32 = 0.24;
+
+    let middle = channels(theme.raised);
+    let mut pixels = vec![0u8; WIDE * TALL * 3];
+    for y in 0..TALL {
+        for x in 0..WIDE {
+            let speck = (noise(x, y) - 0.5) * STRAY;
+            let at = (y * WIDE + x) * 3;
+            for channel in 0..3 {
+                let value = ((middle[channel] + speck).clamp(0., 1.) * 255.) as u8;
+                pixels[at + 2 - channel] = value;
+            }
+        }
+    }
+    Some(std::sync::Arc::new(gpui::Image::from_bytes(
+        gpui::ImageFormat::Bmp,
+        bitmap(WIDE, TALL, &pixels),
+    )))
+}
+
 /// A smooth nought to one, so a band has no edge to see.
 fn smooth(at: f32) -> f32 {
     let at = at.clamp(0., 1.);
@@ -281,87 +316,6 @@ fn bitmap(wide: usize, tall: usize, pixels: &[u8]) -> Vec<u8> {
         out.resize(out.len() + stride - wide * 3, 0);
     }
     out
-}
-
-/// The light under the cursor, made of the same grain the window is made of.
-///
-/// Brightness is how many specks are lit rather than how bright each one is:
-/// every speck is the same strength, and the field simply thins as it goes
-/// out, which is what a halftone does and what the picture behind it already
-/// looks like. A light with its own smooth falloff sat on top of a grainy
-/// window as a different material; this one is the window's own material,
-/// gathered.
-///
-/// Which specks light is decided by where they are, not by chance, so the
-/// field is steady while the cursor is still and slides with it rather than
-/// boiling.
-///
-/// The light is one field over the whole window rather than an effect that
-/// belongs to whatever the pointer is on. Everything within reach draws the
-/// part that falls inside itself, so the rows either side of the one under
-/// the cursor catch the edge of it and the window reads as one surface with a
-/// light on it. Anything out of reach iterates nothing at all, so this costs
-/// the same as an effect on one thing.
-pub(super) fn glow(bounds: Bounds<Pixels>, at: Point<Pixels>, ink: Hsla, window: &mut Window) {
-    const CELL: f32 = 2.;
-    const REACH: f32 = 96.;
-    /// The most specks any one thing will draw, so a tall panel under the
-    /// cursor cannot cost more than a row does.
-    const MOST: usize = 1_600;
-
-    let wide = f32::from(bounds.size.width);
-    let tall = f32::from(bounds.size.height);
-    if wide <= 0. || tall <= 0. {
-        return;
-    }
-    let (cursor_x, cursor_y) = (f32::from(at.x), f32::from(at.y));
-    let (left, top) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
-
-    // Only the cells the light could reach, and only the part of those that
-    // lies inside this element.
-    let columns = wide / CELL;
-    let rows = tall / CELL;
-    let first_column = ((cursor_x - REACH - left) / CELL)
-        .floor()
-        .clamp(0., columns) as usize;
-    let last_column = ((cursor_x + REACH - left) / CELL).ceil().clamp(0., columns) as usize;
-    let first_row = ((cursor_y - REACH - top) / CELL).floor().clamp(0., rows) as usize;
-    let last_row = ((cursor_y + REACH - top) / CELL).ceil().clamp(0., rows) as usize;
-
-    let mut lit = 0usize;
-    for row in first_row..last_row {
-        for column in first_column..last_column {
-            let x = left + column as f32 * CELL;
-            let y = top + row as f32 * CELL;
-            // From the middle of the cell, or the light sits half a cell up
-            // and to the left of the pointer.
-            let dx = x + CELL / 2. - cursor_x;
-            let dy = y + CELL / 2. - cursor_y;
-            let away = (dx * dx + dy * dy).sqrt() / REACH;
-            if away >= 1. {
-                continue;
-            }
-            // Squared, so the specks gather near the cursor and thin out
-            // long before the edge, where the field has nothing to end on.
-            let density = (1. - away) * (1. - away);
-            // The speck's own position decides whether it is lit, using the
-            // same noise the picture behind it is grained with.
-            if noise(column, row) > density {
-                continue;
-            }
-            window.paint_quad(gpui::fill(
-                Bounds {
-                    origin: gpui::point(px(x), px(y)),
-                    size: gpui::size(px(CELL), px(CELL)),
-                },
-                ink,
-            ));
-            lit += 1;
-            if lit >= MOST {
-                return;
-            }
-        }
-    }
 }
 
 #[cfg(test)]

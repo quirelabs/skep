@@ -311,7 +311,20 @@ impl Skep {
             .id(("row", index))
             .group("row")
             .relative()
-            .child(self.lit())
+            // The row you are pointing at is marked at its edge rather than
+            // lit across its middle: an edge is a thing the eye finds without
+            // being asked to look at it.
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(2.))
+                    .bg(theme.accent)
+                    .opacity(0.)
+                    .group_hover("row", |style| style.opacity(1.)),
+            )
             .flex()
             .w_full()
             .min_w_0()

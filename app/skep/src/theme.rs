@@ -50,10 +50,6 @@ pub struct Theme {
     /// What panels and rows are made of: the raised colour with the wash
     /// showing through, so a surface belongs to the window it sits in.
     pub surface: Hsla,
-    /// One speck of the light that follows the cursor. Faint on purpose: the
-    /// light is made of how many specks are lit rather than how bright each
-    /// one is, and a speck you can pick out is confetti rather than light.
-    pub glimmer: Hsla,
     /// Quiet text that sits on the wash rather than on a surface. Stronger
     /// than muted on purpose: over a colour that shifts across the window,
     /// grey stops carrying, so this is the text colour held back instead.
@@ -66,7 +62,10 @@ impl Theme {
             base: rgb(0x0b0b0c).into(),
             raised: rgb(0x141416).into(),
             text: rgb(0xf2f1ee).into(),
-            muted: rgb(0x86868b).into(),
+            // Lifted from the flat grey it was: the page it sits on is a
+            // surface over a picture with grain in it now, and the old one
+            // measured 4.43 against the busiest part of that.
+            muted: rgb(0x8e8e94).into(),
             border: rgb(0x232326).into(),
             accent: rgb(0xff6a1f).into(),
             running: rgb(0x3fbf6f).into(),
@@ -79,7 +78,6 @@ impl Theme {
             ],
             weather: (0.24, 0.045),
             surface: alpha(0x17171a, 0.78),
-            glimmer: alpha(0xff6a1f, 0.15),
             chrome: alpha(0xf2f1ee, 0.70),
         }
     }
@@ -110,7 +108,6 @@ impl Theme {
             surface: alpha(0xffffff, 0.78),
             // 0.70 rather than the dark side's, because the wash over paper
             // leaves less headroom: this is 5.54 against the busiest corner.
-            glimmer: alpha(0xb84700, 0.11),
             chrome: alpha(0x1a1a1c, 0.70),
         }
     }
