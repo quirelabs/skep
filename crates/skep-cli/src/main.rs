@@ -16,7 +16,8 @@ skep, a local dev services manager
 
 usage:
   skep serve [--take-over]    host the engine and every service, in the foreground
-  skep up                     start everything skep.toml asks for
+  skep up                     start everything skep.toml asks for, including
+                              the project's own dev server if it declares one
   skep status                 show every service
   skep start <service>        start a service
   skep stop <service>         stop a service
@@ -75,22 +76,16 @@ async fn dispatch() -> Result<()> {
         "up" => up().await,
         "status" => status().await,
         "start" => {
-            act(Request::Start {
-                instance: one(&rest)?,
-            })
-            .await
+            let instance = named(&rest).await?;
+            act(Request::Start { instance }).await
         }
         "stop" => {
-            act(Request::Stop {
-                instance: one(&rest)?,
-            })
-            .await
+            let instance = named(&rest).await?;
+            act(Request::Stop { instance }).await
         }
         "restart" => {
-            act(Request::Restart {
-                instance: one(&rest)?,
-            })
-            .await
+            let instance = named(&rest).await?;
+            act(Request::Restart { instance }).await
         }
         "logs" => logs(&rest).await,
         "domains" => domains::run(&rest).await,
@@ -165,6 +160,50 @@ fn untrust() -> Result<()> {
     Ok(())
 }
 
+/// Starts what the project itself runs, and says where it can be reached.
+/// Already running is not an error: the port it has is the port its name
+/// should point at.
+async fn start_project(
+    client: &mut Client,
+    file: &std::path::Path,
+    run: &project::Run,
+    running: &[comb::ServiceStatus],
+) -> Result<(String, Option<(String, u16)>)> {
+    let paths = Paths::from_env();
+    let (spec, port) = comb_services::run_spec(file, run, &paths)?;
+    let id = spec.id.clone();
+    let site = run.site.clone();
+
+    if let Some(status) = running.iter().find(|status| status.id == id)
+        && (status.state.is_running() || status.state.is_transitional())
+    {
+        let held = status.ports.get("http").copied().unwrap_or(port);
+        return Ok((
+            format!("{id} already running on {held}"),
+            site.map(|host| (host, held)),
+        ));
+    }
+
+    for request in [
+        Request::Register {
+            spec: Box::new(spec),
+        },
+        Request::Start {
+            instance: id.clone(),
+        },
+    ] {
+        match client.send(&request).await? {
+            Response::Done => {}
+            Response::Failed { message } => bail!(message),
+            other => bail!("unexpected reply: {other:?}"),
+        }
+    }
+    Ok((
+        format!("{id} started on {port}"),
+        site.map(|host| (host, port)),
+    ))
+}
+
 async fn share(args: &[String]) -> Result<()> {
     let Some(target) = args.first() else {
         bail!("share what? a site like myapp.test, or a service like mailpit\n\n{USAGE}");
@@ -226,7 +265,7 @@ async fn up() -> Result<()> {
     })?;
     let project = project::load(&path)?;
     println!("{}", path.display());
-    if project.services.is_empty() && project.sites.is_empty() {
+    if project.services.is_empty() && project.sites.is_empty() && project.run.is_none() {
         println!("  nothing to start");
         return Ok(());
     }
@@ -237,9 +276,24 @@ async fn up() -> Result<()> {
     };
     let running = overview.services;
 
-    // Sites first: they need nothing running, and a name that cannot be served
-    // is better said before a person waits for a database to boot.
-    let wanted_sites = project::sites(&Default::default(), &project)?;
+    // The project's own process, if it has one. Before the sites, because the
+    // name it is served at points at a port that does not exist until it has
+    // been started.
+    let mut wanted_sites = project::sites(&Default::default(), &project)?;
+    if let Some(run) = &project.run {
+        match start_project(&mut client, &path, run, &running).await {
+            Ok((line, served)) => {
+                println!("  {line}");
+                if let Some((host, port)) = served {
+                    wanted_sites.insert(host, port);
+                }
+            }
+            Err(error) => println!("  the project itself: {error:#}"),
+        }
+    }
+
+    // Sites next: they need nothing else running, and a name that cannot be
+    // served is better said before a person waits for a database to boot.
     if !wanted_sites.is_empty() {
         let count = wanted_sites.len();
         match client
@@ -288,6 +342,36 @@ async fn bring_up(
     }
 }
 
+/// The instance a name means, asking the engine when the catalog does not
+/// know it. A project runs under its own name, which no catalog can contain,
+/// and `skep stop myapp` should mean the obvious thing.
+async fn named(args: &[String]) -> Result<InstanceId> {
+    let Some(name) = args.first() else {
+        bail!("which service?\n\n{USAGE}");
+    };
+    match resolve(name) {
+        Ok(id) => Ok(id),
+        Err(unknown) => {
+            // Only ask if there is somebody to ask. With no engine running,
+            // the catalog's own complaint is the better one: it lists what a
+            // typo might have meant, where "no engine is running" does not.
+            let Ok(mut client) = Client::connect(&Paths::from_env()).await else {
+                return Err(unknown);
+            };
+            let Response::Status { overview } = client.send(&Request::Status).await? else {
+                bail!("unexpected reply");
+            };
+            let (wanted, _) = name.split_once('@').unwrap_or((name.as_str(), ""));
+            overview
+                .services
+                .into_iter()
+                .map(|status| status.id)
+                .find(|id| id.service.as_str() == wanted)
+                .ok_or(unknown)
+        }
+    }
+}
+
 fn one(args: &[String]) -> Result<InstanceId> {
     match args.first() {
         Some(name) => resolve(name),
@@ -327,7 +411,7 @@ async fn status() -> Result<()> {
 }
 
 async fn logs(args: &[String]) -> Result<()> {
-    let instance = one(args)?;
+    let instance = named(args).await?;
     let lines = match args.iter().position(|arg| arg == "-n") {
         Some(at) => args
             .get(at + 1)

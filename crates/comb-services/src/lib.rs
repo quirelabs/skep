@@ -11,10 +11,11 @@ pub mod project;
 mod valkey;
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use comb::{
-    Build, Client, Error, InstanceId, Label, Paths, Platform, Release, Request as Wire, Response,
-    Result, ServiceSpec, ServiceStatus, Tag, Version,
+    BinarySpec, Build, Client, Error, HealthCheck, InstanceId, Label, Paths, Platform, Port, Probe,
+    Release, Request as Wire, Response, Result, ServiceSpec, ServiceStatus, Tag, Version,
 };
 
 pub use cloudflared::{Cloudflared, PUBLIC_SUFFIX as TUNNEL_SUFFIX};
@@ -461,6 +462,78 @@ pub fn share_spec(name: &Label, origin: Origin, paths: &Paths) -> Result<Service
     adapter.spec(&request, paths)
 }
 
+/// A project's own process, as an instance the engine can supervise.
+///
+/// The port is allocated here rather than written down anywhere, which is the
+/// point of the whole arrangement: a dev server that picks its own port picks
+/// a different one depending on what started first, and a hostname pinned to
+/// a number is then pinned to whichever project won the race. Skep chooses,
+/// tells the command through both the environment and the placeholder, and
+/// serves the name at whatever it chose.
+///
+/// The instance is named for the project's directory, since that is what a
+/// person calls it, and versioned `local` because it is not a release anybody
+/// pinned.
+pub fn run_spec(file: &Path, run: &project::Run, paths: &Paths) -> Result<(ServiceSpec, u16)> {
+    let root = file.parent().unwrap_or(Path::new("."));
+    let name = project_name(root)?;
+    let port = comb::free_port()
+        .ok_or_else(|| Error::InvalidId("no free port for the project".to_string()))?;
+
+    let parts = run.command.parts(port);
+    let (program, arguments) = parts
+        .split_first()
+        .ok_or_else(|| Error::InvalidId("the command in [run] is empty".to_string()))?;
+
+    let id = InstanceId::new(name.as_str(), "local")?;
+    let working = match &run.dir {
+        Some(dir) => root.join(dir),
+        None => root.to_path_buf(),
+    };
+
+    let mut spec = ServiceSpec::new(
+        id,
+        BinarySpec::path(program),
+        // Nothing of the project's own is kept here; the engine wants
+        // somewhere to put a service's data and this one has none.
+        paths.data_dir(&InstanceId::new(name.as_str(), "local")?),
+    )
+    .with_display_name(name.as_str())
+    .with_args(arguments.iter().cloned())
+    .with_working_dir(working)
+    // Both, so a tool that reads the environment needs no flag and a tool
+    // that needs a flag has somewhere to put it.
+    .with_env("PORT", port.to_string())
+    .with_ports([Port::new("http", port)])
+    // Listening is as much as skep can know: what a dev server serves is its
+    // own business, and asking for a page would start compiling one.
+    .with_health(HealthCheck::new(Probe::Tcp { port }));
+    for (key, value) in &run.env {
+        spec = spec.with_env(key, value);
+    }
+    Ok((spec, port))
+}
+
+/// What to call a project: its directory, cut down to what a name may be.
+fn project_name(root: &Path) -> Result<comb::ServiceName> {
+    let raw = root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let cleaned: String = raw
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let trimmed = cleaned.trim_matches('-');
+    if trimmed.is_empty() {
+        return Err(Error::InvalidId(format!(
+            "{} is not a directory a project can be named after",
+            root.display()
+        )));
+    }
+    comb::ServiceName::new(trimmed)
+}
+
 /// The tunnel that serves a target, named the way its instance prints. A site
 /// keeps its name with the dots turned to dashes, since a label has no dots.
 pub fn tunnel_name(target: &str) -> Result<Label> {
@@ -711,6 +784,73 @@ mod tests {
             error.to_string().contains("no port named gopher"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn a_project_is_told_its_port_twice_over() {
+        let paths = home_with("run", "");
+        let file = std::env::temp_dir()
+            .join(format!("skep-run-{}", std::process::id()))
+            .join("my app")
+            .join(project::FILE);
+        let run = project::Run {
+            command: project::Line::Whole("npm run dev -- --port {port} --strictPort".to_string()),
+            dir: None,
+            site: Some("myapp.test".to_string()),
+            env: BTreeMap::from([("NODE_ENV".to_string(), "development".to_string())]),
+        };
+
+        let (spec, port) = run_spec(&file, &run, &paths).unwrap();
+
+        // The directory names it, cut down to what a name may be.
+        assert_eq!(spec.id.to_string(), "my-app@local");
+        assert_eq!(spec.binary.resolve(&paths).to_string_lossy(), "npm");
+        assert_eq!(
+            spec.args,
+            [
+                "run",
+                "dev",
+                "--",
+                "--port",
+                &port.to_string(),
+                "--strictPort"
+            ]
+        );
+        // Both ways, so a tool needs no flag and a tool that does has one.
+        assert_eq!(spec.env["PORT"], port.to_string());
+        assert_eq!(spec.env["NODE_ENV"], "development");
+        assert_eq!(spec.primary_port(), Some(port));
+        assert_eq!(spec.health.probe, Probe::Tcp { port });
+        assert!(spec.working_dir.as_ref().unwrap().ends_with("my app"));
+
+        // Nothing is written down, so the next one is free to differ.
+        let (_, again) = run_spec(&file, &run, &paths).unwrap();
+        assert_ne!(port, again, "a project never reuses a port it was given");
+    }
+
+    #[test]
+    fn a_command_written_as_a_list_keeps_its_spaces() {
+        let paths = home_with("run-list", "");
+        let file = std::env::temp_dir()
+            .join("skep-run-list")
+            .join(project::FILE);
+        let run = project::Run {
+            command: project::Line::Parts(vec![
+                "cargo".to_string(),
+                "run".to_string(),
+                "--".to_string(),
+                "--bind".to_string(),
+                "127.0.0.1:{port}".to_string(),
+            ]),
+            dir: Some("server".to_string()),
+            site: None,
+            env: BTreeMap::new(),
+        };
+
+        let (spec, port) = run_spec(&file, &run, &paths).unwrap();
+
+        assert_eq!(spec.args.last().unwrap(), &format!("127.0.0.1:{port}"));
+        assert!(spec.working_dir.as_ref().unwrap().ends_with("server"));
     }
 
     #[test]

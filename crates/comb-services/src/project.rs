@@ -22,6 +22,10 @@ pub struct Project {
     /// start the app.
     #[serde(default)]
     pub sites: BTreeMap<String, u16>,
+    /// The project's own process: the dev server skep runs and supervises,
+    /// so the port it listens on is skep's to choose rather than yours to
+    /// keep track of.
+    pub run: Option<Run>,
     /// How the app behaves. Only ever read from config.toml: a preference is
     /// the machine's, never a repository's, so a project file carrying one is
     /// ignored rather than obeyed.
@@ -36,6 +40,44 @@ pub struct App {
     /// pane beside the list.
     #[serde(default)]
     pub sites_in_browser: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Run {
+    /// What to start. A string is split on spaces; a list keeps arguments
+    /// that have spaces in them. Not a shell: no pipes, no `&&`, no `$VAR`.
+    /// Those belong in a script, where they can be read and tested.
+    pub command: Line,
+    /// Where to run it, relative to this file. The file's own directory by
+    /// default, which is what a project usually means.
+    pub dir: Option<String>,
+    /// The hostname to serve it at. No port here on purpose: the port is
+    /// whatever was free when it started, which is the whole point.
+    pub site: Option<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// A command, written either way round.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Line {
+    Whole(String),
+    Parts(Vec<String>),
+}
+
+impl Line {
+    /// The program and its arguments, with `{port}` filled in wherever it
+    /// appears. Splitting on whitespace is a convenience for the common case;
+    /// anything with a space inside an argument is written as a list.
+    pub fn parts(&self, port: u16) -> Vec<String> {
+        let filled = |text: &str| text.replace("{port}", &port.to_string());
+        match self {
+            Self::Whole(line) => line.split_whitespace().map(filled).collect(),
+            Self::Parts(parts) => parts.iter().map(|part| filled(part)).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -306,6 +348,37 @@ mod tests {
         let error = add_site(&path, "b.test", 2).unwrap_err().to_string();
         assert!(error.contains("inline"), "{error}");
         assert!(std::fs::read_to_string(&path).unwrap().contains("a.test"));
+    }
+
+    #[test]
+    fn a_project_says_what_to_run_and_where_to_serve_it() {
+        let project = parse(
+            r#"
+            [run]
+            command = "npm run dev -- --port {port}"
+            site = "myapp.test"
+            env = { NODE_ENV = "development" }
+            "#,
+        )
+        .unwrap();
+
+        let run = project.run.expect("a run block");
+        assert_eq!(run.site.as_deref(), Some("myapp.test"));
+        assert_eq!(run.env["NODE_ENV"], "development");
+        assert_eq!(
+            run.command.parts(4321),
+            ["npm", "run", "dev", "--", "--port", "4321"]
+        );
+    }
+
+    #[test]
+    fn a_port_written_nowhere_is_a_port_that_cannot_go_stale() {
+        // The whole point: a site under [run] carries no number, so nothing
+        // in the file can disagree with what the dev server actually got.
+        let error = parse("[run]\ncommand = \"x\"\nsite = \"a.test\"\nport = 3000\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("port"), "{error}");
     }
 
     #[test]
