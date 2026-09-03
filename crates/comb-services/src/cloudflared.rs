@@ -59,7 +59,7 @@ impl ServiceAdapter for Cloudflared {
 
     fn spec(&self, request: &Request, paths: &Paths) -> Result<ServiceSpec> {
         // A tunnel with nothing behind it is not a thing to start.
-        let origin = request.origin.as_deref().ok_or_else(|| {
+        let origin = request.origin.as_ref().ok_or_else(|| {
             Error::InvalidId("a tunnel needs something to expose, which skep share gives it".into())
         })?;
         let version = request.resolve_version(self)?;
@@ -68,6 +68,29 @@ impl ServiceAdapter for Cloudflared {
         let metrics = request.port(self, "metrics")?;
         let data_dir = paths.data_dir(&id);
 
+        let mut args = vec![
+            "tunnel".to_string(),
+            // The binary never replaces itself: versions are pinned here.
+            "--no-autoupdate".to_string(),
+            "--url".to_string(),
+            origin.url.clone(),
+            "--metrics".to_string(),
+            format!("127.0.0.1:{metrics}"),
+        ];
+        if let Some(host) = &origin.host {
+            // Reached on loopback, named in the request: the proxy routes by
+            // the host header and picks its certificate by the server name,
+            // and the leaf is signed by skep's own authority, which
+            // cloudflared has no reason to trust.
+            args.extend([
+                "--http-host-header".to_string(),
+                host.clone(),
+                "--origin-server-name".to_string(),
+                host.clone(),
+                "--no-tls-verify".to_string(),
+            ]);
+        }
+
         Ok(ServiceSpec::new(
             id,
             BinarySpec::managed(self.name(), version, self.program()),
@@ -75,15 +98,7 @@ impl ServiceAdapter for Cloudflared {
         )
         .with_release(release)
         .with_display_name(self.display_name())
-        .with_args([
-            "tunnel".to_string(),
-            // The binary never replaces itself: versions are pinned here.
-            "--no-autoupdate".to_string(),
-            "--url".to_string(),
-            origin.to_string(),
-            "--metrics".to_string(),
-            format!("127.0.0.1:{metrics}"),
-        ])
+        .with_args(args)
         .with_ports([Port::new("metrics", metrics)])
         // Ready means a connection to the edge is registered, which is when
         // the public url starts answering.
@@ -99,13 +114,14 @@ impl ServiceAdapter for Cloudflared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Origin;
 
     #[test]
     fn the_spec_exposes_the_origin_and_watches_for_the_public_url() {
         let paths = Paths::new("/tmp/skep-spec-test");
         let request = Request::new()
             .with_tag(comb::Tag::Target("myapp-test".parse().unwrap()))
-            .with_origin("https://myapp.test:8443")
+            .with_origin(Origin::site("myapp.test", 8443))
             .with_port("metrics", 20999);
 
         let spec = Cloudflared.spec(&request, &paths).unwrap();
@@ -113,8 +129,11 @@ mod tests {
         assert_eq!(spec.id.to_string(), "cloudflared@2026.8.3~myapp-test");
         assert!(spec.id.is_target() && !spec.id.is_branch());
         assert!(spec.data_dir.ends_with("targets/myapp-test"));
-        assert!(spec.args.contains(&"https://myapp.test:8443".to_string()));
+        assert!(spec.args.contains(&"https://127.0.0.1:8443".to_string()));
         assert!(spec.args.contains(&"--no-autoupdate".to_string()));
+        assert!(spec.args.contains(&"--http-host-header".to_string()));
+        assert!(spec.args.contains(&"--origin-server-name".to_string()));
+        assert!(spec.args.contains(&"myapp.test".to_string()));
         assert_eq!(
             spec.health.probe,
             Probe::Http {
@@ -131,5 +150,22 @@ mod tests {
         let paths = Paths::new("/tmp/skep-spec-test");
         let error = Cloudflared.spec(&Request::new(), &paths).unwrap_err();
         assert!(error.to_string().contains("skep share"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use crate::Origin;
+
+    #[test]
+    fn a_bare_service_is_reached_plainly_on_loopback() {
+        let paths = Paths::new("/tmp/skep-spec-test");
+        let request = Request::new()
+            .with_tag(comb::Tag::Target("mailpit".parse().unwrap()))
+            .with_origin(Origin::service(8025));
+        let spec = Cloudflared.spec(&request, &paths).unwrap();
+        assert!(spec.args.contains(&"http://127.0.0.1:8025".to_string()));
+        assert!(!spec.args.contains(&"--no-tls-verify".to_string()));
     }
 }

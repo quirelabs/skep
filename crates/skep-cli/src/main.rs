@@ -38,6 +38,10 @@ usage:
   skep domains install        take ports 80 and 443 and route .test here
                               (needs sudo, and refuses to trample another tool)
   skep domains uninstall      give all of that back
+  skep share <site|service>   put a site or a service on a public url
+                              (a quick tunnel through cloudflared, http only,
+                              no account needed; a site goes through the proxy)
+  skep unshare <site|service> take it back off
 
   skep snapshot <service> <name>          keep a copy of a service's data
   skep snapshots <service>                list the copies kept
@@ -93,6 +97,8 @@ async fn dispatch() -> Result<()> {
         "mail" => mail::run(&rest).await,
         "sites" => sites().await,
         "site" => site::run(&rest).await,
+        "share" => share(&rest).await,
+        "unshare" => unshare(&rest).await,
         "trust" => trust(),
         "untrust" => untrust(),
         "snapshot" => snapshot(&rest).await,
@@ -157,6 +163,49 @@ fn untrust() -> Result<()> {
     authority.untrust()?;
     println!("removed, browsers will warn about local domains again");
     Ok(())
+}
+
+async fn share(args: &[String]) -> Result<()> {
+    let Some(target) = args.first() else {
+        bail!("share what? a site like myapp.test, or a service like mailpit\n\n{USAGE}");
+    };
+    let mut client = connect().await?;
+    println!("asking the edge for a url");
+    match comb_services::share(&mut client, target, &Paths::from_env()).await {
+        Ok((id, url)) => {
+            println!("{url}");
+            println!("  serving {target} as {id}, until: skep unshare {target}");
+            Ok(())
+        }
+        Err(message) => bail!(message),
+    }
+}
+
+async fn unshare(args: &[String]) -> Result<()> {
+    let Some(target) = args.first() else {
+        bail!("unshare what?\n\n{USAGE}");
+    };
+    let mut client = connect().await?;
+    let Response::Status { overview } = client.send(&Request::Status).await? else {
+        bail!("unexpected reply");
+    };
+    let Some(id) = comb_services::shared_as(target, &overview.services) else {
+        println!("{target} is not shared");
+        return Ok(());
+    };
+    match client
+        .send(&Request::Stop {
+            instance: id.clone(),
+        })
+        .await?
+    {
+        Response::Done => {
+            println!("{target} is no longer shared");
+            Ok(())
+        }
+        Response::Failed { message } => bail!(message),
+        other => bail!("unexpected reply: {other:?}"),
+    }
 }
 
 fn resolve(name: &str) -> Result<InstanceId> {

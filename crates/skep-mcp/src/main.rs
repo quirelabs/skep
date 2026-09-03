@@ -69,6 +69,14 @@ struct Sprout {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct Target {
+    /// A site by hostname, like "myapp.test", or a service by name, like
+    /// "mailpit". A site is shared through skep's proxy; a service on its main
+    /// port, as http.
+    target: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct Project {
     /// Directory to search from. Defaults to the working directory. skep.toml
     /// is looked for here and in every parent.
@@ -184,6 +192,69 @@ impl Skep {
             Ok((messages, unread)) => json(&view::Mail { unread, messages }),
             Err(error) => Ok(sentence(error.to_string())),
         }
+    }
+
+    #[tool(
+        name = "skep_share",
+        description = "Put a site or a service on a public url through a quick cloudflared \
+                       tunnel, no account needed, and wait for the url. Returns \
+                       {\"url\":\"https://....trycloudflare.com\",\"instance\":\
+                       \"cloudflared@...~myapp-test\"}. The url lasts as long as the tunnel \
+                       runs and is also carried as the tunnel's notice in skep_status. Quick \
+                       tunnels carry http only. Calling again for a target already shared \
+                       returns the same url. Fails with a sentence when the target is not a \
+                       site here, has nothing answering behind it, or is not running."
+    )]
+    async fn share(
+        &self,
+        Parameters(Target { target }): Parameters<Target>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let mut client = match connect().await {
+            Ok(client) => client,
+            Err(problem) => return Ok(*problem),
+        };
+        match comb_services::share(&mut client, &target, &Paths::from_env()).await {
+            Ok((instance, url)) => json(&view::Shared {
+                url,
+                instance: instance.to_string(),
+            }),
+            Err(message) => Ok(sentence(message)),
+        }
+    }
+
+    #[tool(
+        name = "skep_unshare",
+        description = "Stop sharing a site or a service: the tunnel is stopped and its public \
+                       url stops answering. Returns the tunnel's status, or a sentence saying \
+                       the target was not shared."
+    )]
+    async fn unshare(
+        &self,
+        Parameters(Target { target }): Parameters<Target>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let mut client = match connect().await {
+            Ok(client) => client,
+            Err(problem) => return Ok(*problem),
+        };
+        let services = match ask(&mut client, Request::Status).await {
+            Ok(Response::Status { overview }) => overview.services,
+            Ok(other) => return Ok(confused(other)),
+            Err(problem) => return Ok(*problem),
+        };
+        let Some(instance) = comb_services::shared_as(&target, &services) else {
+            return Ok(sentence(format!("{target} is not shared")));
+        };
+        if let Err(problem) = ask(
+            &mut client,
+            Request::Stop {
+                instance: instance.clone(),
+            },
+        )
+        .await
+        {
+            return Ok(*problem);
+        }
+        self.report_on(&mut client, &instance.to_string()).await
     }
 
     #[tool(

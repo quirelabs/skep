@@ -5,7 +5,7 @@
 mod support;
 
 use comb::{Engine, EventKind, Label, Paths, ServiceState, Version};
-use comb_services::{Cloudflared, ServiceAdapter, TUNNEL_SUFFIX, install, share_spec};
+use comb_services::{Cloudflared, Origin, ServiceAdapter, TUNNEL_SUFFIX, install, share_spec};
 use support::{heavy, shared_home};
 
 #[tokio::test]
@@ -19,12 +19,7 @@ async fn a_quick_tunnel_announces_its_url_and_withdraws_it_on_stop() {
 
     let engine = Engine::with_paths(paths.clone());
     // Nothing needs to answer behind it for the edge to hand out a url.
-    let spec = share_spec(
-        &Label::new("nothing").unwrap(),
-        "http://127.0.0.1:1",
-        &paths,
-    )
-    .unwrap();
+    let spec = share_spec(&Label::new("nothing").unwrap(), Origin::service(1), &paths).unwrap();
     let id = spec.id.clone();
     assert!(id.is_target());
     engine.register(spec).await.unwrap();

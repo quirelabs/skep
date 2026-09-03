@@ -63,7 +63,32 @@ pub struct Request {
     pub tag: Option<Tag>,
     pub ports: BTreeMap<String, u16>,
     /// What a targeted instance points at: the url a tunnel exposes.
-    pub origin: Option<String>,
+    pub origin: Option<Origin>,
+}
+
+/// Where a tunnel sends what arrives. A site is reached on loopback with its
+/// name carried in the request, so the proxy routes it and picks its
+/// certificate, and nothing depends on the resolver being installed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Origin {
+    pub url: String,
+    pub host: Option<String>,
+}
+
+impl Origin {
+    pub fn service(port: u16) -> Self {
+        Self {
+            url: format!("http://127.0.0.1:{port}"),
+            host: None,
+        }
+    }
+
+    pub fn site(host: &str, https_port: u16) -> Self {
+        Self {
+            url: format!("https://127.0.0.1:{https_port}"),
+            host: Some(host.to_string()),
+        }
+    }
 }
 
 impl Request {
@@ -81,8 +106,8 @@ impl Request {
         self
     }
 
-    pub fn with_origin(mut self, origin: impl Into<String>) -> Self {
-        self.origin = Some(origin.into());
+    pub fn with_origin(mut self, origin: Origin) -> Self {
+        self.origin = Some(origin);
         self
     }
 
@@ -425,7 +450,7 @@ pub fn find(name: &str) -> Option<&'static dyn ServiceAdapter> {
 
 /// A tunnel's spec: cloudflared pointed at `origin`, named for what it serves,
 /// on a metrics port of its own so two tunnels never collide.
-pub fn share_spec(name: &Label, origin: &str, paths: &Paths) -> Result<ServiceSpec> {
+pub fn share_spec(name: &Label, origin: Origin, paths: &Paths) -> Result<ServiceSpec> {
     let adapter: &dyn ServiceAdapter = &Cloudflared;
     let metrics = comb::free_port()
         .ok_or_else(|| Error::InvalidId("no free port for the tunnel".to_string()))?;
@@ -434,6 +459,144 @@ pub fn share_spec(name: &Label, origin: &str, paths: &Paths) -> Result<ServiceSp
         .with_origin(origin)
         .with_port("metrics", metrics);
     adapter.spec(&request, paths)
+}
+
+/// The tunnel that serves a target, named the way its instance prints. A site
+/// keeps its name with the dots turned to dashes, since a label has no dots.
+pub fn tunnel_name(target: &str) -> Result<Label> {
+    Label::new(target.replace('.', "-"))
+}
+
+/// What a tunnel for `target` should point at, worked out from what the
+/// engine reports, and the sentence when it cannot be shared. A site is
+/// shared through the proxy, forwarded headers and all; a service is shared
+/// on its main port, which a quick tunnel carries as http only.
+pub fn share_plan(
+    target: &str,
+    sites: &BTreeMap<String, u16>,
+    running: &[ServiceStatus],
+    https_port: u16,
+    paths: &Paths,
+) -> std::result::Result<(Label, Origin), String> {
+    if target.contains('.') {
+        let host = target.to_ascii_lowercase();
+        let port = sites.get(&host).ok_or_else(|| {
+            format!("{host} is not a site here; add it with: skep site add {host} <port>")
+        })?;
+        if std::net::TcpStream::connect(("127.0.0.1", *port)).is_err() {
+            return Err(format!(
+                "nothing is answering on port {port} behind {host}, so there is nothing to share yet"
+            ));
+        }
+        let name = tunnel_name(&host).map_err(|error| error.to_string())?;
+        return Ok((name, Origin::site(&host, https_port)));
+    }
+    let id = instance(target, None, paths).map_err(|error| error.to_string())?;
+    let status = running
+        .iter()
+        .find(|status| status.id == id)
+        .ok_or_else(|| format!("{id} is not registered here"))?;
+    if !status.state.is_running() {
+        return Err(format!("{id} is {}; start it first", status.state));
+    }
+    let main = main_port(target).map_err(|error| error.to_string())?;
+    let port = status
+        .ports
+        .get(main)
+        .ok_or_else(|| format!("{id} has no {main} port to share"))?;
+    let name = tunnel_name(id.service.as_str()).map_err(|error| error.to_string())?;
+    Ok((name, Origin::service(*port)))
+}
+
+/// Puts a target on a public url and waits for the url. Shared by the CLI and
+/// the MCP so neither can drift on what is shareable or how a refusal is
+/// worded. The error is the sentence to show as it is.
+pub async fn share(
+    client: &mut Client,
+    target: &str,
+    paths: &Paths,
+) -> std::result::Result<(InstanceId, String), String> {
+    let sites = match client.send(&Wire::Sites).await {
+        Ok(Response::Sites { sites }) => sites,
+        Ok(other) => return Err(format!("unexpected reply: {other:?}")),
+        Err(error) => return Err(error.to_string()),
+    };
+    let running = match client.send(&Wire::Status).await {
+        Ok(Response::Status { overview }) => overview.services,
+        Ok(other) => return Err(format!("unexpected reply: {other:?}")),
+        Err(error) => return Err(error.to_string()),
+    };
+    let https_port = comb::public_https_port(&comb::Layout::system(comb::SUFFIX).control).await;
+    let (name, origin) = share_plan(target, &sites, &running, https_port, paths)?;
+
+    let expected = InstanceId::target(
+        Cloudflared.name(),
+        Cloudflared.default_version(),
+        name.as_str(),
+    )
+    .map_err(|error| error.to_string())?;
+    if let Some(status) = running.iter().find(|status| status.id == expected)
+        && status.state.is_running()
+        && let Some(url) = &status.notice
+    {
+        return Ok((expected, url.clone()));
+    }
+
+    let spec = share_spec(&name, origin, paths).map_err(|error| error.to_string())?;
+    let id = spec.id.clone();
+    for request in [
+        Wire::Register {
+            spec: Box::new(spec),
+        },
+        Wire::Start {
+            instance: id.clone(),
+        },
+    ] {
+        match client.send(&request).await {
+            Ok(Response::Done) => {}
+            Ok(Response::Failed { message }) => return Err(message),
+            Ok(other) => return Err(format!("unexpected reply: {other:?}")),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+
+    // The url lands on its own beat after the start returns: the edge says
+    // it once a connection is registered, which is also what ready means.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let services = match client.send(&Wire::Status).await {
+            Ok(Response::Status { overview }) => overview.services,
+            Ok(other) => return Err(format!("unexpected reply: {other:?}")),
+            Err(error) => return Err(error.to_string()),
+        };
+        if let Some(status) = services.iter().find(|status| status.id == id) {
+            if let Some(url) = &status.notice {
+                return Ok((id, url.clone()));
+            }
+            if let comb::ServiceState::Failed { reason } = &status.state {
+                return Err(format!("the tunnel failed: {reason}"));
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "{id} is up but the edge has not handed out a url yet"
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// The tunnel serving `target`, if one is registered, so it can be stopped.
+pub fn shared_as(target: &str, running: &[ServiceStatus]) -> Option<InstanceId> {
+    let name = tunnel_name(&target.to_ascii_lowercase()).ok()?;
+    running
+        .iter()
+        .map(|status| &status.id)
+        .find(|id| {
+            id.service.as_str() == Cloudflared.name()
+                && id.tag.as_ref().is_some_and(|tag| tag.name() == &name)
+        })
+        .cloned()
 }
 
 #[cfg(test)]
@@ -553,14 +716,91 @@ mod tests {
     #[test]
     fn two_tunnels_never_share_a_metrics_port() {
         let paths = home_with("tunnels", "");
-        let one = share_spec(&Label::new("a").unwrap(), "http://127.0.0.1:1", &paths).unwrap();
-        let two = share_spec(&Label::new("b").unwrap(), "http://127.0.0.1:2", &paths).unwrap();
+        let one = share_spec(&Label::new("a").unwrap(), Origin::service(1), &paths).unwrap();
+        let two = share_spec(&Label::new("b").unwrap(), Origin::service(2), &paths).unwrap();
         assert_ne!(one.primary_port(), two.primary_port());
         assert_eq!(one.id.to_string(), "cloudflared@2026.8.3~a");
         // A targeted adapter is findable but never in the catalog a host
         // registers on its own.
         assert!(find("cloudflared").is_some());
         assert!(!names().contains(&"cloudflared"));
+    }
+
+    /// The status of a service that is up on one port.
+    fn up(id: &str, port_name: &str, port: u16) -> ServiceStatus {
+        ServiceStatus {
+            id: id.parse().unwrap(),
+            display_name: id.to_string(),
+            state: comb::ServiceState::Ready,
+            ports: BTreeMap::from([(port_name.to_string(), port)]),
+            ports_from: BTreeMap::new(),
+            pid: Some(1),
+            activity: None,
+            blocked: None,
+            notice: None,
+            since: comb::Timestamp::from_millis(0),
+        }
+    }
+
+    #[test]
+    fn a_site_is_shared_through_the_proxy_carrying_its_name() {
+        let paths = home_with("share-site", "");
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let sites = BTreeMap::from([("myapp.test".to_string(), port)]);
+
+        let (name, origin) = share_plan("MyApp.test", &sites, &[], 8443, &paths).unwrap();
+
+        // The label has no dots, and the origin is loopback with the name
+        // carried alongside so the proxy can route it.
+        assert_eq!(name.as_str(), "myapp-test");
+        assert_eq!(origin, Origin::site("myapp.test", 8443));
+    }
+
+    #[test]
+    fn a_site_with_nothing_behind_it_says_so_rather_than_tunnelling_to_nothing() {
+        let paths = home_with("share-empty", "");
+        let free = comb::free_port().unwrap();
+        let sites = BTreeMap::from([("myapp.test".to_string(), free)]);
+
+        let error = share_plan("myapp.test", &sites, &[], 8443, &paths).unwrap_err();
+
+        assert!(error.contains("nothing is answering"), "{error}");
+    }
+
+    #[test]
+    fn an_unknown_site_names_the_command_that_would_add_it() {
+        let paths = home_with("share-unknown", "");
+        let error = share_plan("nope.test", &BTreeMap::new(), &[], 8443, &paths).unwrap_err();
+        assert!(error.contains("skep site add nope.test"), "{error}");
+    }
+
+    #[test]
+    fn a_service_is_shared_on_its_main_port_and_must_be_running() {
+        let paths = home_with("share-service", "");
+        let running = [up("mailpit@1.31.0", "http", 8025)];
+
+        let (name, origin) =
+            share_plan("mailpit", &BTreeMap::new(), &running, 8443, &paths).unwrap();
+        assert_eq!(name.as_str(), "mailpit");
+        assert_eq!(origin, Origin::service(8025));
+
+        let mut stopped = running.clone();
+        stopped[0].state = comb::ServiceState::Stopped;
+        let error = share_plan("mailpit", &BTreeMap::new(), &stopped, 8443, &paths).unwrap_err();
+        assert!(error.contains("start it first"), "{error}");
+    }
+
+    #[test]
+    fn the_tunnel_serving_a_target_is_found_by_the_name_it_was_given() {
+        let mut tunnel = up("cloudflared@2026.8.3~myapp-test", "metrics", 20999);
+        tunnel.notice = Some("https://x.trycloudflare.com".to_string());
+        let running = [up("mailpit@1.31.0", "http", 8025), tunnel];
+
+        let found = shared_as("MyApp.test", &running).unwrap();
+
+        assert_eq!(found.to_string(), "cloudflared@2026.8.3~myapp-test");
+        assert!(shared_as("postgres", &running).is_none());
     }
 
     #[test]

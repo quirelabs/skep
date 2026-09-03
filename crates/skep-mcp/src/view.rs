@@ -210,3 +210,10 @@ pub struct Mail {
     pub unread: usize,
     pub messages: Vec<comb_services::mail::Summary>,
 }
+
+/// What sharing a target came back with.
+#[derive(Serialize)]
+pub struct Shared {
+    pub url: String,
+    pub instance: String,
+}

@@ -15,6 +15,11 @@ pub(super) fn line(status: &ServiceStatus) -> SharedString {
     if let Some(activity) = &status.activity {
         return activity.clone().into();
     }
+    // What the service announced is the one thing to know about it while
+    // it runs: for a tunnel, the public url.
+    if let Some(notice) = &status.notice {
+        return notice.clone().into();
+    }
     match &status.state {
         ServiceState::Ready => "running".into(),
         ServiceState::Failed { reason } => reason.clone().into(),
