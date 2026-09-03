@@ -71,61 +71,55 @@ pub(super) fn snow(bounds: Bounds<Pixels>, ink: Hsla, phase: f32, window: &mut W
     }
 }
 
-/// The dither. Cells on a fixed grid, kept or dropped by a threshold that
-/// comes from where the cell is rather than from chance, which is what stops
-/// it swimming when the window changes size.
+/// Where there is nothing, in the same grain as everything else.
 ///
-/// It thins towards the middle so the words sitting there stay the loudest
-/// thing in an empty screen, and the whole field is capped so an enormous
-/// window cannot turn a texture into thousands of quads.
+/// Specks of one strength, thinned by how far they are from the middle, so
+/// the words sitting there stay the loudest thing on an empty screen. Which
+/// ones light is decided by where they are rather than by chance, so the
+/// field is the same field every time it is drawn and does not swim when the
+/// window changes size.
+///
+/// This was an ordered matrix once, which was a second texture with its own
+/// vocabulary sitting inside a window already made of grain. One material is
+/// worth more than two good ones.
 pub(super) fn dither(bounds: Bounds<Pixels>, ink: Hsla, window: &mut Window) {
-    const STEP: f32 = 7.;
-    const CELL: f32 = 1.;
-    const MOST: usize = 2_400;
+    const CELL: f32 = 2.;
+    const MOST: usize = 2_600;
+    /// How thick the field is at the edges, before the thinning towards the
+    /// middle takes any of it away.
+    const MOST_DENSE: f32 = 0.5;
 
     let wide = f32::from(bounds.size.width);
     let tall = f32::from(bounds.size.height);
     if wide <= 0. || tall <= 0. {
         return;
     }
+    let columns = (wide / CELL).floor().max(1.) as usize;
+    let rows = (tall / CELL).floor().max(1.) as usize;
+    // Thin the whole field rather than stopping it part way across: a texture
+    // that ends half way is worse than one that is simply sparser.
+    let thinning = ((columns * rows) as f32 * MOST_DENSE / MOST as f32).max(1.);
 
-    let columns = (wide / STEP).floor().max(1.) as usize;
-    let rows = (tall / STEP).floor().max(1.) as usize;
-    // Coarsen rather than clip: a texture that stops half way across is worse
-    // than one that is simply sparser.
-    let skip = (columns * rows).div_ceil(MOST).max(1);
-
-    let mut placed = 0usize;
+    let mut lit = 0usize;
     for row in 0..rows {
         for column in 0..columns {
-            if !(row * columns + column).is_multiple_of(skip) {
-                continue;
-            }
-            // The classic four by four ordered matrix, which is what makes the
-            // field read as a texture rather than as noise.
-            const MATRIX: [[u8; 4]; 4] =
-                [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
-            let level = MATRIX[row % 4][column % 4];
-
-            let x = column as f32 * STEP;
-            let y = row as f32 * STEP;
-            // Distance from the middle, so the centre stays quiet.
+            let x = column as f32 * CELL;
+            let y = row as f32 * CELL;
+            // Distance from the middle, so the middle stays quiet.
             let from_middle = (((x / wide) - 0.5).abs() + ((y / tall) - 0.5).abs()).min(1.);
-            if f32::from(level) / 16. > from_middle {
+            let density = from_middle * MOST_DENSE / thinning;
+            if noise(column, row) > density {
                 continue;
             }
-
-            let mut faded = ink;
-            faded.a *= 0.5;
             window.paint_quad(gpui::fill(
                 Bounds {
                     origin: gpui::point(bounds.origin.x + px(x), bounds.origin.y + px(y)),
                     size: gpui::size(px(CELL), px(CELL)),
                 },
-                faded,
+                ink,
             ));
-            placed += 1;
-            if placed >= MOST {
+            lit += 1;
+            if lit >= MOST {
                 return;
             }
         }
@@ -289,28 +283,31 @@ fn bitmap(wide: usize, tall: usize, pixels: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A glow under the cursor, drawn in cells rather than smoothly.
+/// The light under the cursor, made of the same grain the window is made of.
 ///
-/// The window's texture is grain, so its one moving light is made of
-/// something with a grain of its own: square cells on a grid, each a step of
-/// alpha rather than a continuous falloff. Quantised deliberately. A soft
-/// radial gradient is what every other app does and it would say nothing
-/// about this one.
+/// Brightness is how many specks are lit rather than how bright each one is:
+/// every speck is the same strength, and the field simply thins as it goes
+/// out, which is what a halftone does and what the picture behind it already
+/// looks like. A light with its own smooth falloff sat on top of a grainy
+/// window as a different material; this one is the window's own material,
+/// gathered.
+///
+/// Which specks light is decided by where they are, not by chance, so the
+/// field is steady while the cursor is still and slides with it rather than
+/// boiling.
 ///
 /// The light is one field over the whole window rather than an effect that
-/// belongs to whatever the pointer is on. Everything within reach of it draws
-/// the part that falls inside itself, so the row above and below the one
-/// under the cursor catch the edge of it and the window reads as one surface
-/// with a light on it rather than a list of separate things that each light
-/// up alone.
-///
-/// Anything out of reach iterates no cells at all, so being a field over
-/// everything costs the same as being an effect on one thing.
+/// belongs to whatever the pointer is on. Everything within reach draws the
+/// part that falls inside itself, so the rows either side of the one under
+/// the cursor catch the edge of it and the window reads as one surface with a
+/// light on it. Anything out of reach iterates nothing at all, so this costs
+/// the same as an effect on one thing.
 pub(super) fn glow(bounds: Bounds<Pixels>, at: Point<Pixels>, ink: Hsla, window: &mut Window) {
-    const CELL: f32 = 6.;
-    const REACH: f32 = 132.;
-    /// Few enough that the steps are visible, which is the whole point.
-    const STEPS: f32 = 5.;
+    const CELL: f32 = 2.;
+    const REACH: f32 = 96.;
+    /// The most specks any one thing will draw, so a tall panel under the
+    /// cursor cannot cost more than a row does.
+    const MOST: usize = 1_600;
 
     let wide = f32::from(bounds.size.width);
     let tall = f32::from(bounds.size.height);
@@ -318,39 +315,51 @@ pub(super) fn glow(bounds: Bounds<Pixels>, at: Point<Pixels>, ink: Hsla, window:
         return;
     }
     let (cursor_x, cursor_y) = (f32::from(at.x), f32::from(at.y));
-    let left = f32::from(bounds.origin.x);
-    let top = f32::from(bounds.origin.y);
+    let (left, top) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
 
-    // Only the cells the glow could reach, snapped to the same grid the whole
-    // window is on so the light does not crawl as the cursor moves.
-    let first_column = (((cursor_x - REACH - left) / CELL).floor()).clamp(0., wide / CELL) as usize;
-    let last_column = (((cursor_x + REACH - left) / CELL).ceil()).clamp(0., wide / CELL) as usize;
-    let first_row = (((cursor_y - REACH - top) / CELL).floor()).clamp(0., tall / CELL) as usize;
-    let last_row = (((cursor_y + REACH - top) / CELL).ceil()).clamp(0., tall / CELL) as usize;
+    // Only the cells the light could reach, and only the part of those that
+    // lies inside this element.
+    let columns = wide / CELL;
+    let rows = tall / CELL;
+    let first_column = ((cursor_x - REACH - left) / CELL)
+        .floor()
+        .clamp(0., columns) as usize;
+    let last_column = ((cursor_x + REACH - left) / CELL).ceil().clamp(0., columns) as usize;
+    let first_row = ((cursor_y - REACH - top) / CELL).floor().clamp(0., rows) as usize;
+    let last_row = ((cursor_y + REACH - top) / CELL).ceil().clamp(0., rows) as usize;
 
+    let mut lit = 0usize;
     for row in first_row..last_row {
         for column in first_column..last_column {
             let x = left + column as f32 * CELL;
             let y = top + row as f32 * CELL;
-            // Measured from the middle of the cell, or the light sits a half
-            // cell up and to the left of the pointer.
+            // From the middle of the cell, or the light sits half a cell up
+            // and to the left of the pointer.
             let dx = x + CELL / 2. - cursor_x;
             let dy = y + CELL / 2. - cursor_y;
-            let away = (dx * dx + dy * dy).sqrt();
-            if away >= REACH {
+            let away = (dx * dx + dy * dy).sqrt() / REACH;
+            if away >= 1. {
                 continue;
             }
-            let strength = 1. - away / REACH;
-            // Squared, so the light gathers near the cursor instead of
-            // spreading evenly to the edge of its reach.
-            let stepped = ((strength * strength * STEPS).floor() + 1.) / STEPS;
+            // Squared, so the specks gather near the cursor and thin out
+            // long before the edge, where the field has nothing to end on.
+            let density = (1. - away) * (1. - away);
+            // The speck's own position decides whether it is lit, using the
+            // same noise the picture behind it is grained with.
+            if noise(column, row) > density {
+                continue;
+            }
             window.paint_quad(gpui::fill(
                 Bounds {
                     origin: gpui::point(px(x), px(y)),
                     size: gpui::size(px(CELL), px(CELL)),
                 },
-                faded(ink, ink.a * stepped),
+                ink,
             ));
+            lit += 1;
+            if lit >= MOST {
+                return;
+            }
         }
     }
 }

@@ -457,7 +457,7 @@ impl Skep {
     /// only when the cursor is within its own bounds, so a list of rows costs
     /// one comparison apiece.
     fn lit(&self) -> impl IntoElement {
-        let (at, ink) = (self.cursor, self.theme.accent);
+        let (at, ink) = (self.cursor, self.theme.glimmer);
         gpui::canvas(
             |_, _, _| (),
             move |bounds, _, window, _| paint::glow(bounds, at, ink, window),
