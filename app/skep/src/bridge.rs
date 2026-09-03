@@ -21,6 +21,8 @@ pub enum Command {
     AddSite(String, u16),
     /// Whether anything is actually listening behind each site.
     CheckSites,
+    /// Remember one of the app's own preferences.
+    Prefer(&'static str, bool),
     /// What the mail catcher has caught.
     Mail,
     /// One message, in full.
@@ -90,6 +92,10 @@ pub enum Update {
     SiteList(std::collections::BTreeMap<String, u16>),
     /// A site could not be written down, and why.
     SiteRefused(String),
+    /// The app's own preferences, as config.toml has them.
+    Preferences {
+        sites_in_browser: bool,
+    },
     /// Every hostname this machine serves, and anything stopping it.
     Sites {
         sites: std::collections::BTreeMap<String, u16>,
@@ -216,6 +222,16 @@ async fn start_sites(host: &comb::Host, reports: &UnboundedSender<Update>) {
         trusted,
         public_https: serving.public_https,
     });
+    tell_preferences(&paths, reports);
+}
+
+/// What config.toml says the app should do, sent the same way everything else
+/// the window shows arrives.
+fn tell_preferences(paths: &comb::Paths, reports: &UnboundedSender<Update>) {
+    let settings = comb_services::project::settings(paths).unwrap_or_default();
+    let _ = reports.send(Update::Preferences {
+        sites_in_browser: settings.app.sites_in_browser,
+    });
 }
 
 /// Asked of the engine rather than assumed, because a project is free to move
@@ -295,6 +311,18 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
                 }
                 Err(error) => Err(error),
             }
+        }
+        Command::Prefer(name, value) => {
+            let paths = engine.paths().clone();
+            match comb_services::project::ensure_settings(&paths)
+                .and_then(|path| comb_services::project::set_preference(&path, name, value))
+            {
+                Ok(()) => tell_preferences(&paths, reports),
+                Err(error) => {
+                    let _ = reports.send(Update::Failed(error.to_string()));
+                }
+            }
+            Ok(())
         }
         Command::AddSite(host, port) => {
             let paths = engine.paths().clone();

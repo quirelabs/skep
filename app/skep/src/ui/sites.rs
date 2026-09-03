@@ -2,11 +2,11 @@
 //! for adding one.
 
 use super::paint::{dither, snow};
-use super::rail::GLYPH;
 
 /// A tile keeps a page's proportions, because it is a picture of one.
 const TILE_WIDE: f32 = 260.;
 const TILE_TALL: f32 = 163.;
+const TILE_RADIUS: f32 = 8.;
 use super::*;
 
 /// A site being written. Kept as text rather than as a port number, because
@@ -28,40 +28,49 @@ impl Skep {
         let theme = &self.theme;
 
         let Some(draft) = &self.draft else {
+            // A cell of the same grid, the same size as the sites beside it:
+            // adding one is the same kind of thing as having one, and a wide
+            // bar underneath the tiles said it was something else.
             return div()
                 .id("add-site")
                 .flex()
-                .items_center()
+                .flex_col()
                 .gap_2()
-                .m_3()
-                .px_3()
-                .py_2p5()
-                .rounded_md()
+                .w(px(TILE_WIDE))
+                .flex_shrink_0()
                 .cursor_pointer()
-                .border_1()
-                .border_dashed()
-                .border_color(theme.border)
-                // The accent, because this is a thing you press. It is the one
-                // way into the screen and it was reading as another dim line
-                // in a list of dim lines.
-                .text_color(theme.accent)
-                .hover(|style| style.bg(theme.raised).border_color(theme.accent))
                 .on_click(cx.listener(|skep, _, window, cx| {
                     skep.draft = Some(Draft::default());
                     // Focus goes with it, or the keys would land nowhere.
                     skep.entry.clone().focus(window, cx);
                     cx.notify();
                 }))
-                .child(svg().path("icons/plus.svg").size(px(GLYPH)).flex_shrink_0())
-                .child(SharedString::from("Add a site"))
-                .child(div().flex_1())
                 .child(
                     div()
+                        .group("add")
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .w_full()
+                        .h(px(TILE_TALL))
+                        .rounded(px(TILE_RADIUS))
+                        .border_1()
+                        .border_dashed()
+                        .border_color(theme.border)
+                        .text_color(theme.accent)
+                        .hover(|style| style.bg(theme.raised).border_color(theme.accent))
+                        .child(svg().path("icons/plus.svg").size(px(32.)).flex_shrink_0())
+                        .child(div().label().child(SharedString::from("Add a site"))),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .truncate()
                         .caption()
-                        .text_color(theme.muted)
-                        .child(SharedString::from(
-                            "point a hostname at a port you already run something on",
-                        )),
+                        .text_color(theme.idle)
+                        .child(SharedString::from("a name for a port you already run")),
                 )
                 .into_any_element();
         };
@@ -431,7 +440,7 @@ impl Skep {
             .w_full()
             .h(px(TILE_TALL))
             .overflow_hidden()
-            .rounded(px(8.))
+            .rounded(px(TILE_RADIUS))
             .bg(self.theme.raised)
             .border_1()
             .border_color(if here {
@@ -442,7 +451,9 @@ impl Skep {
 
         match self.shots.get(host).cloned() {
             Some(picture) => {
-                let mut image = gpui::img(picture).size_full();
+                // Rounded here as well as on the frame: an image is its own
+                // layer and is not cut by the corners of what holds it.
+                let mut image = gpui::img(picture).size_full().rounded(px(TILE_RADIUS));
                 // Drained rather than dropped: the last thing it looked like,
                 // clearly in the past.
                 if gone {
@@ -479,6 +490,8 @@ impl Skep {
 
         div()
             .id(SharedString::from(format!("site-{host}")))
+            .relative()
+            .child(self.lit())
             .flex()
             .flex_col()
             .gap_2()
@@ -486,6 +499,10 @@ impl Skep {
             .flex_shrink_0()
             .cursor_pointer()
             .on_click(cx.listener(move |skep, _, _, cx| {
+                if skep.sites_in_browser {
+                    cx.open_url(&comb::site_url(&chosen, skep.site_port));
+                    return;
+                }
                 skep.site = Some(chosen.clone());
                 cx.notify();
             }))

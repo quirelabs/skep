@@ -310,6 +310,8 @@ impl Skep {
         let head = div()
             .id(("row", index))
             .group("row")
+            .relative()
+            .child(self.lit())
             .flex()
             .w_full()
             .min_w_0()

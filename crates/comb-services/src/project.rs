@@ -22,6 +22,20 @@ pub struct Project {
     /// start the app.
     #[serde(default)]
     pub sites: BTreeMap<String, u16>,
+    /// How the app behaves. Only ever read from config.toml: a preference is
+    /// the machine's, never a repository's, so a project file carrying one is
+    /// ignored rather than obeyed.
+    #[serde(default)]
+    pub app: App,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct App {
+    /// Whether clicking a site opens it in the browser rather than in the
+    /// pane beside the list.
+    #[serde(default)]
+    pub sites_in_browser: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -46,6 +60,26 @@ pub fn sites(settings: &Project, project: &Project) -> Result<comb::Sites> {
         all.insert(host.to_ascii_lowercase(), *port);
     }
     Ok(all)
+}
+
+/// Writes one of the app's own preferences, leaving the rest of the file as
+/// it was found. Only ever config.toml, for the reason on the field itself.
+pub fn set_preference(path: &Path, name: &str, value: bool) -> Result<()> {
+    let mut document = read(path)?;
+    if !document.contains_key("app") {
+        let mut fresh = toml_edit::Table::new();
+        fresh.set_implicit(false);
+        document.insert("app", toml_edit::Item::Table(fresh));
+    }
+    let table = document["app"]
+        .as_table_mut()
+        .ok_or_else(|| Error::Project {
+            path: path.display().to_string(),
+            message: "app is written inline; put it under an [app] heading to edit it here"
+                .to_string(),
+        })?;
+    table.insert(name, toml_edit::value(value));
+    write(path, &document)
 }
 
 /// Puts a site in a config file without disturbing the rest of it.
@@ -272,6 +306,39 @@ mod tests {
         let error = add_site(&path, "b.test", 2).unwrap_err().to_string();
         assert!(error.contains("inline"), "{error}");
         assert!(std::fs::read_to_string(&path).unwrap().contains("a.test"));
+    }
+
+    #[test]
+    fn a_preference_survives_a_round_trip_and_leaves_the_file_alone() {
+        let path = scratch("preference");
+        std::fs::write(
+            &path,
+            "# my machine\n[sites]\n\"a.test\" = 3000  # the app\n",
+        )
+        .unwrap();
+
+        set_preference(&path, "sites_in_browser", true).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# my machine"), "{text}");
+        assert!(
+            text.contains("# the app"),
+            "an inline comment is theirs too: {text}"
+        );
+        let loaded = load(&path).unwrap();
+        assert!(loaded.app.sites_in_browser);
+        assert_eq!(loaded.sites["a.test"], 3000);
+
+        set_preference(&path, "sites_in_browser", false).unwrap();
+        assert!(!load(&path).unwrap().app.sites_in_browser);
+    }
+
+    #[test]
+    fn a_project_file_cannot_set_a_machine_preference() {
+        // It parses, because the shape is the same file's shape. What stops a
+        // repository from deciding is that only settings() reads it.
+        let project = parse("[app]\nsites_in_browser = true\n").unwrap();
+        assert!(project.app.sites_in_browser);
     }
 
     #[test]

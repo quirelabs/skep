@@ -50,10 +50,97 @@ impl Skep {
                     .w_full()
                     .min_w_0()
                     .overflow_y_scroll()
+                    .child(self.behaviour(cx))
                     .child(self.certificates(cx))
                     .child(self.service_settings()),
             )
             .into_any_element()
+    }
+
+    /// What the app does, as opposed to what it holds. Written to
+    /// config.toml, so it is the machine's preference and outlives the window.
+    pub(super) fn behaviour(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .child(self.section(
+                "Behaviour",
+                "How this window acts. Kept in config.toml, beside everything else it remembers.",
+            ))
+            .child(self.choice(
+                "Open sites in the browser",
+                "A site opens in your own browser instead of the pane beside the list. The \
+                 pictures are taken either way.",
+                self.sites_in_browser,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// A preference, its explanation, and the switch that sets it.
+    pub(super) fn choice(
+        &self,
+        name: &'static str,
+        about: &'static str,
+        on: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = &self.theme;
+        div()
+            .id(SharedString::from(name))
+            .flex()
+            .items_start()
+            .justify_between()
+            .gap_4()
+            .w_full()
+            .px_6()
+            .py_3()
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.raised))
+            .on_click(cx.listener(move |skep, _, _, cx| {
+                // Said once, to the one place that writes it down. The window
+                // waits to be told what the file now says rather than
+                // assuming, so a failed write cannot leave a switch lying.
+                let _ = skep.commands.send(Command::Prefer("sites_in_browser", !on));
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().label().child(SharedString::from(name)))
+                    .child(
+                        div()
+                            .caption()
+                            .text_color(theme.muted)
+                            .child(SharedString::from(about)),
+                    ),
+            )
+            .child(
+                // A switch rather than a tick: it is a thing with two
+                // positions, and the knob moving across says which.
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_shrink_0()
+                    .w(px(34.))
+                    .h(px(20.))
+                    .mt_0p5()
+                    .px(px(2.))
+                    .rounded_full()
+                    .bg(if on { theme.accent } else { theme.raised })
+                    .border_1()
+                    .border_color(if on { theme.accent } else { theme.border })
+                    // The spacer leads when it is on, so the knob is where
+                    // the eye expects it: left for off, right for on.
+                    .children(on.then(|| div().flex_1()))
+                    .child(div().size(px(14.)).rounded_full().bg(theme.base))
+                    .children((!on).then(|| div().flex_1())),
+            )
     }
 
     pub(super) fn section(&self, title: &'static str, about: &'static str) -> impl IntoElement {

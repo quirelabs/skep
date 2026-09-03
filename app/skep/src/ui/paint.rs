@@ -222,3 +222,64 @@ fn grain(bounds: Bounds<Pixels>, ink: Hsla, window: &mut Window) {
         }
     }
 }
+
+/// A glow under the cursor, drawn in cells rather than smoothly.
+///
+/// The window's texture is a halftone, so its one moving light is made of the
+/// same thing: square cells on a grid, each a step of alpha rather than a
+/// continuous falloff. Quantised deliberately. A soft radial gradient is what
+/// every other app does and it would say nothing about this one.
+///
+/// Nothing is drawn when the cursor is elsewhere, so a list of rows costs one
+/// bounds check apiece.
+pub(super) fn glow(bounds: Bounds<Pixels>, at: Point<Pixels>, ink: Hsla, window: &mut Window) {
+    const CELL: f32 = 6.;
+    const REACH: f32 = 108.;
+    /// Few enough that the steps are visible, which is the whole point.
+    const STEPS: f32 = 5.;
+
+    if !bounds.contains(&at) {
+        return;
+    }
+    let wide = f32::from(bounds.size.width);
+    let tall = f32::from(bounds.size.height);
+    if wide <= 0. || tall <= 0. {
+        return;
+    }
+    let (cursor_x, cursor_y) = (f32::from(at.x), f32::from(at.y));
+    let left = f32::from(bounds.origin.x);
+    let top = f32::from(bounds.origin.y);
+
+    // Only the cells the glow could reach, snapped to the same grid the whole
+    // window is on so the light does not crawl as the cursor moves.
+    let first_column = (((cursor_x - REACH - left) / CELL).floor()).max(0.) as usize;
+    let last_column = (((cursor_x + REACH - left) / CELL).ceil()).clamp(0., wide / CELL) as usize;
+    let first_row = (((cursor_y - REACH - top) / CELL).floor()).max(0.) as usize;
+    let last_row = (((cursor_y + REACH - top) / CELL).ceil()).clamp(0., tall / CELL) as usize;
+
+    for row in first_row..last_row {
+        for column in first_column..last_column {
+            let x = left + column as f32 * CELL;
+            let y = top + row as f32 * CELL;
+            // Measured from the middle of the cell, or the light sits a half
+            // cell up and to the left of the pointer.
+            let dx = x + CELL / 2. - cursor_x;
+            let dy = y + CELL / 2. - cursor_y;
+            let away = (dx * dx + dy * dy).sqrt();
+            if away >= REACH {
+                continue;
+            }
+            let strength = 1. - away / REACH;
+            // Squared, so the light gathers near the cursor instead of
+            // spreading evenly to the edge of its reach.
+            let stepped = ((strength * strength * STEPS).floor() + 1.) / STEPS;
+            window.paint_quad(gpui::fill(
+                Bounds {
+                    origin: gpui::point(px(x), px(y)),
+                    size: gpui::size(px(CELL), px(CELL)),
+                },
+                faded(ink, ink.a * stepped),
+            ));
+        }
+    }
+}

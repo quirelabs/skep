@@ -56,7 +56,6 @@ impl Skep {
         }
 
         let (from, to, moves) = (self.rail_from, self.rail_to, self.rail_moves);
-        let edge = self.theme.border;
         div()
             .flex()
             .flex_col()
@@ -65,7 +64,6 @@ impl Skep {
             // Clipped, so the words hold their shape on the way out instead of
             // rewrapping into a narrower and narrower column.
             .overflow_hidden()
-            .border_r_1()
             .pb_3()
             .child(self.rail_top())
             .gap_0p5()
@@ -81,15 +79,7 @@ impl Skep {
             .with_animation(
                 ("rail", moves),
                 Animation::new(MOTION).with_easing(ease_in_out),
-                move |rail, delta| {
-                    let width = from + (to - from) * delta;
-                    // A line with nothing behind it is not an edge.
-                    rail.w(px(width)).border_color(if width < 1. {
-                        gpui::transparent_black()
-                    } else {
-                        edge
-                    })
-                },
+                move |rail, delta| rail.w(px(from + (to - from) * delta)),
             )
             .into_any_element()
     }
@@ -219,6 +209,8 @@ impl Skep {
 
         let mut item = div()
             .id(("rail", index))
+            .relative()
+            .child(self.lit())
             .flex()
             .items_center()
             .w(px(RAIL_WIDE - 16.))

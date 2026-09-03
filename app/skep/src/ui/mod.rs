@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use comb::{Applied, InstanceId, Label, LogLine, Mirror, ServiceState, ServiceStatus, Snapshot};
 use gpui::{
     Animation, AnimationExt, AnyElement, Bounds, ClipboardItem, Context, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, div, ease_in_out, pulsating_between,
-    px, svg,
+    InteractiveElement, IntoElement, MouseMoveEvent, ParentElement, Pixels, Point, Render,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div,
+    ease_in_out, point, pulsating_between, px, svg,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -34,11 +34,9 @@ mod sites;
 
 use mail::MailView;
 
-/// How much wash shows around the page. Enough to read as a margin, not so
-/// much that the window feels like it is wearing a frame.
-const GUTTER_INSET: f32 = 10.;
-/// Matched to the window's own corner, so the page looks cut from it.
-const PANEL_RADIUS: f32 = 10.;
+/// The curve where the page meets the rail. Only that edge is rounded, so the
+/// rail appears to wrap around the page rather than sit beside it.
+const PANEL_RADIUS: f32 = 12.;
 use paint::fingerprint;
 use rail::{RAIL_WIDE, TITLEBAR};
 use services::LOG_LIMIT;
@@ -151,6 +149,11 @@ pub struct Skep {
     /// can look again. The same deliberate act as opening the tab, rather than
     /// a timer nobody asked for.
     was_active: bool,
+    /// Where the pointer is, in window coordinates, so anything that draws can
+    /// ask whether the cursor is over it without every row tracking its own.
+    cursor: Point<Pixels>,
+    /// Whether a site opens in the browser rather than in the pane.
+    sites_in_browser: bool,
     authority_trusted: bool,
     /// The port sites are reachable on, 8443 until the helper forwards 443.
     site_port: u16,
@@ -241,6 +244,8 @@ impl Skep {
             shots: BTreeMap::new(),
             scout: Rc::new(RefCell::new(None)),
             was_active: true,
+            cursor: point(px(-1.), px(-1.)),
+            sites_in_browser: false,
             authority_trusted: false,
             site_port: comb::HTTPS_PORT,
             commands: bridge.commands,
@@ -363,6 +368,9 @@ impl Skep {
                     Some(draft) => draft.complaint = Some(why),
                     None => self.site_trouble.push(why),
                 },
+                Update::Preferences { sites_in_browser } => {
+                    self.sites_in_browser = sites_in_browser;
+                }
                 Update::Sites {
                     sites,
                     trouble,
@@ -436,6 +444,21 @@ impl Skep {
             );
             cx.notify();
         }
+    }
+
+    /// The light that follows the cursor. Added as the first child of
+    /// anything that should light up, so it lies under the content rather
+    /// than over it and nothing it touches becomes harder to read. It paints
+    /// only when the cursor is within its own bounds, so a list of rows costs
+    /// one comparison apiece.
+    fn lit(&self) -> impl IntoElement {
+        let (at, ink) = (self.cursor, self.theme.accent);
+        gpui::canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| paint::glow(bounds, at, ink, window),
+        )
+        .absolute()
+        .size_full()
     }
 
     fn remember(&mut self, line: LogLine) {
@@ -546,36 +569,40 @@ impl Render for Skep {
                 .absolute()
                 .size_full(),
             )
+            .on_mouse_move(cx.listener(|skep, event: &MouseMoveEvent, _, cx| {
+                // A cell's worth of movement before anything is redrawn: the
+                // light is made of cells, so finer than that repaints for
+                // nothing.
+                let moved = (event.position.x - skep.cursor.x).abs()
+                    + (event.position.y - skep.cursor.y).abs();
+                if moved >= px(3.) {
+                    skep.cursor = event.position;
+                    cx.notify();
+                }
+            }))
             .child(self.rail(cx))
             .child(
-                // The wash is a window, not a wallpaper: it reads in the
-                // margin around the page rather than behind its words, which
-                // is also what keeps every colour on a surface that has
-                // enough contrast to carry text.
+                // Full height and width, so a screen's title sits on the same
+                // line as the traffic lights rather than a margin below them.
+                // The panel is rounded only where it meets the rail, which is
+                // what makes the rail read as wrapping around it.
                 div()
                     .flex()
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .p(px(GUTTER_INSET))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .overflow_hidden()
-                            .rounded(px(PANEL_RADIUS))
-                            .bg(self.theme.surface)
-                            .border_1()
-                            .border_color(self.theme.border)
-                            .child(match self.page {
-                                Page::Services => self.content(cx),
-                                Page::Sites => self.sites_page(cx),
-                                Page::Mail => self.mail_page(cx),
-                                Page::Settings => self.settings(cx),
-                            }),
-                    ),
+                    .overflow_hidden()
+                    .rounded_tl(px(PANEL_RADIUS))
+                    .rounded_bl(px(PANEL_RADIUS))
+                    .bg(self.theme.surface)
+                    .border_l_1()
+                    .border_color(self.theme.border)
+                    .child(match self.page {
+                        Page::Services => self.content(cx),
+                        Page::Sites => self.sites_page(cx),
+                        Page::Mail => self.mail_page(cx),
+                        Page::Settings => self.settings(cx),
+                    }),
             )
     }
 }
