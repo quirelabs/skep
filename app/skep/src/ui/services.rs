@@ -7,6 +7,8 @@ use super::paint::{dither, faded};
 use super::*;
 
 pub(super) const LOG_HEIGHT: f32 = 248.;
+/// What the same panel is worth when there is nothing to show in it.
+const QUIET_HEIGHT: f32 = 108.;
 pub(super) const LOG_LIMIT: usize = 400;
 /// Wide enough for four digits, which is more lines than are kept.
 pub(super) const GUTTER: f32 = 34.;
@@ -339,8 +341,8 @@ impl Skep {
             .children(wash.map(|colour| {
                 div().absolute().inset_0().bg(gpui::linear_gradient(
                     90.,
-                    gpui::linear_color_stop(faded(colour, 0.10), 0.),
-                    gpui::linear_color_stop(faded(colour, 0.), 0.42),
+                    gpui::linear_color_stop(faded(colour, 0.06), 0.),
+                    gpui::linear_color_stop(faded(colour, 0.), 0.3),
                 ))
             }))
             .flex()
@@ -354,7 +356,7 @@ impl Skep {
                 MARGIN
             }))
             .pr(px(MARGIN))
-            .py_3()
+            .py(px(14.))
             .cursor_pointer()
             .hover(|style| style.bg(theme.raised))
             .on_click(cx.listener({
@@ -406,7 +408,7 @@ impl Skep {
             .border_b_1()
             .border_color(theme.border)
             .child(head)
-            .children(open.then(|| self.output(index, note(&status), cx)))
+            .children(open.then(|| self.output(index, &status, note(&status), cx)))
             .into_any_element()
     }
 
@@ -568,6 +570,7 @@ impl Skep {
     pub(super) fn output(
         &self,
         index: usize,
+        status: &ServiceStatus,
         note: Option<SharedString>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -578,6 +581,9 @@ impl Skep {
         let idle = theme.idle;
         let lines: Vec<_> = self.logs.iter().cloned().collect();
         let empty = lines.is_empty();
+        // Only as tall as it has something to hold. Reserving the full height
+        // for nothing was a large empty box with a word in the middle of it.
+        let tall = if empty { QUIET_HEIGHT } else { LOG_HEIGHT };
 
         let mut rendered = Vec::with_capacity(lines.len());
         for (seq, line) in lines {
@@ -660,42 +666,42 @@ impl Skep {
                     .child(self.copy_all(cx))
             }))
             .children(rendered)
-            .children(empty.then(|| self.waiting("no output yet")))
+            .children(empty.then(|| self.waiting(status)))
             .with_animation(
                 ("open", index),
                 Animation::new(MOTION).with_easing(ease_in_out),
-                |body, delta| body.h(px(LOG_HEIGHT * delta)),
+                move |body, delta| body.h(px(tall * delta)),
             )
             .into_any_element()
     }
 
-    /// The log with nothing in it yet.
+    /// The log with nothing in it yet, which is a sentence rather than a
+    /// place.
     ///
-    /// Not the empty-screen field: that is for a whole page with nothing on
-    /// it, and in a band this wide and this short it filled the space with
-    /// noise and read as damage. A recessed card with one quiet line in it
-    /// says the same thing and looks like somewhere output will arrive.
-    pub(super) fn waiting(&self, what: &'static str) -> impl IntoElement {
+    /// Two designs were wrong before this one. A field of grain filled the
+    /// band with noise and read as damage; a bordered card was a large empty
+    /// box with a word in the middle of it, which is worse, because a
+    /// container with nothing in it is a promise that something failed to
+    /// arrive. There is no container now. The sentence says why the log is
+    /// empty, which for a stopped service is not "no output yet" but that it
+    /// is not running.
+    pub(super) fn waiting(&self, status: &ServiceStatus) -> impl IntoElement {
+        let said = match &status.state {
+            ServiceState::Ready => "running quietly, nothing said yet",
+            ServiceState::Failed { .. } => "it stopped before it said anything",
+            _ if status.blocked.is_some() => "not running, its port is held by something else",
+            _ => "not running, so there is nothing to hear",
+        };
         div()
             .flex()
             .flex_1()
             .min_h(px(0.))
             .w_full()
-            .p(px(MARGIN / 2.))
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(CARD))
-                    .bg(self.theme.base)
-                    .border_1()
-                    .border_color(self.theme.border)
-                    .caption()
-                    .text_color(self.theme.idle)
-                    .child(SharedString::from(what)),
-            )
+            .items_center()
+            .justify_center()
+            .caption()
+            .text_color(self.theme.idle)
+            .child(SharedString::from(said))
     }
 
     /// Snapshots and branches, where stopping and restarting already are:

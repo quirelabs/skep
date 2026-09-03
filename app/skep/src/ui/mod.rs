@@ -544,6 +544,10 @@ impl Render for Skep {
                 }),
             // A site only shows itself when there is something behind it to
             // show. Otherwise the pane has its own answer.
+            // Nothing shows through a form laid over the window: a native
+            // view draws above everything gpui draws, so it has to be gone
+            // rather than merely behind.
+            Page::Sites if self.draft.is_some() => None,
             Page::Sites => self
                 .site
                 .as_ref()
@@ -619,7 +623,8 @@ impl Render for Skep {
                         Page::Sites => self.sites_page(cx),
                         Page::Mail => self.mail_page(cx),
                         Page::Settings => self.settings(cx),
-                    }),
+                    })
+                    .children(self.adding(cx)),
             )
     }
 }

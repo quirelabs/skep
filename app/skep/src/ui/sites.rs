@@ -1,7 +1,7 @@
-//! The Sites page: the list, the preview beside it, and the inline draft
-//! for adding one.
+//! The Sites page: the contact sheet, the preview beside it, and the form
+//! for adding a site.
 
-use super::paint::{dither, snow};
+use super::paint::{dither, faded, snow};
 
 /// A tile keeps a page's proportions, because it is a picture of one.
 const TILE_WIDE: f32 = 260.;
@@ -26,99 +26,104 @@ impl Skep {
     /// thing than the answer deserves, and this app does not have one.
     pub(super) fn new_site(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
+        // A cell of the same grid, the same size as the sites beside it:
+        // adding one is the same kind of thing as having one. The form it
+        // opens is not here; it opens over the window, because a card that
+        // grows inside a grid pushes every tile after it sideways while you
+        // type in it.
+        div()
+            .id("add-site")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .w(px(TILE_WIDE))
+            .flex_shrink_0()
+            .cursor_pointer()
+            .on_click(cx.listener(|skep, _, window, cx| {
+                skep.draft = Some(Draft::default());
+                // Focus goes with it, or the keys would land nowhere.
+                skep.entry.clone().focus(window, cx);
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .group("add")
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .w_full()
+                    .h(px(TILE_TALL))
+                    .rounded(px(TILE_RADIUS))
+                    .border_1()
+                    .border_dashed()
+                    .border_color(theme.border)
+                    .text_color(theme.accent)
+                    .hover(|style| style.bg(theme.raised).border_color(theme.accent))
+                    .child(
+                        svg()
+                            .path("icons/plus.svg")
+                            .size(px(32.))
+                            .flex_shrink_0()
+                            // Its own colour: a parent's text colour does
+                            // not reach inside an svg.
+                            .text_color(theme.muted),
+                    ),
+            )
+            // The same two lines every other tile carries, so the grid
+            // reads across as well as down: a name where a name goes, and
+            // what it is for where a state goes.
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .w_full()
+                    .min_w_0()
+                    .child(div().size(px(6.)).rounded_full().flex_shrink_0())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .label()
+                            .child(SharedString::from("Add a site")),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .truncate()
+                    .caption()
+                    .text_color(theme.idle)
+                    .child(SharedString::from("a name for a port you already run")),
+            )
+            .into_any_element()
+    }
 
-        let Some(draft) = &self.draft else {
-            // A cell of the same grid, the same size as the sites beside it:
-            // adding one is the same kind of thing as having one, and a wide
-            // bar underneath the tiles said it was something else.
-            return div()
-                .id("add-site")
-                .flex()
-                .flex_col()
-                .gap_2()
-                .w(px(TILE_WIDE))
-                .flex_shrink_0()
-                .cursor_pointer()
-                .on_click(cx.listener(|skep, _, window, cx| {
-                    skep.draft = Some(Draft::default());
-                    // Focus goes with it, or the keys would land nowhere.
-                    skep.entry.clone().focus(window, cx);
-                    cx.notify();
-                }))
-                .child(
-                    div()
-                        .group("add")
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap_2()
-                        .w_full()
-                        .h(px(TILE_TALL))
-                        .rounded(px(TILE_RADIUS))
-                        .border_1()
-                        .border_dashed()
-                        .border_color(theme.border)
-                        .text_color(theme.accent)
-                        .hover(|style| style.bg(theme.raised).border_color(theme.accent))
-                        .child(
-                            svg()
-                                .path("icons/plus.svg")
-                                .size(px(32.))
-                                .flex_shrink_0()
-                                // Its own colour: a parent's text colour does
-                                // not reach inside an svg.
-                                .text_color(theme.muted),
-                        ),
-                )
-                // The same two lines every other tile carries, so the grid
-                // reads across as well as down: a name where a name goes, and
-                // what it is for where a state goes.
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .w_full()
-                        .min_w_0()
-                        .child(div().size(px(6.)).rounded_full().flex_shrink_0())
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .label()
-                                .child(SharedString::from("Add a site")),
-                        ),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .truncate()
-                        .caption()
-                        .text_color(theme.idle)
-                        .child(SharedString::from("a name for a port you already run")),
-                )
-                .into_any_element();
-        };
+    /// The form for a new site, over the window rather than in it.
+    ///
+    /// This is the one modal in the app. The rule against them holds for
+    /// anything you might want to keep looking at the list while doing, and
+    /// this is the opposite: naming a site is a sentence with two blanks, and
+    /// it is done or abandoned in seconds.
+    pub(super) fn adding(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let draft = self.draft.as_ref()?;
+        let theme = &self.theme;
 
-        // Two named fields in the tile's own place, one under the other, so
-        // the grid still reads across and the thing being made is the size
-        // and shape of the thing it will become. A caret marks whichever
-        // field is taking the keys, so there is never a question about where
-        // typing goes.
-        let field = |name: &'static str, text: &str, here: bool, hint: &'static str| {
+        let field = |name: &'static str, hint: &'static str, text: &str, here: bool| {
             let empty = text.is_empty();
             div()
                 .flex()
                 .flex_col()
-                .gap_1()
+                .gap_1p5()
                 .w_full()
                 .min_w_0()
                 .child(
                     div()
                         .caption()
-                        .text_color(if here { theme.text } else { theme.idle })
+                        .text_color(theme.muted)
                         .child(SharedString::from(name)),
                 )
                 .child(
@@ -126,13 +131,13 @@ impl Skep {
                         .w_full()
                         .min_w_0()
                         .truncate()
-                        .px_2()
-                        .py_1()
+                        .px_3()
+                        .py_2()
                         .rounded(px(CHIP))
                         .bg(theme.base)
                         .border_1()
                         .border_color(if here { theme.accent } else { theme.border })
-                        .label()
+                        .body()
                         .font_family(MONO)
                         .text_color(if empty && !here {
                             theme.idle
@@ -149,77 +154,145 @@ impl Skep {
                 )
         };
 
-        let said: SharedString = match &draft.complaint {
-            Some(complaint) => complaint.clone().into(),
-            None if draft.host.is_empty() => "a name ending in .test resolves on its own".into(),
-            None => "return to add, tab to move, escape to give up".into(),
-        };
-
-        div()
-            .id("new-site")
-            .track_focus(&self.entry)
-            .flex()
-            .flex_col()
-            .gap_2()
-            .w(px(TILE_WIDE))
-            .flex_shrink_0()
-            .on_key_down(cx.listener(Self::typing))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .gap_3()
-                    .w_full()
-                    .h(px(TILE_TALL))
-                    .p(px(MARGIN / 2.))
-                    .rounded(px(TILE_RADIUS))
-                    .bg(theme.raised)
-                    .border_1()
-                    .border_color(theme.accent)
-                    .child(field("Hostname", &draft.host, !draft.on_port, "myapp.test"))
-                    .child(field("Port", &draft.port, draft.on_port, "3000")),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .w_full()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .size(px(6.))
-                            .rounded_full()
-                            .flex_shrink_0()
-                            .bg(theme.accent),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .label()
-                            .child(SharedString::from("New site")),
-                    ),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .truncate()
-                    .caption()
-                    .text_color(if draft.complaint.is_some() {
-                        theme.failed
-                    } else {
-                        theme.idle
-                    })
-                    .child(said),
-            )
-            .into_any_element()
+        Some(
+            div()
+                .id("adding")
+                .track_focus(&self.entry)
+                .on_key_down(cx.listener(Self::typing))
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                // The window behind is pushed back rather than hidden, so it
+                // is plain that the list is still there and still yours.
+                .bg(faded(theme.base, 0.72))
+                .on_click(cx.listener(|skep, _, _, cx| {
+                    skep.draft = None;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .id("adding-card")
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .w(px(380.))
+                        .p(px(MARGIN))
+                        .rounded(px(PANEL_RADIUS))
+                        .bg(theme.raised)
+                        .border_1()
+                        .border_color(theme.border)
+                        // Clicks inside belong to the form, not to the
+                        // backdrop that closes it.
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(div().title().child(SharedString::from("Add a site")))
+                                .child(div().caption().text_color(theme.muted).child(
+                                    SharedString::from(
+                                        "A name for something you already run. Skep puts the \
+                                         name and a certificate in front of it; it does not \
+                                         start it.",
+                                    ),
+                                )),
+                        )
+                        .child(field("Hostname", "myapp.test", &draft.host, !draft.on_port))
+                        .child(field("Port", "3000", &draft.port, draft.on_port))
+                        .child(
+                            div()
+                                .caption()
+                                .text_color(if draft.complaint.is_some() {
+                                    theme.failed
+                                } else {
+                                    theme.idle
+                                })
+                                .child(SharedString::from(match &draft.complaint {
+                                    Some(complaint) => complaint.clone(),
+                                    None => "A name ending in .test resolves on its own. Tab \
+                                             moves between the fields."
+                                        .to_string(),
+                                })),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("cancel")
+                                        .px_3()
+                                        .py_1p5()
+                                        .rounded(px(CHIP))
+                                        .label()
+                                        .text_color(theme.muted)
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(theme.base))
+                                        .on_click(cx.listener(|skep, _, _, cx| {
+                                            skep.draft = None;
+                                            cx.notify();
+                                        }))
+                                        .child(SharedString::from("Cancel")),
+                                )
+                                .child(
+                                    div()
+                                        .id("add")
+                                        .px_3()
+                                        .py_1p5()
+                                        .rounded(px(CHIP))
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .label()
+                                        .text_color(theme.accent)
+                                        .cursor_pointer()
+                                        .hover(|style| style.border_color(theme.accent))
+                                        .on_click(cx.listener(|skep, _, _, cx| {
+                                            skep.submit_site();
+                                            cx.notify();
+                                        }))
+                                        .child(SharedString::from("Add site")),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Two short fields do not need an editor. What they need is for the keys
     /// to land where the caret is, and for the wrong ones not to.
+    /// Takes what has been typed, or says what is wrong with it. The form
+    /// stays until the file has the site, so a refusal has somewhere to be
+    /// said.
+    pub(super) fn submit_site(&mut self) {
+        let Some(draft) = self.draft.as_mut() else {
+            return;
+        };
+        draft.complaint = None;
+        let host = draft.host.trim().to_string();
+        let port: Option<u16> = draft.port.trim().parse().ok();
+        match (comb::valid_hostname(&host), port) {
+            (Ok(_), Some(port)) if port > 0 => {
+                let _ = self.commands.send(Command::AddSite(host, port));
+            }
+            (Err(_), _) => {
+                draft.complaint = Some(format!(
+                    "{host:?} is not a hostname a certificate can cover"
+                ))
+            }
+            (_, None) if draft.port.trim().is_empty() => {
+                draft.complaint =
+                    Some("a port is needed: the one your app already listens on".to_string())
+            }
+            (_, None) => draft.complaint = Some("that is not a port".to_string()),
+            _ => draft.complaint = Some("a port cannot be zero".to_string()),
+        }
+    }
+
     pub(super) fn typing(
         &mut self,
         event: &gpui::KeyDownEvent,
@@ -246,22 +319,9 @@ impl Skep {
                 }
             }
             "enter" => {
-                let host = draft.host.trim().to_string();
-                let port: Option<u16> = draft.port.trim().parse().ok();
-                match (comb::valid_hostname(&host), port) {
-                    // The row stays until the file has it, so a refusal has
-                    // somewhere to be said.
-                    (Ok(_), Some(port)) if port > 0 => {
-                        let _ = self.commands.send(Command::AddSite(host, port));
-                    }
-                    (Err(_), _) => {
-                        draft.complaint = Some(format!(
-                            "{host:?} is not a hostname a certificate can cover"
-                        ))
-                    }
-                    (_, None) => draft.complaint = Some("that is not a port".to_string()),
-                    _ => draft.complaint = Some("a port cannot be zero".to_string()),
-                }
+                self.submit_site();
+                cx.notify();
+                return;
             }
             _ => {
                 if let Some(typed) = &event.keystroke.key_char {
