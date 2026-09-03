@@ -33,6 +33,12 @@ mod settings;
 mod sites;
 
 use mail::MailView;
+
+/// How much wash shows around the page. Enough to read as a margin, not so
+/// much that the window feels like it is wearing a frame.
+const GUTTER_INSET: f32 = 10.;
+/// Matched to the window's own corner, so the page looks cut from it.
+const PANEL_RADIUS: f32 = 10.;
 use paint::fingerprint;
 use rail::{RAIL_WIDE, TITLEBAR};
 use services::LOG_LIMIT;
@@ -467,18 +473,51 @@ impl Render for Skep {
             }
         }
 
+        let theme = self.theme.clone();
         div()
+            .relative()
             .flex()
             .size_full()
-            .bg(self.theme.base)
             .text_color(self.theme.text)
             .body()
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _| paint::backdrop(bounds, &theme, window),
+                )
+                .absolute()
+                .size_full(),
+            )
             .child(self.rail(cx))
-            .child(match self.page {
-                Page::Services => self.content(cx),
-                Page::Sites => self.sites_page(cx),
-                Page::Mail => self.mail_page(cx),
-                Page::Settings => self.settings(cx),
-            })
+            .child(
+                // The wash is a window, not a wallpaper: it reads in the
+                // margin around the page rather than behind its words, which
+                // is also what keeps every colour on a surface that has
+                // enough contrast to carry text.
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .p(px(GUTTER_INSET))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .overflow_hidden()
+                            .rounded(px(PANEL_RADIUS))
+                            .bg(self.theme.surface)
+                            .border_1()
+                            .border_color(self.theme.border)
+                            .child(match self.page {
+                                Page::Services => self.content(cx),
+                                Page::Sites => self.sites_page(cx),
+                                Page::Mail => self.mail_page(cx),
+                                Page::Settings => self.settings(cx),
+                            }),
+                    ),
+            )
     }
 }

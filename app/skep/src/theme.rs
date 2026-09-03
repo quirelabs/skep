@@ -8,10 +8,24 @@
 //! variant bolted on. Every token exists in both, and the accent is a different
 //! orange in each because the same one cannot carry text contrast on paper and
 //! on near black.
+//!
+//! The window is not a flat colour. Two washes bloom out of opposite corners,
+//! warm from the top left and cool from the bottom right, and everything else
+//! is laid over them on surfaces that let a little of it through. The warm one
+//! is the app's own colour rather than a decoration: a skep is a straw beehive
+//! and the engine in it is called comb.
 
 use comb::ServiceState;
 use gpui::{FontWeight, Hsla, Styled, WindowAppearance, px, rgb};
 
+/// A colour with an alpha, written the way the rest of the palette is.
+fn alpha(hex: u32, alpha: f32) -> Hsla {
+    let mut colour: Hsla = rgb(hex).into();
+    colour.a = alpha;
+    colour
+}
+
+#[derive(Clone)]
 pub struct Theme {
     pub base: Hsla,
     pub raised: Hsla,
@@ -23,6 +37,15 @@ pub struct Theme {
     pub running: Hsla,
     pub failed: Hsla,
     pub idle: Hsla,
+    /// The two corner washes, warm first.
+    pub wash: (Hsla, Hsla),
+    /// What panels and rows are made of: the raised colour with the wash
+    /// showing through, so a surface belongs to the window it sits in.
+    pub surface: Hsla,
+    /// Quiet text that sits on the wash rather than on a surface. Stronger
+    /// than muted on purpose: over a colour that shifts across the window,
+    /// grey stops carrying, so this is the text colour held back instead.
+    pub chrome: Hsla,
 }
 
 impl Theme {
@@ -37,6 +60,9 @@ impl Theme {
             running: rgb(0x3fbf6f).into(),
             failed: rgb(0xe5484d).into(),
             idle: rgb(0x4d4d54).into(),
+            wash: (alpha(0xff7a2a, 0.16), alpha(0x4b5cff, 0.10)),
+            surface: alpha(0x17171a, 0.72),
+            chrome: alpha(0xf2f1ee, 0.70),
         }
     }
 
@@ -55,7 +81,19 @@ impl Theme {
             running: rgb(0x1a7f4b).into(),
             failed: rgb(0xc0272d).into(),
             idle: rgb(0xb5b5ba).into(),
+            // Stronger than the dark pair: a wash has to survive being laid
+            // over paper, where there is no darkness for it to glow against.
+            wash: (alpha(0xff9a3d, 0.20), alpha(0x6f86ff, 0.13)),
+            surface: alpha(0xffffff, 0.76),
+            // 0.70 rather than the dark side's, because the wash over paper
+            // leaves less headroom: this is 5.54 against the busiest corner.
+            chrome: alpha(0x1a1a1c, 0.70),
         }
+    }
+
+    /// The window's own colour, under the washes.
+    pub fn backdrop(&self) -> Hsla {
+        self.base
     }
 
     pub fn for_appearance(appearance: WindowAppearance) -> Self {

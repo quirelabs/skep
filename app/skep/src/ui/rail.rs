@@ -171,6 +171,32 @@ impl Skep {
             .into_any_element()
     }
 
+    /// The band every screen wears: the collapse control, the screen's name,
+    /// and whatever that screen has to say about itself on the right. One
+    /// function rather than four, so no screen can drift a pixel from the
+    /// others.
+    pub(super) fn page_header(
+        &self,
+        title: &'static str,
+        trailing: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .pl_4()
+            .pr_6()
+            .h(px(TITLEBAR))
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(self.theme.border)
+            .child(self.page_title(title, cx))
+            .children(trailing)
+            .into_any_element()
+    }
+
     pub(super) fn rail_item(
         &self,
         index: usize,
@@ -181,10 +207,12 @@ impl Skep {
     ) -> AnyElement {
         let built = page.is_some();
         let here = page == Some(self.page);
+        // On the wash rather than on a surface, so the quiet colour is the
+        // text colour held back rather than a grey.
         let colour = if here {
             self.theme.text
         } else if built {
-            self.theme.muted
+            self.theme.chrome
         } else {
             self.theme.idle
         };
@@ -206,7 +234,7 @@ impl Skep {
         // reserved for what you press and what is moving, and a whole row of
         // it would drown both.
         if here {
-            item = item.bg(self.theme.raised);
+            item = item.bg(self.theme.surface);
         }
 
         item = item.child(

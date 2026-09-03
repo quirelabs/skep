@@ -169,26 +169,20 @@ impl Skep {
 
     pub(super) fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let summary = self.mirror.summary();
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .pl_4()
-            .pr_6()
-            .h(px(TITLEBAR))
-            .flex_shrink_0()
-            .border_b_1()
-            .border_color(self.theme.border)
-            .child(self.page_title("Services", cx))
-            .child(
+        self.page_header(
+            "Services",
+            Some(
                 div()
                     .label()
                     .text_color(self.theme.muted)
                     .child(SharedString::from(format!(
                         "{} of {} running",
                         summary.running, summary.total
-                    ))),
-            )
+                    )))
+                    .into_any_element(),
+            ),
+            cx,
+        )
     }
 
     /// The only place anything speaks above a row: who holds the machine, and

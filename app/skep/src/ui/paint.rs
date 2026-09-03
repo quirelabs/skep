@@ -1,6 +1,7 @@
 //! Things drawn rather than laid out: the dither, the snow, and the marks.
 
 use super::*;
+use gpui::{linear_color_stop, linear_gradient};
 
 /// No signal. Cells kept or dropped by a hash of where they are and which
 /// frame it is, so the field is different every frame and never repeats a
@@ -143,4 +144,31 @@ pub(super) fn fingerprint(text: &str) -> u32 {
 
 pub(super) fn faded(color: Hsla, alpha: f32) -> Hsla {
     Hsla { a: alpha, ..color }
+}
+
+/// The window's own light: a warm bloom out of the top left and a cool one out
+/// of the bottom right, over the base colour.
+///
+/// Each wash fades to its own colour at zero alpha rather than to nothing,
+/// because fading to transparent black drags a grey through the middle of the
+/// blend. Interpolated in Oklab for the same reason: sRGB dips in the middle
+/// and the bloom develops a dull band across it. Nothing here moves. A slow
+/// wash behind a window somebody leaves open all day is a thing to notice
+/// twice and then resent.
+pub(super) fn backdrop(bounds: Bounds<Pixels>, theme: &Theme, window: &mut Window) {
+    window.paint_quad(gpui::fill(bounds, theme.backdrop()));
+    let (warm, cool) = theme.wash;
+    // 0 is up and the angle turns clockwise, so 135 runs to the bottom right
+    // and 315 comes back the other way.
+    for (colour, angle, reach) in [(warm, 135., 0.62), (cool, 315., 0.66)] {
+        window.paint_quad(gpui::fill(
+            bounds,
+            linear_gradient(
+                angle,
+                linear_color_stop(colour, 0.),
+                linear_color_stop(faded(colour, 0.), reach),
+            )
+            .color_space(gpui::ColorSpace::Oklab),
+        ));
+    }
 }
