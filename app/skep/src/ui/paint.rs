@@ -146,8 +146,9 @@ pub(super) fn faded(color: Hsla, alpha: f32) -> Hsla {
     Hsla { a: alpha, ..color }
 }
 
-/// The window's own light: a warm bloom out of the top left and a cool one out
-/// of the bottom right, over the base colour.
+/// The window's own light: a warm bloom up out of the bottom right, where the
+/// canvas is emptiest, and a cool one behind the rail so that side stays close
+/// to neutral. Then a grain over the whole of it.
 ///
 /// Each wash fades to its own colour at zero alpha rather than to nothing,
 /// because fading to transparent black drags a grey through the middle of the
@@ -158,9 +159,10 @@ pub(super) fn faded(color: Hsla, alpha: f32) -> Hsla {
 pub(super) fn backdrop(bounds: Bounds<Pixels>, theme: &Theme, window: &mut Window) {
     window.paint_quad(gpui::fill(bounds, theme.backdrop()));
     let (warm, cool) = theme.wash;
-    // 0 is up and the angle turns clockwise, so 135 runs to the bottom right
-    // and 315 comes back the other way.
-    for (colour, angle, reach) in [(warm, 135., 0.62), (cool, 315., 0.66)] {
+    // 0 is up and the angle turns clockwise, so the stop a gradient starts
+    // from sits at the corner the angle points away from: 315 begins at the
+    // bottom right, 135 at the top left.
+    for (colour, angle, reach) in [(warm, 315., 0.78), (cool, 135., 0.5)] {
         window.paint_quad(gpui::fill(
             bounds,
             linear_gradient(
@@ -170,5 +172,53 @@ pub(super) fn backdrop(bounds: Bounds<Pixels>, theme: &Theme, window: &mut Windo
             )
             .color_space(gpui::ColorSpace::Oklab),
         ));
+    }
+    grain(bounds, theme.grain, window);
+}
+
+/// The tooth of the paper. An even field of single pixels on an ordered
+/// matrix, faint enough to be felt rather than seen, which is what stops a
+/// gradient from reading as a gradient. Capped and coarsened the same way the
+/// empty-state dither is, so a large window costs no more than a small one.
+fn grain(bounds: Bounds<Pixels>, ink: Hsla, window: &mut Window) {
+    const STEP: f32 = 3.;
+    const MOST: usize = 9_000;
+    const MATRIX: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+
+    let wide = f32::from(bounds.size.width);
+    let tall = f32::from(bounds.size.height);
+    if wide <= 0. || tall <= 0. {
+        return;
+    }
+    let columns = (wide / STEP).floor().max(1.) as usize;
+    let rows = (tall / STEP).floor().max(1.) as usize;
+    let skip = (columns * rows).div_ceil(MOST).max(1);
+
+    let mut placed = 0usize;
+    for row in 0..rows {
+        for column in 0..columns {
+            if !(row * columns + column).is_multiple_of(skip) {
+                continue;
+            }
+            // Only the lighter half of the matrix, so the field is a tooth
+            // rather than a chequer.
+            if MATRIX[row % 4][column % 4] > 7 {
+                continue;
+            }
+            window.paint_quad(gpui::fill(
+                Bounds {
+                    origin: gpui::point(
+                        bounds.origin.x + px(column as f32 * STEP),
+                        bounds.origin.y + px(row as f32 * STEP),
+                    ),
+                    size: gpui::size(px(1.), px(1.)),
+                },
+                ink,
+            ));
+            placed += 1;
+            if placed >= MOST {
+                return;
+            }
+        }
     }
 }

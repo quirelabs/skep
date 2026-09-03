@@ -9,11 +9,16 @@
 //! orange in each because the same one cannot carry text contrast on paper and
 //! on near black.
 //!
-//! The window is not a flat colour. Two washes bloom out of opposite corners,
-//! warm from the top left and cool from the bottom right, and everything else
-//! is laid over them on surfaces that let a little of it through. The warm one
-//! is the app's own colour rather than a decoration: a skep is a straw beehive
-//! and the engine in it is called comb.
+//! The window is not a flat colour. A warm bloom comes up out of the bottom
+//! right, where the canvas is emptiest, with a cool one behind the rail so
+//! that side stays close to neutral, and a grain over the whole of it. The
+//! warm one is the app's own colour rather than a decoration: a skep is a
+//! straw beehive and the engine in it is called comb.
+//!
+//! All of it is faint. Light in a room, not a coloured pane over the window:
+//! the first attempt put the strongest wash under the rail, which is the one
+//! region with no panel over it, and the app wore a brown stain down its left
+//! side while the canvas beside it stayed flat.
 
 use comb::ServiceState;
 use gpui::{FontWeight, Hsla, Styled, WindowAppearance, px, rgb};
@@ -37,8 +42,10 @@ pub struct Theme {
     pub running: Hsla,
     pub failed: Hsla,
     pub idle: Hsla,
-    /// The two corner washes, warm first.
+    /// The two washes, warm first.
     pub wash: (Hsla, Hsla),
+    /// The grain laid over everything.
+    pub grain: Hsla,
     /// What panels and rows are made of: the raised colour with the wash
     /// showing through, so a surface belongs to the window it sits in.
     pub surface: Hsla,
@@ -60,9 +67,10 @@ impl Theme {
             running: rgb(0x3fbf6f).into(),
             failed: rgb(0xe5484d).into(),
             idle: rgb(0x4d4d54).into(),
-            wash: (alpha(0xff7a2a, 0.16), alpha(0x4b5cff, 0.10)),
-            surface: alpha(0x17171a, 0.72),
+            wash: (alpha(0xff7a2a, 0.07), alpha(0x4b5cff, 0.04)),
+            surface: alpha(0x17171a, 0.55),
             chrome: alpha(0xf2f1ee, 0.70),
+            grain: alpha(0xffffff, 0.022),
         }
     }
 
@@ -81,13 +89,17 @@ impl Theme {
             running: rgb(0x1a7f4b).into(),
             failed: rgb(0xc0272d).into(),
             idle: rgb(0xb5b5ba).into(),
-            // Stronger than the dark pair: a wash has to survive being laid
-            // over paper, where there is no darkness for it to glow against.
-            wash: (alpha(0xff9a3d, 0.20), alpha(0x6f86ff, 0.13)),
-            surface: alpha(0xffffff, 0.76),
+            // A little stronger than the dark pair: a wash has to survive
+            // being laid over paper, where there is no darkness to glow
+            // against.
+            wash: (alpha(0xff9a3d, 0.10), alpha(0x6f86ff, 0.06)),
+            surface: alpha(0xffffff, 0.62),
             // 0.70 rather than the dark side's, because the wash over paper
             // leaves less headroom: this is 5.54 against the busiest corner.
             chrome: alpha(0x1a1a1c, 0.70),
+            // Ink on paper rather than light on darkness, so the grain in the
+            // light appearance darkens where the dark one lifts.
+            grain: alpha(0x2a2118, 0.030),
         }
     }
 
