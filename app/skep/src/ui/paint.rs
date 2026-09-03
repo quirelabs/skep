@@ -291,22 +291,27 @@ fn bitmap(wide: usize, tall: usize, pixels: &[u8]) -> Vec<u8> {
 
 /// A glow under the cursor, drawn in cells rather than smoothly.
 ///
-/// The window's texture is a halftone, so its one moving light is made of the
-/// same thing: square cells on a grid, each a step of alpha rather than a
-/// continuous falloff. Quantised deliberately. A soft radial gradient is what
-/// every other app does and it would say nothing about this one.
+/// The window's texture is grain, so its one moving light is made of
+/// something with a grain of its own: square cells on a grid, each a step of
+/// alpha rather than a continuous falloff. Quantised deliberately. A soft
+/// radial gradient is what every other app does and it would say nothing
+/// about this one.
 ///
-/// Nothing is drawn when the cursor is elsewhere, so a list of rows costs one
-/// bounds check apiece.
+/// The light is one field over the whole window rather than an effect that
+/// belongs to whatever the pointer is on. Everything within reach of it draws
+/// the part that falls inside itself, so the row above and below the one
+/// under the cursor catch the edge of it and the window reads as one surface
+/// with a light on it rather than a list of separate things that each light
+/// up alone.
+///
+/// Anything out of reach iterates no cells at all, so being a field over
+/// everything costs the same as being an effect on one thing.
 pub(super) fn glow(bounds: Bounds<Pixels>, at: Point<Pixels>, ink: Hsla, window: &mut Window) {
     const CELL: f32 = 6.;
-    const REACH: f32 = 108.;
+    const REACH: f32 = 132.;
     /// Few enough that the steps are visible, which is the whole point.
     const STEPS: f32 = 5.;
 
-    if !bounds.contains(&at) {
-        return;
-    }
     let wide = f32::from(bounds.size.width);
     let tall = f32::from(bounds.size.height);
     if wide <= 0. || tall <= 0. {
@@ -318,9 +323,9 @@ pub(super) fn glow(bounds: Bounds<Pixels>, at: Point<Pixels>, ink: Hsla, window:
 
     // Only the cells the glow could reach, snapped to the same grid the whole
     // window is on so the light does not crawl as the cursor moves.
-    let first_column = (((cursor_x - REACH - left) / CELL).floor()).max(0.) as usize;
+    let first_column = (((cursor_x - REACH - left) / CELL).floor()).clamp(0., wide / CELL) as usize;
     let last_column = (((cursor_x + REACH - left) / CELL).ceil()).clamp(0., wide / CELL) as usize;
-    let first_row = (((cursor_y - REACH - top) / CELL).floor()).max(0.) as usize;
+    let first_row = (((cursor_y - REACH - top) / CELL).floor()).clamp(0., tall / CELL) as usize;
     let last_row = (((cursor_y + REACH - top) / CELL).ceil()).clamp(0., tall / CELL) as usize;
 
     for row in first_row..last_row {
