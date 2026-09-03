@@ -91,6 +91,8 @@ pub struct Skep {
     /// Numbered so a line keeps its identity as older ones fall off the end,
     /// which is what stops finished fades from replaying.
     logs: VecDeque<(u64, LogLine)>,
+    /// What has just happened, across every service rather than one.
+    happenings: VecDeque<services::Happening>,
     next_line: u64,
     /// What was just copied, and when, so the acknowledgement clears itself.
     copied: Option<(Copied, Instant)>,
@@ -209,6 +211,7 @@ impl Skep {
             problem: None,
             expanded: None,
             logs: VecDeque::new(),
+            happenings: VecDeque::new(),
             next_line: 0,
             copied: None,
             kept: Vec::new(),
@@ -266,6 +269,10 @@ impl Skep {
             match update {
                 Update::Overview(overview) => self.mirror.reset(*overview),
                 Update::Event(event) => {
+                    if let Some(happening) = services::Happening::of(&event) {
+                        self.happenings.push_front(happening);
+                        self.happenings.truncate(services::HAPPENINGS);
+                    }
                     // Falling behind is answered by asking, never by guessing.
                     if self.mirror.apply(&event) == Applied::Resync {
                         let _ = self.commands.send(Command::Resync);

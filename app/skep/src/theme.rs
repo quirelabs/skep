@@ -137,6 +137,15 @@ impl Theme {
 /// The sizes sit around 13px because that is what macOS uses for a control,
 /// and an app that ignores it looks like it came from somewhere else.
 pub trait Scale: Styled + Sized {
+    /// The one thing on a screen that is larger than everything else. Leading
+    /// tightens as size grows, which is the rule that still applies without
+    /// tracking to go with it.
+    fn display(self) -> Self {
+        self.text_size(px(26.))
+            .line_height(px(30.))
+            .font_weight(FontWeight::MEDIUM)
+    }
+
     /// Screen and section headings.
     fn title(self) -> Self {
         self.text_size(px(15.))

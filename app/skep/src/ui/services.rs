@@ -1,6 +1,8 @@
 //! The Services page: the list, the expanded row with its log, and the
 //! snapshots kept for it.
 
+use comb::EventKind;
+
 use super::paint::{dither, faded};
 use super::*;
 
@@ -11,22 +13,28 @@ pub(super) const GUTTER: f32 = 34.;
 
 /// What the row says it is doing. The row gets one line of it; the whole
 /// sentence, which usually contains the fix, is in the expansion.
-pub(super) fn line(status: &ServiceStatus) -> SharedString {
+/// What is worth saying beside a row, if anything is.
+///
+/// The dot already carries the state, so repeating it in words next to it
+/// says one thing twice and leaves five rows all reading "stopped". Only what
+/// the dot cannot say gets words: a phase, an announcement, a reason, or the
+/// fact that starting would fail.
+pub(super) fn line(status: &ServiceStatus) -> Option<SharedString> {
     if let Some(activity) = &status.activity {
-        return activity.clone().into();
+        return Some(activity.clone().into());
     }
     // What the service announced is the one thing to know about it while
     // it runs: for a tunnel, the public url.
     if let Some(notice) = &status.notice {
-        return notice.clone().into();
+        return Some(notice.clone().into());
     }
     match &status.state {
-        ServiceState::Ready => "running".into(),
-        ServiceState::Failed { reason } => reason.clone().into(),
-        ServiceState::Restarting { attempt } => format!("restarting, attempt {attempt}").into(),
-        // Worth saying before anyone clicks: this one cannot start.
-        _ if status.blocked.is_some() => "stopped, port in use".into(),
-        other => other.name().to_string().into(),
+        ServiceState::Failed { reason } => Some(reason.clone().into()),
+        ServiceState::Restarting { attempt } => {
+            Some(format!("restarting, attempt {attempt}").into())
+        }
+        _ if status.blocked.is_some() => Some("port in use".into()),
+        _ => None,
     }
 }
 
@@ -38,14 +46,81 @@ pub(super) fn note(status: &ServiceStatus) -> Option<SharedString> {
     }
 }
 
-pub(super) fn ports(status: &ServiceStatus) -> SharedString {
+/// Every port a service listens on, each its own tag. A comma separated run
+/// of numbers reads as one long number; a tag apiece reads as a count you can
+/// take in without counting.
+pub(super) fn ports(status: &ServiceStatus) -> Vec<SharedString> {
     status
         .ports
         .values()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
-        .into()
+        .map(|port| port.to_string().into())
+        .collect()
+}
+
+/// How many of the most recent happenings are kept. Enough to answer "what
+/// just went wrong" without becoming a log nobody reads.
+pub(super) const HAPPENINGS: usize = 40;
+
+/// The list gives way to the feed rather than the other way round: past this
+/// the services scroll among themselves, which keeps what just happened on
+/// screen however many services are registered.
+const LIST_CEILING: f32 = 320.;
+
+/// Something worth saying happened to a service. Built from the same event
+/// stream the replica is built from, so the feed cannot disagree with the
+/// list above it.
+pub(super) struct Happening {
+    pub(super) at: comb::Timestamp,
+    pub(super) who: SharedString,
+    pub(super) said: SharedString,
+}
+
+impl Happening {
+    /// Most events are machinery. Only the ones a person would want to know
+    /// about become a line, which is what keeps a download's progress from
+    /// burying a crash.
+    pub(super) fn of(event: &comb::Event) -> Option<Self> {
+        let who = event.instance.as_ref()?;
+        let said: SharedString = match &event.kind {
+            EventKind::StateChanged { to, .. } => match to {
+                ServiceState::Ready => "ready".into(),
+                ServiceState::Stopped => "stopped".into(),
+                ServiceState::Starting => "starting".into(),
+                ServiceState::Failed { reason } => format!("failed: {reason}").into(),
+                _ => return None,
+            },
+            EventKind::PortConflict { port, process, .. } => match process {
+                Some(process) => format!("port {port} held by {process}").into(),
+                None => format!("port {port} is in use").into(),
+            },
+            EventKind::RestartScheduled { attempt, .. } => {
+                format!("restarting, attempt {attempt}").into()
+            }
+            EventKind::Notice { text: Some(text) } => format!("on {text}").into(),
+            _ => return None,
+        };
+        Some(Self {
+            at: event.at,
+            who: who.service.as_str().to_string().into(),
+            said,
+        })
+    }
+}
+
+/// How long ago, in the shortest true form. Relative rather than a clock
+/// time, because a feed of things that just happened is read as distances
+/// from now, and because the machine's offset from utc is not something this
+/// app has any business working out.
+pub(super) fn ago(at: comb::Timestamp) -> SharedString {
+    let now = comb::Timestamp::now().as_millis();
+    let seconds = now.saturating_sub(at.as_millis()) / 1_000;
+    match seconds {
+        0..=4 => "just now".into(),
+        5..=59 => format!("{seconds}s ago").into(),
+        60..=3599 => format!("{}m ago", seconds / 60).into(),
+        3600..=86_399 => format!("{}h ago", seconds / 3600).into(),
+        _ => format!("{}d ago", seconds / 86_400).into(),
+    }
 }
 
 impl Skep {
@@ -120,17 +195,20 @@ impl Skep {
             .h_full()
             .child(self.header(cx))
             .children(self.banner())
+            .child(self.hero())
             .child(
                 div()
                     .id("services")
                     .flex()
                     .flex_col()
-                    .flex_1()
+                    .flex_shrink_0()
                     .min_w_0()
+                    .max_h(px(LIST_CEILING))
                     .overflow_y_scroll()
                     .children(rows)
                     .children(empty.then(|| self.nothing("no services yet"))),
             )
+            .child(self.stream())
             .into_any_element()
     }
 
@@ -231,6 +309,7 @@ impl Skep {
 
         let head = div()
             .id(("row", index))
+            .group("row")
             .flex()
             .w_full()
             .min_w_0()
@@ -249,12 +328,12 @@ impl Skep {
             .child(self.instance(&status))
             .child(
                 div()
-                    .w(px(104.))
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .w(px(132.))
                     .flex_shrink_0()
-                    .label()
-                    .font_family(MONO)
-                    .text_color(theme.muted)
-                    .child(ports(&status)),
+                    .children(ports(&status).into_iter().map(|port| self.tag(port))),
             )
             .child(
                 // Truncated on purpose: a port conflict's remedy is a whole
@@ -265,9 +344,22 @@ impl Skep {
                     .truncate()
                     .label()
                     .text_color(if failed { theme.failed } else { theme.muted })
-                    .child(line(&status)),
+                    .children(line(&status)),
             )
-            .child(self.actions(&status, id));
+            .child(
+                // Five rows of orange buttons is five things shouting. The
+                // action belongs to the row you are pointing at, and to the
+                // row you have opened, which is the one you are working on.
+                {
+                    let mut holder = div().flex_shrink_0();
+                    if !open {
+                        holder = holder
+                            .opacity(0.)
+                            .group_hover("row", |style| style.opacity(1.));
+                    }
+                    holder.child(self.actions(&status, id))
+                },
+            );
 
         div()
             .flex()
@@ -279,6 +371,134 @@ impl Skep {
             .child(head)
             .children(open.then(|| self.output(index, note(&status), cx)))
             .into_any_element()
+    }
+
+    /// A number that is a thing rather than a word: mono, boxed, quiet.
+    pub(super) fn tag(&self, text: SharedString) -> impl IntoElement {
+        div()
+            .flex_shrink_0()
+            .px_1p5()
+            .rounded_sm()
+            .bg(self.theme.raised)
+            .border_1()
+            .border_color(self.theme.border)
+            .caption()
+            .font_family(MONO)
+            .text_color(self.theme.muted)
+            .child(text)
+    }
+
+    /// The page's face. One thing larger than everything else, so a screen
+    /// reads as a place rather than as a table with a title over it.
+    pub(super) fn hero(&self) -> impl IntoElement {
+        let summary = self.mirror.summary();
+        let blocked = self
+            .mirror
+            .services()
+            .filter(|status| status.blocked.is_some())
+            .count();
+        let said = match (summary.total, summary.failed, blocked) {
+            (0, _, _) => "nothing registered yet".to_string(),
+            (_, 0, 0) => "everything is where you left it".to_string(),
+            (_, failed, 0) => format!("{failed} failed"),
+            (_, 0, 1) => "one port is held by something else".to_string(),
+            (_, 0, held) => format!("{held} ports are held by something else"),
+            (_, failed, held) => format!("{failed} failed, {held} ports held elsewhere"),
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_4()
+            .px_6()
+            .pt_6()
+            .pb_5()
+            .child(
+                svg()
+                    .path("icons/hexagon.svg")
+                    .size(px(32.))
+                    .flex_shrink_0()
+                    .text_color(if summary.running > 0 {
+                        self.theme.accent
+                    } else {
+                        self.theme.idle
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .min_w_0()
+                    .child(div().display().child(SharedString::from(format!(
+                        "{} of {} running",
+                        summary.running, summary.total
+                    ))))
+                    .child(
+                        div()
+                            .label()
+                            .text_color(self.theme.muted)
+                            .child(SharedString::from(said)),
+                    ),
+            )
+    }
+
+    /// What just happened, across everything rather than one service. The
+    /// window is worth leaving open because of this: a crash at 20:51 is
+    /// still on screen at 21:10.
+    pub(super) fn stream(&self) -> impl IntoElement {
+        let lines = self.happenings.iter().map(|happening| {
+            div()
+                .flex()
+                .items_baseline()
+                .gap_3()
+                .px_6()
+                .py_1p5()
+                .child(
+                    div()
+                        .w(px(64.))
+                        .flex_shrink_0()
+                        .caption()
+                        .text_color(self.theme.idle)
+                        .child(ago(happening.at)),
+                )
+                .child(
+                    div()
+                        .w(px(96.))
+                        .flex_shrink_0()
+                        .truncate()
+                        .label()
+                        .text_color(self.theme.muted)
+                        .child(happening.who.clone()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .truncate()
+                        .label()
+                        .text_color(self.theme.text)
+                        .child(happening.said.clone()),
+                )
+        });
+
+        div()
+            .id("stream")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .border_t_1()
+            .border_color(self.theme.border)
+            .child(
+                div()
+                    .px_6()
+                    .pt_4()
+                    .pb_2()
+                    .caption()
+                    .text_color(self.theme.idle)
+                    .child(SharedString::from("Lately")),
+            )
+            .children(lines)
     }
 
     /// Status colour lives here and nowhere else. Orange means motion: while a
