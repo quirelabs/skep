@@ -10,17 +10,25 @@
 //! unguarded message fetches its tracking pixel the moment it opens, which
 //! tells whoever sent it that you read it. The guard is in comb_services::mail.
 
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::ptr::NonNull;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use block2::Block;
 use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSColor, NSView, NSWorkspace};
-use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::{
+    NSBitmapImageFileType, NSBitmapImageRep, NSColor, NSImage, NSView, NSWorkspace,
+};
+use objc2_foundation::{
+    NSDictionary, NSError, NSObject, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest,
+};
 use objc2_web_kit::{
-    WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
+    WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
     WKWebViewConfiguration,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -229,5 +237,211 @@ impl Preview {
 impl Drop for Preview {
     fn drop(&mut self) {
         self.view.removeFromSuperview();
+    }
+}
+
+/// Off-screen webviews that photograph a site so the list can show what is
+/// behind each name.
+///
+/// A live webview cannot be tiled: it draws above everything gpui draws and
+/// obeys none of its layout, so a grid of them could not scroll or clip. A
+/// photograph is an ordinary image and behaves. One scout loads each site in
+/// turn, off to the side of the window where nothing can see it, and hands
+/// back a png.
+pub struct Scout {
+    view: Retained<WKWebView>,
+    _delegate: Retained<Loading>,
+    arrived: Rc<Cell<bool>>,
+    /// Where the shutter leaves its picture. Written by appkit, on this
+    /// thread, some turns of the run loop after it was asked.
+    developed: Rc<RefCell<Option<Vec<u8>>>>,
+    queue: VecDeque<(String, String)>,
+    doing: Option<Job>,
+}
+
+struct Job {
+    host: String,
+    since: Instant,
+    loaded: bool,
+    shooting: bool,
+}
+
+/// A page keeps painting after it says it has finished, so the shutter waits.
+const SETTLE: Duration = Duration::from_millis(900);
+/// And gives up rather than holding the queue for a site that never answers.
+const PATIENCE: Duration = Duration::from_secs(12);
+/// Large enough that text in the photograph survives being shown small.
+const SHOT: (f64, f64) = (1000., 625.);
+
+impl Scout {
+    pub fn attach(window: &Window) -> Option<Self> {
+        let marker = MainThreadMarker::new()?;
+        let handle = HasWindowHandle::window_handle(window).ok()?;
+        let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+            return None;
+        };
+        // Safety: the window owns this view and outlives anything added to it.
+        let parent: Retained<NSView> = unsafe {
+            let pointer: NonNull<NSView> = appkit.ns_view.cast();
+            Retained::retain(pointer.as_ptr())?
+        };
+
+        let configuration = unsafe { WKWebViewConfiguration::new(marker) };
+        let view = unsafe {
+            WKWebView::initWithFrame_configuration(
+                WKWebView::alloc(marker),
+                // Beside the window rather than hidden: a hidden view is not
+                // asked to draw, and photographs of it come back empty.
+                NSRect::new(
+                    NSPoint::new(-(SHOT.0 + 200.), 0.),
+                    NSSize::new(SHOT.0, SHOT.1),
+                ),
+                &configuration,
+            )
+        };
+        let arrived = Rc::new(Cell::new(false));
+        let delegate = Loading::new(marker, arrived.clone());
+        unsafe { view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
+        parent.addSubview(&view);
+
+        Some(Self {
+            view,
+            _delegate: delegate,
+            arrived,
+            developed: Rc::new(RefCell::new(None)),
+            queue: VecDeque::new(),
+            doing: None,
+        })
+    }
+
+    /// Asks for photographs of these, in this order. Anything already queued
+    /// or in hand is left alone.
+    pub fn want(&mut self, wanted: Vec<(String, String)>) {
+        for (host, url) in wanted {
+            let queued = self.queue.iter().any(|(known, _)| known == &host);
+            let doing = self.doing.as_ref().is_some_and(|job| job.host == host);
+            if !queued && !doing {
+                self.queue.push_back((host, url));
+            }
+        }
+    }
+
+    /// Moves the queue along by one beat. Called from the same tick everything
+    /// else in the window is driven by, which is what keeps the waiting in
+    /// rust rather than in a timer somewhere inside appkit.
+    pub fn tick(&mut self) -> Option<(String, Vec<u8>)> {
+        match &mut self.doing {
+            None => {
+                let (host, url) = self.queue.pop_front()?;
+                let target = NSURL::URLWithString(&NSString::from_str(&url))?;
+                self.arrived.set(false);
+                unsafe {
+                    self.view
+                        .loadRequest(&NSURLRequest::requestWithURL(&target))
+                };
+                self.doing = Some(Job {
+                    host,
+                    since: Instant::now(),
+                    loaded: false,
+                    shooting: false,
+                });
+                None
+            }
+            Some(job) => {
+                if self.arrived.get() && !job.loaded {
+                    job.loaded = true;
+                    job.since = Instant::now();
+                }
+                let waited = job.since.elapsed();
+
+                if job.shooting {
+                    // The shutter answers some turns of the run loop later,
+                    // so this is where the picture is collected.
+                    if let Some(png) = self.developed.borrow_mut().take() {
+                        let host = job.host.clone();
+                        self.doing = None;
+                        return Some((host, png));
+                    }
+                    if waited > PATIENCE {
+                        self.doing = None;
+                    }
+                    return None;
+                }
+                if !job.loaded {
+                    // A site that never answers must not hold the queue.
+                    if waited > PATIENCE {
+                        self.doing = None;
+                    }
+                    return None;
+                }
+                if waited < SETTLE {
+                    return None;
+                }
+                job.shooting = true;
+                job.since = Instant::now();
+                self.shutter();
+                None
+            }
+        }
+    }
+
+    /// Presses the shutter. The answer does not come back here: appkit calls
+    /// the block later, on this thread, and the picture is collected by a
+    /// later tick. Reading it straight after asking was the first version of
+    /// this, and it returned nothing every time.
+    fn shutter(&self) {
+        let developed = self.developed.clone();
+        let handler = block2::RcBlock::new(move |image: *mut NSImage, _: *mut NSError| {
+            if image.is_null() {
+                return;
+            }
+            // Safety: the block is handed a borrowed image, so it is retained
+            // for as long as it is read.
+            let Some(image) = (unsafe { Retained::retain(image) }) else {
+                return;
+            };
+            *developed.borrow_mut() = png(&image);
+        });
+        unsafe {
+            self.view
+                .takeSnapshotWithConfiguration_completionHandler(None, &handler);
+        }
+    }
+}
+
+/// Turns an appkit image into png bytes, which is the one image format
+/// everything downstream already knows how to read.
+fn png(image: &NSImage) -> Option<Vec<u8>> {
+    let tiff = image.TIFFRepresentation()?;
+    let rep = NSBitmapImageRep::imageRepWithData(&tiff)?;
+    let data = unsafe {
+        rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
+    }?;
+    Some(data.to_vec())
+}
+
+define_class!(
+    /// Reports only that a page finished arriving. The waiting afterwards is
+    /// done in the window's own tick.
+    #[unsafe(super(NSObject))]
+    #[name = "SkepSiteLoading"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = Rc<Cell<bool>>]
+    struct Loading;
+
+    unsafe impl NSObjectProtocol for Loading {}
+
+    unsafe impl WKNavigationDelegate for Loading {
+        #[unsafe(method(webView:didFinishNavigation:))]
+        fn finished(&self, _webview: &WKWebView, _navigation: Option<&WKNavigation>) {
+            self.ivars().set(true);
+        }
+    }
+);
+
+impl Loading {
+    fn new(marker: MainThreadMarker, arrived: Rc<Cell<bool>>) -> Retained<Self> {
+        let this = Self::alloc(marker).set_ivars(arrived);
+        unsafe { msg_send![super(this), init] }
     }
 }

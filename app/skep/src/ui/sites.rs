@@ -1,8 +1,12 @@
 //! The Sites page: the list, the preview beside it, and the inline draft
 //! for adding one.
 
-use super::paint::snow;
+use super::paint::{dither, snow};
 use super::rail::GLYPH;
+
+/// A tile keeps a page's proportions, because it is a picture of one.
+const TILE_WIDE: f32 = 260.;
+const TILE_TALL: f32 = 163.;
 use super::*;
 
 /// A site being written. Kept as text rather than as a port number, because
@@ -352,112 +356,8 @@ impl Skep {
     }
 
     /// What each column of a site is. A hostname and a number side by side
-    /// say nothing about which is which.
-    pub(super) fn site_columns(&self) -> AnyElement {
-        let theme = &self.theme;
-        let label = |text: &'static str| {
-            div()
-                .caption()
-                .text_color(theme.muted)
-                .child(SharedString::from(text))
-        };
-        div()
-            .flex()
-            .items_center()
-            .gap_3()
-            .w_full()
-            .px_6()
-            .py_1()
-            .flex_shrink_0()
-            .border_b_1()
-            .border_color(theme.border)
-            .child(div().size(px(6.)).flex_shrink_0())
-            .child(label("Hostname").flex_1().min_w_0())
-            .child(label("Port").w(px(90.)))
-            .child(label("Behind it").w(px(150.)))
-            .into_any_element()
-    }
-
     pub(super) fn sites_page(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = &self.theme;
-
-        let mut rows = div().flex().flex_col().w_full();
-        if self.sites.is_empty() {
-            rows = rows.child(self.nothing("no sites yet"));
-        } else {
-            rows = rows.child(self.site_columns());
-        }
-
-        for (host, port) in &self.sites {
-            // A site is config until something is behind it. The dot says
-            // which, in the one place status colour is allowed to live.
-            let alive = self.answering.get(host).copied();
-            let here = self.site.as_deref() == Some(host.as_str());
-            let chosen = host.clone();
-            let mut row = div()
-                .id(SharedString::from(format!("site-{host}")))
-                .flex()
-                .items_center()
-                .gap_3()
-                .w_full()
-                .min_w_0()
-                .px_6()
-                .py_3()
-                .cursor_pointer()
-                .border_b_1()
-                .border_color(theme.border)
-                .hover(|style| style.bg(theme.raised))
-                .on_click(cx.listener(move |skep, _, _, cx| {
-                    skep.site = Some(chosen.clone());
-                    cx.notify();
-                }));
-            if here {
-                row = row.bg(theme.raised);
-            }
-            rows = rows.child(
-                row.child(
-                    div()
-                        .size(px(6.))
-                        .rounded_full()
-                        .flex_shrink_0()
-                        .bg(match alive {
-                            Some(true) => theme.running,
-                            Some(false) => theme.failed,
-                            None => theme.idle,
-                        }),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .child(SharedString::from(host.clone())),
-                )
-                .child(
-                    div()
-                        .w(px(90.))
-                        .flex_shrink_0()
-                        .label()
-                        .font_family(MONO)
-                        .text_color(theme.muted)
-                        .child(SharedString::from(format!("{port}"))),
-                )
-                .child(
-                    div()
-                        .w(px(150.))
-                        .flex_shrink_0()
-                        .caption()
-                        .text_color(theme.muted)
-                        .child(SharedString::from(match alive {
-                            Some(true) => "answering".to_string(),
-                            Some(false) => format!("nothing on {port}"),
-                            None => "not checked".to_string(),
-                        })),
-                ),
-            );
-        }
-
-        rows = rows.child(self.new_site(cx));
+        let answering = self.answering.values().filter(|alive| **alive).count();
 
         let mut notes = div().flex().flex_col().w_full();
         if !self.authority_trusted && !self.sites.is_empty() {
@@ -469,7 +369,11 @@ impl Skep {
             notes = notes.child(self.note(trouble));
         }
 
-        let answering = self.answering.values().filter(|alive| **alive).count();
+        let mut tiles: Vec<AnyElement> = Vec::with_capacity(self.sites.len() + 1);
+        for (host, port) in &self.sites {
+            tiles.push(self.tile(host, *port, cx));
+        }
+        tiles.push(self.new_site(cx));
 
         div()
             .flex()
@@ -478,42 +382,161 @@ impl Skep {
             .h_full()
             .min_w_0()
             .overflow_hidden()
+            .child(self.page_header(
+                "Sites",
+                (!self.sites.is_empty()).then(|| {
+                    div()
+                        .caption()
+                        .flex_shrink_0()
+                        .text_color(self.theme.muted)
+                        .child(SharedString::from(format!(
+                            "{answering} of {} answering",
+                            self.sites.len()
+                        )))
+                        .into_any_element()
+                }),
+                cx,
+            ))
+            .child(notes)
+            .child(
+                div()
+                    .id("site-sheet")
+                    .flex()
+                    .flex_wrap()
+                    .content_start()
+                    .gap_4()
+                    .p_6()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children(tiles),
+            )
+            .children(self.site.clone().map(|host| self.watching(&host, cx)))
+            .into_any_element()
+    }
+
+    /// One site: its picture, then its name, port and whether anything is
+    /// behind it. A site that has stopped answering keeps the last picture
+    /// taken of it, drained of colour and snowed over, because what it looked
+    /// like is more use than an empty rectangle.
+    pub(super) fn tile(&self, host: &str, port: u16, cx: &mut Context<Self>) -> AnyElement {
+        let alive = self.answering.get(host).copied();
+        let here = self.site.as_deref() == Some(host);
+        let chosen = host.to_string();
+        let ink = self.theme.idle;
+        let gone = alive == Some(false);
+
+        let mut frame = div()
+            .relative()
+            .w_full()
+            .h(px(TILE_TALL))
+            .overflow_hidden()
+            .rounded(px(8.))
+            .bg(self.theme.raised)
+            .border_1()
+            .border_color(if here {
+                self.theme.accent
+            } else {
+                self.theme.border
+            });
+
+        match self.shots.get(host).cloned() {
+            Some(picture) => {
+                let mut image = gpui::img(picture).size_full();
+                // Drained rather than dropped: the last thing it looked like,
+                // clearly in the past.
+                if gone {
+                    image = image.opacity(0.3);
+                }
+                frame = frame.child(image);
+            }
+            None => {
+                frame = frame.child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| dither(bounds, ink, window),
+                    )
+                    .absolute()
+                    .size_full(),
+                );
+            }
+        }
+        if gone {
+            frame = frame.child(div().absolute().size_full().with_animation(
+                SharedString::from(format!("snow-{host}")),
+                Animation::new(Duration::from_millis(900)).repeat(),
+                move |field, delta| {
+                    field.child(
+                        gpui::canvas(
+                            |_, _, _| (),
+                            move |bounds, _, window, _| snow(bounds, ink, delta, window),
+                        )
+                        .size_full(),
+                    )
+                },
+            ));
+        }
+
+        div()
+            .id(SharedString::from(format!("site-{host}")))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .w(px(TILE_WIDE))
+            .flex_shrink_0()
+            .cursor_pointer()
+            .on_click(cx.listener(move |skep, _, _, cx| {
+                skep.site = Some(chosen.clone());
+                cx.notify();
+            }))
+            .child(frame)
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .gap_2()
                     .w_full()
-                    .pl_4()
-                    .pr_6()
-                    .h(px(TITLEBAR))
-                    .flex_shrink_0()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(self.page_title("Sites", cx))
-                    .children((!self.sites.is_empty()).then(|| {
+                    .min_w_0()
+                    .child(
                         div()
-                            .caption()
+                            .size(px(6.))
+                            .rounded_full()
                             .flex_shrink_0()
-                            .text_color(theme.muted)
-                            .child(SharedString::from(format!(
-                                "{answering} of {} answering",
-                                self.sites.len()
-                            )))
-                    })),
+                            .bg(match alive {
+                                Some(true) => self.theme.running,
+                                Some(false) => self.theme.failed,
+                                None => self.theme.idle,
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .label()
+                            .child(SharedString::from(host.to_string())),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .caption()
+                            .font_family(MONO)
+                            .text_color(self.theme.muted)
+                            .child(SharedString::from(port.to_string())),
+                    ),
             )
-            .child(notes)
             .child(
                 div()
-                    .id("site-list")
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(rows),
+                    .w_full()
+                    .truncate()
+                    .caption()
+                    .text_color(self.theme.idle)
+                    .child(SharedString::from(match alive {
+                        Some(true) => "answering".to_string(),
+                        Some(false) => format!("nothing on {port}"),
+                        None => "not checked".to_string(),
+                    })),
             )
-            .children(self.site.clone().map(|host| self.watching(&host, cx)))
             .into_any_element()
     }
 }

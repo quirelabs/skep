@@ -18,7 +18,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::bridge::{Bridge, Command, Update};
 use crate::platform::Menubar;
-use crate::preview::{Held, Preview};
+use crate::preview::{Held, Preview, Scout};
 use crate::theme::{Scale, Theme};
 
 /// What the screen needs to say about certificates. Not "trusted" or not, but
@@ -143,6 +143,10 @@ pub struct Skep {
     entry: gpui::FocusHandle,
     /// Which site is being looked at, if any.
     site: Option<String>,
+    /// A picture of each site, taken off screen. Held here rather than in the
+    /// scout so a photograph outlives the site going quiet.
+    shots: BTreeMap<String, std::sync::Arc<gpui::Image>>,
+    scout: Rc<RefCell<Option<Scout>>>,
     /// Whether the window had focus last time it drew, so coming back to it
     /// can look again. The same deliberate act as opening the tab, rather than
     /// a timer nobody asked for.
@@ -234,6 +238,8 @@ impl Skep {
             draft: None,
             entry: cx.focus_handle(),
             site: None,
+            shots: BTreeMap::new(),
+            scout: Rc::new(RefCell::new(None)),
             was_active: true,
             authority_trusted: false,
             site_port: comb::HTTPS_PORT,
@@ -302,6 +308,13 @@ impl Skep {
                     {
                         preview.forget();
                     }
+                    // A site that has come back is not what it was when the
+                    // last picture was taken.
+                    for (host, alive) in &answering {
+                        if *alive && self.answering.get(host) == Some(&false) {
+                            self.shots.remove(host);
+                        }
+                    }
                     self.answering = answering;
                 }
                 Update::Mail { messages, unread } => {
@@ -356,6 +369,7 @@ impl Skep {
                     trusted,
                     public_https,
                 } => {
+                    self.shots.retain(|host, _| sites.contains_key(host));
                     self.sites = sites;
                     self.site_trouble = trouble;
                     self.authority_trusted = trusted;
@@ -387,6 +401,39 @@ impl Skep {
         }
         if moved {
             self.reflect();
+            cx.notify();
+        }
+    }
+
+    /// Keeps the contact sheet supplied. Asks for a picture of any site that
+    /// has none, and collects whichever one the scout has finished with.
+    ///
+    /// Driven from the frame rather than from a timer, so the waiting for a
+    /// page to settle is ordinary rust rather than something scheduled inside
+    /// appkit that nothing here could cancel.
+    fn photograph(&mut self, cx: &mut Context<Self>) {
+        // The handle is cloned so the borrow is of the scout rather than of
+        // this view, which leaves the shots free to be written below.
+        let held = self.scout.clone();
+        let mut held = held.borrow_mut();
+        let Some(scout) = held.as_mut() else {
+            return;
+        };
+
+        let wanted: Vec<(String, String)> = self
+            .sites
+            .keys()
+            .filter(|host| !self.shots.contains_key(*host))
+            .map(|host| (host.clone(), comb::site_url(host, self.site_port)))
+            .collect();
+        if !wanted.is_empty() {
+            scout.want(wanted);
+        }
+        if let Some((host, png)) = scout.tick() {
+            self.shots.insert(
+                host,
+                std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)),
+            );
             cx.notify();
         }
     }
@@ -438,10 +485,14 @@ impl Render for Skep {
             let _ = self.commands.send(Command::CheckSites);
         }
         self.was_active = active;
-        // The webview belongs to the window, so it cannot exist before one.
+        // The webviews belong to the window, so they cannot exist before one.
         if self.preview.borrow().is_none() {
             *self.preview.borrow_mut() = Preview::attach(window);
         }
+        if self.scout.borrow().is_none() {
+            *self.scout.borrow_mut() = Scout::attach(window);
+        }
+        self.photograph(cx);
         // It draws above everything gpui draws, so anywhere it is not wanted
         // it has to be gone rather than merely behind: covered by the source
         // or the checks is not a thing it can be. This is the one place that
