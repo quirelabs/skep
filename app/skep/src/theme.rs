@@ -1,13 +1,19 @@
 //! The palette and the type scale.
 //!
-//! Two rules keep the palette honest: status colour lives only in a row's dot,
-//! and the accent lives only on things you can press or things in motion. The
-//! two vocabularies never mix.
+//! One rule keeps the palette honest: colour is only ever status. Green for
+//! running, red for failed, and nothing else in the interface has a hue at
+//! all. What you can press and what is moving are marked by brightness
+//! instead, which is why the accent is white on the dark side and near black
+//! on the light one.
+//!
+//! It was a honey orange until the window got a picture behind it. An accent
+//! has to stand apart from what it is laid over, and that picture is already
+//! made of warm oranges and roses; the accent disappeared into it. The colour
+//! is not gone from the app, it moved to where it belongs, and now there is
+//! one thing carrying colour rather than two competing.
 //!
 //! Both appearances are one system rather than a dark design with a light
-//! variant bolted on. Every token exists in both, and the accent is a different
-//! orange in each because the same one cannot carry text contrast on paper and
-//! on near black.
+//! variant bolted on. Every token exists in both.
 //!
 //! The window is not a flat colour. Three colours lie low across the bottom
 //! in soft bands that bleed into one another, with fine grain through the
@@ -67,7 +73,9 @@ impl Theme {
             // measured 4.43 against the busiest part of that.
             muted: rgb(0x8e8e94).into(),
             border: rgb(0x232326).into(),
-            accent: rgb(0xff6a1f).into(),
+            // Brighter than the text it sits among, which is what makes it
+            // read as raised rather than merely coloured.
+            accent: rgb(0xffffff).into(),
             running: rgb(0x3fbf6f).into(),
             failed: rgb(0xe5484d).into(),
             idle: rgb(0x4d4d54).into(),
@@ -91,9 +99,9 @@ impl Theme {
             text: rgb(0x1a1a1c).into(),
             muted: rgb(0x6e6e73).into(),
             border: rgb(0xe4e2dd).into(),
-            // The dark theme's orange reads at 2.75 against paper and cannot
-            // carry text. This one is 5.11, and every token below clears 4.5.
-            accent: rgb(0xb84700).into(),
+            // The same move on paper: darker than the text rather than
+            // lighter, since it is the deepest ink that reads as raised here.
+            accent: rgb(0x0a0a0b).into(),
             running: rgb(0x1a7f4b).into(),
             failed: rgb(0xc0272d).into(),
             idle: rgb(0xb5b5ba).into(),
@@ -124,8 +132,8 @@ impl Theme {
         }
     }
 
-    /// The dot, and only the dot. Orange here means motion and nothing else:
-    /// if a steady state ever wants it, the design has drifted.
+    /// The dot, and only the dot. The accent here means motion and nothing
+    /// else: if a steady state ever wants it, the design has drifted.
     pub fn dot(&self, state: &ServiceState, working: bool) -> Hsla {
         match state {
             ServiceState::Ready => self.running,

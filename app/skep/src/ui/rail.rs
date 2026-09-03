@@ -220,9 +220,9 @@ impl Skep {
             .rounded_md()
             .text_color(colour);
 
-        // The selected row is a surface rather than an accent fill: orange is
-        // reserved for what you press and what is moving, and a whole row of
-        // it would drown both.
+        // The selected row is a surface rather than an accent fill: the
+        // accent is reserved for what you press and what is moving, and a
+        // whole row of it would drown both.
         if here {
             item = item.bg(self.theme.surface);
         }

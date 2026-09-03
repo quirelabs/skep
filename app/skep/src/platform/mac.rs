@@ -83,7 +83,7 @@ impl Menubar {
     }
 
     /// Grey when nothing runs, green with a count when everything is healthy,
-    /// orange while anything is in motion, and a different shape entirely when
+    /// lit while anything is in motion, and a different shape entirely when
     /// something has failed, because that is the one you must not miss.
     ///
     /// The shape is the app's own: a cell, hollow when nothing runs and solid

@@ -362,7 +362,7 @@ impl Skep {
                     .children(line(&status)),
             )
             .child(
-                // Five rows of orange buttons is five things shouting. The
+                // Five rows of lit buttons is five things shouting. The
                 // action belongs to the row you are pointing at, and to the
                 // row you have opened, which is the one you are working on.
                 {
@@ -883,7 +883,7 @@ impl Skep {
         row
     }
 
-    /// Orange lives here and on a breathing dot. Nowhere else.
+    /// The accent lives here and on a breathing dot. Nowhere else.
     pub(super) fn button(&self, label: &'static str, command: Command) -> impl IntoElement {
         let commands = self.commands.clone();
         div()
