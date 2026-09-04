@@ -226,40 +226,18 @@ impl Skep {
                                 .items_center()
                                 .justify_end()
                                 .gap_2()
-                                .child(
-                                    div()
-                                        .id("cancel")
-                                        .px_3()
-                                        .py_1p5()
-                                        .rounded(px(CHIP))
-                                        .label()
-                                        .text_color(theme.muted)
-                                        .cursor_pointer()
-                                        .hover(|style| style.bg(theme.base))
-                                        .on_click(cx.listener(|skep, _, _, cx| {
-                                            skep.draft = None;
-                                            cx.notify();
-                                        }))
-                                        .child(SharedString::from("Cancel")),
-                                )
-                                .child(
-                                    div()
-                                        .id("add")
-                                        .px_3()
-                                        .py_1p5()
-                                        .rounded(px(CHIP))
-                                        .border_1()
-                                        .border_color(theme.border)
-                                        .label()
-                                        .text_color(theme.accent)
-                                        .cursor_pointer()
-                                        .hover(|style| style.border_color(theme.accent))
-                                        .on_click(cx.listener(|skep, _, _, cx| {
-                                            skep.submit_site(cx);
-                                            cx.notify();
-                                        }))
-                                        .child(SharedString::from("Add site")),
-                                ),
+                                .child(self.quiet("cancel", "Cancel").on_click(cx.listener(
+                                    |skep, _, _, cx| {
+                                        skep.draft = None;
+                                        cx.notify();
+                                    },
+                                )))
+                                .child(self.chip("add", "Add site").on_click(cx.listener(
+                                    |skep, _, _, cx| {
+                                        skep.submit_site(cx);
+                                        cx.notify();
+                                    },
+                                ))),
                         ),
                 )
                 .into_any_element(),
@@ -493,7 +471,7 @@ impl Skep {
                 "Sites",
                 (!self.sites.is_empty()).then(|| {
                     div()
-                        .caption()
+                        .label()
                         .flex_shrink_0()
                         .text_color(self.theme.muted)
                         .child(SharedString::from(format!(

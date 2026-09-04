@@ -18,29 +18,13 @@ impl Skep {
     /// says what it is for before it says what it holds, and every value is
     /// honest about whether anybody chose it.
     pub(super) fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = &self.theme;
-
         div()
             .flex()
             .flex_col()
             .flex_1()
             .h_full()
             .overflow_hidden()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .w_full()
-                    .pl_4()
-                    .pr_6()
-                    .h(px(TITLEBAR))
-                    .flex_shrink_0()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(self.page_title("Settings", cx))
-                    .child(self.open_settings(cx)),
-            )
+            .child(self.page_header("Settings", Some(self.open_settings(cx)), cx))
             .child(
                 div()
                     .id("settings-list")
@@ -67,6 +51,7 @@ impl Skep {
             .child(self.section(
                 "Behaviour",
                 "How this window acts. Kept in config.toml, beside everything else it remembers.",
+                true,
             ))
             .child(self.choice(
                 "Open sites in the browser",
@@ -89,6 +74,21 @@ impl Skep {
         let theme = &self.theme;
         div()
             .id(SharedString::from(name))
+            .group("choice")
+            .relative()
+            // The same mark every other row in the window wears when the
+            // pointer is on it: an edge, not a light across the middle.
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(2.))
+                    .bg(theme.accent)
+                    .opacity(0.)
+                    .group_hover("choice", |style| style.opacity(1.)),
+            )
             .flex()
             .items_start()
             .justify_between()
@@ -143,16 +143,27 @@ impl Skep {
             )
     }
 
-    pub(super) fn section(&self, title: &'static str, about: &'static str) -> impl IntoElement {
-        div()
+    /// A section's name and what it is for. Everything below it belongs to it
+    /// until the next rule, which is what the rule is for: whitespace alone
+    /// left three groups looking like one long list.
+    pub(super) fn section(
+        &self,
+        title: &'static str,
+        about: &'static str,
+        first: bool,
+    ) -> impl IntoElement {
+        let mut band = div()
             .flex()
             .flex_col()
             .gap_0p5()
             .w_full()
             .px(px(MARGIN))
             .pt_5()
-            .pb_2()
-            .child(div().title().child(SharedString::from(title)))
+            .pb_2();
+        if !first {
+            band = band.mt_2().border_t_1().border_color(self.theme.border);
+        }
+        band.child(div().title().child(SharedString::from(title)))
             .child(
                 div()
                     .caption()
@@ -202,6 +213,7 @@ impl Skep {
             "Certificates",
             "The authority skep signs local sites with. A browser accepts a site only if this \
              machine trusts this authority.",
+            false,
         ));
 
         let Some(trust) = &self.trust else {
@@ -313,9 +325,11 @@ impl Skep {
             "Ports and versions",
             "Set in config.toml. A project's skep.toml wins wherever both speak, so a \
              repository always gets what it asks for.",
+            false,
         ));
 
-        for status in services {
+        let last = services.len().saturating_sub(1);
+        for (index, status) in services.into_iter().enumerate() {
             let mut ports = div().flex().flex_col().gap_0p5().flex_1().min_w_0();
             for (name, number) in &status.ports {
                 let source = status.ports_from.get(name);
@@ -340,47 +354,39 @@ impl Skep {
                     );
             }
 
+            // A rule between services, and none under the last of them: a line
+            // with nothing after it is a promise the page does not keep.
+            let mut row = div()
+                .flex()
+                .w_full()
+                .min_w_0()
+                .items_start()
+                .gap_3()
+                .px(px(MARGIN))
+                .py_3();
+            if index < last {
+                row = row.border_b_1().border_color(theme.border);
+            }
             out = out.child(
-                div()
-                    .flex()
-                    .w_full()
-                    .min_w_0()
-                    .items_start()
-                    .gap_3()
-                    .px(px(MARGIN))
-                    .py_3()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .w(px(120.))
-                            .flex_shrink_0()
-                            .truncate()
-                            .child(SharedString::from(status.id.service.as_str().to_string())),
-                    )
-                    .child(ports),
+                row.child(
+                    div()
+                        .w(px(120.))
+                        .flex_shrink_0()
+                        .truncate()
+                        .child(SharedString::from(status.id.service.as_str().to_string())),
+                )
+                .child(ports),
             );
         }
         out.into_any_element()
     }
 
     pub(super) fn open_settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id("open-settings")
-            .px_2p5()
-            .py_1()
-            .label()
-            .text_color(self.theme.accent)
-            .border_1()
-            .border_color(self.theme.border)
-            .rounded(px(CHIP))
-            .cursor_pointer()
-            .hover(|style| style.border_color(self.theme.accent))
+        self.chip("open-settings", "Open config.toml")
             .on_click(cx.listener(|skep, _, _, cx| {
                 skep.reveal_settings();
                 cx.notify();
             }))
-            .child(SharedString::from("Open config.toml"))
             .into_any_element()
     }
 

@@ -112,18 +112,7 @@ impl Skep {
     /// the machine's own chooser answers that better than anything this app
     /// could draw.
     fn add_project(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id("add-project")
-            .flex_shrink_0()
-            .px_3()
-            .py_1p5()
-            .rounded(px(CHIP))
-            .border_1()
-            .border_color(self.theme.border)
-            .label()
-            .text_color(self.theme.accent)
-            .cursor_pointer()
-            .hover(|style| style.border_color(self.theme.accent))
+        self.chip("add-project", "Add a project")
             .on_click(cx.listener(|_, _, window, cx| {
                 let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
                     files: false,
@@ -153,7 +142,6 @@ impl Skep {
                 })
                 .detach();
             }))
-            .child(SharedString::from("Add a project"))
     }
 
     /// The second half of adding a project: what to run in the folder that
@@ -268,40 +256,18 @@ impl Skep {
                                 .items_center()
                                 .justify_end()
                                 .gap_2()
-                                .child(
-                                    div()
-                                        .id("naming-cancel")
-                                        .px_3()
-                                        .py_1p5()
-                                        .rounded(px(CHIP))
-                                        .label()
-                                        .text_color(theme.muted)
-                                        .cursor_pointer()
-                                        .hover(|style| style.bg(theme.base))
-                                        .on_click(cx.listener(|skep, _, _, cx| {
-                                            skep.naming = None;
-                                            cx.notify();
-                                        }))
-                                        .child(SharedString::from("Cancel")),
-                                )
-                                .child(
-                                    div()
-                                        .id("naming-add")
-                                        .px_3()
-                                        .py_1p5()
-                                        .rounded(px(CHIP))
-                                        .border_1()
-                                        .border_color(theme.border)
-                                        .label()
-                                        .text_color(theme.accent)
-                                        .cursor_pointer()
-                                        .hover(|style| style.border_color(theme.accent))
-                                        .on_click(cx.listener(|skep, _, _, cx| {
-                                            skep.submit_project(cx);
-                                            cx.notify();
-                                        }))
-                                        .child(SharedString::from("Add project")),
-                                ),
+                                .child(self.quiet("naming-cancel", "Cancel").on_click(cx.listener(
+                                    |skep, _, _, cx| {
+                                        skep.naming = None;
+                                        cx.notify();
+                                    },
+                                )))
+                                .child(self.chip("naming-add", "Add project").on_click(
+                                    cx.listener(|skep, _, _, cx| {
+                                        skep.submit_project(cx);
+                                        cx.notify();
+                                    }),
+                                )),
                         ),
                 )
                 .into_any_element(),
@@ -407,7 +373,7 @@ impl Skep {
             .children(status.map(|_| {
                 div().absolute().inset_0().bg(gpui::linear_gradient(
                     90.,
-                    gpui::linear_color_stop(faded(colour, 0.06), 0.),
+                    gpui::linear_color_stop(faded(colour, theme.wash), 0.),
                     gpui::linear_color_stop(faded(colour, 0.), 0.3),
                 ))
             }))

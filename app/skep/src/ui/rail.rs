@@ -186,6 +186,42 @@ impl Skep {
             .into_any_element()
     }
 
+    /// The one control shape in this window: a quiet edge that lights up
+    /// under the pointer, with the accent for the words. Every button on
+    /// every screen is this, so none of them can drift from the others.
+    pub(super) fn chip(&self, id: &'static str, label: &'static str) -> Stateful<Div> {
+        div()
+            .id(id)
+            .flex_shrink_0()
+            .px_3()
+            .py_1p5()
+            .rounded(px(CHIP))
+            .border_1()
+            .border_color(self.theme.border)
+            .label()
+            .text_color(self.theme.accent)
+            .cursor_pointer()
+            .hover(|style| style.border_color(self.theme.accent))
+            .child(SharedString::from(label))
+    }
+
+    /// The same control with nothing drawn around it, for whatever sits
+    /// beside a chip and must not compete with it: Cancel, Clear.
+    pub(super) fn quiet(&self, id: &'static str, label: &'static str) -> Stateful<Div> {
+        let theme = self.theme.clone();
+        div()
+            .id(id)
+            .flex_shrink_0()
+            .px_3()
+            .py_1p5()
+            .rounded(px(CHIP))
+            .label()
+            .text_color(theme.muted)
+            .cursor_pointer()
+            .hover(move |style| style.bg(theme.raised).text_color(theme.text))
+            .child(SharedString::from(label))
+    }
+
     pub(super) fn rail_item(
         &self,
         index: usize,

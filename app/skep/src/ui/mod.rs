@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 
 use comb::{Applied, InstanceId, Label, LogLine, Mirror, ServiceState, ServiceStatus, Snapshot};
 use gpui::{
-    Animation, AnimationExt, AnyElement, Bounds, ClipboardItem, Context, FontWeight, Hsla,
+    Animation, AnimationExt, AnyElement, Bounds, ClipboardItem, Context, Div, FontWeight, Hsla,
     InteractiveElement, IntoElement, ParentElement, Pixels, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, div, ease_in_out, pulsating_between,
-    px, svg,
+    Stateful, StatefulInteractiveElement, Styled, Subscription, Window, div, ease_in_out,
+    pulsating_between, px, svg,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -57,7 +57,7 @@ const PANEL_RADIUS: f32 = 12.;
 /// not enough to see as a texture.
 const TOOTH: f32 = 0.11;
 use paint::fingerprint;
-use rail::{RAIL_WIDE, TITLEBAR};
+use rail::RAIL_WIDE;
 use services::LOG_LIMIT;
 use settings::Trust;
 use sites::Draft;

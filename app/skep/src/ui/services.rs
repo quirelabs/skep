@@ -341,7 +341,7 @@ impl Skep {
             .children(wash.map(|colour| {
                 div().absolute().inset_0().bg(gpui::linear_gradient(
                     90.,
-                    gpui::linear_color_stop(faded(colour, 0.06), 0.),
+                    gpui::linear_color_stop(faded(colour, theme.wash), 0.),
                     gpui::linear_color_stop(faded(colour, 0.), 0.3),
                 ))
             }))
@@ -943,21 +943,9 @@ impl Skep {
     /// The accent lives here and on a breathing dot. Nowhere else.
     pub(super) fn button(&self, label: &'static str, command: Command) -> impl IntoElement {
         let commands = self.commands.clone();
-        div()
-            .id(label)
-            .px_2p5()
-            .py_1()
-            .label()
-            .text_color(self.theme.accent)
-            .border_1()
-            .border_color(self.theme.border)
-            .rounded(px(CHIP))
-            .cursor_pointer()
-            .hover(|style| style.border_color(self.theme.accent))
-            .on_click(move |_, _, cx| {
-                cx.stop_propagation();
-                let _ = commands.send(command.clone());
-            })
-            .child(SharedString::from(label))
+        self.chip(label, label).on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            let _ = commands.send(command.clone());
+        })
     }
 }

@@ -53,6 +53,12 @@ pub struct Theme {
     /// sits, so these are the largest values at which the quietest text over
     /// the page still clears 4.5 against every point of it.
     pub weather: (f32, f32),
+    /// How strongly a row carries its own state across itself. One number
+    /// rather than one per page, and held down by contrast rather than by
+    /// taste: this is the strongest wash at which the quietest text in a row
+    /// still clears 4.5 against every point of the window, for the palest
+    /// colour any row ever uses.
+    pub wash: f32,
     /// What panels and rows are made of: the raised colour with the wash
     /// showing through, so a surface belongs to the window it sits in.
     pub surface: Hsla,
@@ -85,6 +91,7 @@ impl Theme {
                 rgb(0x4b5cff).into(),
             ],
             weather: (0.24, 0.045),
+            wash: 0.05,
             surface: alpha(0x17171a, 0.78),
             chrome: alpha(0xf2f1ee, 0.70),
         }
@@ -97,7 +104,10 @@ impl Theme {
             base: rgb(0xfbfaf8).into(),
             raised: rgb(0xffffff).into(),
             text: rgb(0x1a1a1c).into(),
-            muted: rgb(0x6e6e73).into(),
+            // Darkened for the same reason the dark side's was lifted: a row
+            // washed in its own state is a background this has to clear, and
+            // paper leaves less headroom than darkness does.
+            muted: rgb(0x67676c).into(),
             border: rgb(0xe4e2dd).into(),
             // The same move on paper: darker than the text rather than
             // lighter, since it is the deepest ink that reads as raised here.
@@ -113,6 +123,7 @@ impl Theme {
             // Lighter on paper, and a touch more grain: there is no darkness
             // for the colour to glow against, so it has to stay a suggestion.
             weather: (0.24, 0.050),
+            wash: 0.05,
             surface: alpha(0xffffff, 0.78),
             // 0.70 rather than the dark side's, because the wash over paper
             // leaves less headroom: this is 5.54 against the busiest corner.
@@ -187,3 +198,73 @@ pub trait Scale: Styled + Sized {
 }
 
 impl<T: Styled> Scale for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One channel of sRGB, undone. The ratio is defined on light, not on the
+    /// numbers a file stores.
+    fn linear(channel: f32) -> f32 {
+        if channel <= 0.03928 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn luminance(colour: (f32, f32, f32)) -> f32 {
+        let (r, g, b) = (linear(colour.0), linear(colour.1), linear(colour.2));
+        0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+
+    fn contrast(ink: (f32, f32, f32), under: (f32, f32, f32)) -> f32 {
+        let (a, b) = (luminance(ink), luminance(under));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    fn rgb_of(colour: Hsla) -> (f32, f32, f32) {
+        let rgba = colour.to_rgb();
+        (rgba.r, rgba.g, rgba.b)
+    }
+
+    fn over(top: (f32, f32, f32), alpha: f32, under: (f32, f32, f32)) -> (f32, f32, f32) {
+        (
+            alpha * top.0 + (1. - alpha) * under.0,
+            alpha * top.1 + (1. - alpha) * under.1,
+            alpha * top.2 + (1. - alpha) * under.2,
+        )
+    }
+
+    /// Every background a row's quiet text can find itself on: each of the
+    /// three colours in the sky at full strength, the page surface over it,
+    /// and then the row's own state washed across that.
+    fn worst(theme: &Theme) -> f32 {
+        let base = rgb_of(theme.base);
+        let mut lowest = f32::MAX;
+        for colour in theme.sky {
+            let lit = over(rgb_of(colour), theme.weather.0, base);
+            let surface = over(rgb_of(theme.surface), theme.surface.a, lit);
+            for state in [theme.running, theme.failed, theme.accent] {
+                let washed = over(rgb_of(state), theme.wash, surface);
+                lowest = lowest.min(contrast(rgb_of(theme.muted), washed));
+            }
+        }
+        lowest
+    }
+
+    /// The wash is a decoration; the words are the point. This is the check
+    /// that keeps the first from eating the second, in both appearances,
+    /// because a number chosen by eye on one of them fails on the other: the
+    /// sixth this started at measured 4.45 on dark and 4.36 on light.
+    #[test]
+    fn a_row_washed_in_its_own_state_is_still_readable() {
+        for (which, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+            let measured = worst(&theme);
+            assert!(
+                measured >= 4.5,
+                "{which}: quiet text over a washed row measures {measured:.2}, under 4.5"
+            );
+        }
+    }
+}

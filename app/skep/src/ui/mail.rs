@@ -67,6 +67,29 @@ impl Skep {
             let showing = open.as_deref() == Some(message.id.as_str());
             let head = div()
                 .id(("mail", index))
+                .group("mail")
+                .relative()
+                // The same two marks a service row wears: an edge under the
+                // pointer, and the state carried across the row from the side
+                // it starts on. Unread is the only state a message has.
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(2.))
+                        .bg(theme.accent)
+                        .opacity(0.)
+                        .group_hover("mail", |style| style.opacity(1.)),
+                )
+                .children((!message.read).then(|| {
+                    div().absolute().inset_0().bg(gpui::linear_gradient(
+                        90.,
+                        gpui::linear_color_stop(paint::faded(theme.accent, theme.wash), 0.),
+                        gpui::linear_color_stop(paint::faded(theme.accent, 0.), 0.3),
+                    ))
+                }))
                 .flex()
                 .items_center()
                 .gap_3()
@@ -169,48 +192,36 @@ impl Skep {
             .min_w_0()
             .overflow_hidden()
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .w_full()
-                    .pl_4()
-                    .pr_6()
-                    .h(px(TITLEBAR))
-                    .flex_shrink_0()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(self.page_title("Mail", cx))
-                    .child(
+                self.page_header(
+                    "Mail",
+                    Some(
                         div()
                             .flex()
                             .items_center()
-                            .gap_3()
-                            .child(div().caption().text_color(theme.muted).child(
-                                SharedString::from(if self.unread == 0 {
-                                    format!("{} caught", self.mail.len())
-                                } else {
-                                    format!("{} unread of {}", self.unread, self.mail.len())
-                                }),
-                            ))
-                            .children((!self.mail.is_empty()).then(|| {
+                            .gap_2()
+                            .child(
                                 div()
-                                    .id("clear-mail")
-                                    .px_2()
-                                    .py_1()
-                                    .rounded(px(CARD))
                                     .label()
-                                    .cursor_pointer()
                                     .text_color(theme.muted)
-                                    .hover(|style| style.bg(theme.raised).text_color(theme.text))
-                                    .child(SharedString::from("Clear"))
-                                    .on_click(cx.listener(|skep, _, _, cx| {
+                                    .child(SharedString::from(if self.unread == 0 {
+                                        format!("{} caught", self.mail.len())
+                                    } else {
+                                        format!("{} unread of {}", self.unread, self.mail.len())
+                                    })),
+                            )
+                            .children((!self.mail.is_empty()).then(|| {
+                                self.quiet("clear-mail", "Clear").on_click(cx.listener(
+                                    |skep, _, _, cx| {
                                         skep.opened = None;
                                         let _ = skep.commands.send(Command::ClearMail);
                                         cx.notify();
-                                    }))
-                            })),
+                                    },
+                                ))
+                            }))
+                            .into_any_element(),
                     ),
+                    cx,
+                ),
             )
             .child(self.mail_columns())
             .child(
@@ -680,7 +691,16 @@ impl Skep {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = &self.theme;
-        let mut tabs = div().flex().items_center().gap_1();
+        // A track with the chosen one raised out of it, rather than three
+        // words that happen to sit together. The track is what says these are
+        // one choice with three positions.
+        let mut tabs = div()
+            .flex()
+            .items_center()
+            .gap_0p5()
+            .p(px(2.))
+            .rounded(px(CARD))
+            .bg(theme.base);
 
         for (which, name) in [
             (MailView::Rendered, "Rendered"),
@@ -697,14 +717,14 @@ impl Skep {
             tabs = tabs.child(
                 div()
                     .id(SharedString::from(format!("mail-tab-{name}")))
-                    .px_2()
-                    .py_0p5()
-                    .rounded(px(CARD))
-                    .caption()
+                    .px_2p5()
+                    .py_1()
+                    .rounded(px(CARD - 2.))
+                    .label()
                     .cursor_pointer()
                     .text_color(if here { theme.text } else { theme.muted })
                     .bg(if here {
-                        theme.base
+                        theme.raised
                     } else {
                         gpui::transparent_black()
                     })
@@ -974,16 +994,11 @@ impl Skep {
     }
 
     pub(super) fn close_message(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id("close-message")
-            .caption()
-            .cursor_pointer()
-            .text_color(self.theme.muted)
+        self.quiet("close-message", "Close")
             .on_click(cx.listener(|skep, _, _, cx| {
                 skep.opened = None;
                 cx.notify();
             }))
-            .child(SharedString::from("close"))
             .into_any_element()
     }
 
@@ -1128,24 +1143,13 @@ impl Skep {
     ) -> AnyElement {
         let done = self.copied.is_some_and(|(what, _)| what == Copied::Message);
         let text = body.text.clone();
-        div()
-            .id("copy-message")
-            .caption()
-            .cursor_pointer()
-            .text_color(if done {
-                self.theme.text
-            } else {
-                self.theme.accent
-            })
+        // The label is the whole acknowledgement. A control that also changes
+        // colour to say it worked is saying it twice.
+        self.quiet("copy-message", if done { "Copied" } else { "Copy" })
             .on_click(cx.listener(move |skep, _, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
                 skep.copied = Some((Copied::Message, Instant::now()));
                 cx.notify();
-            }))
-            .child(SharedString::from(if done {
-                "copied"
-            } else {
-                "copy message"
             }))
             .into_any_element()
     }
