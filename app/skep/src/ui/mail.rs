@@ -72,8 +72,8 @@ impl Skep {
                 .gap_3()
                 .w_full()
                 .min_w_0()
-                .px_6()
-                .py_3()
+                .px(px(MARGIN))
+                .py(px(14.))
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.raised))
                 .on_click(cx.listener(move |skep, _, _, cx| {
@@ -106,10 +106,16 @@ impl Skep {
                         .child(SharedString::from(message.from.clone())),
                 )
                 .child(
-                    div()
-                        .w(px(220.))
-                        .truncate()
-                        .child(SharedString::from(message.subject.clone())),
+                    // Unread is said twice: by the dot, and by the weight of
+                    // the subject. A dot alone is a thing to hunt for down a
+                    // column; weight is what the eye actually sorts on.
+                    {
+                        let mut subject = div().w(px(220.)).truncate();
+                        if !message.read {
+                            subject = subject.font_weight(FontWeight::MEDIUM);
+                        }
+                        subject.child(SharedString::from(message.subject.clone()))
+                    },
                 )
                 .child(
                     div()
@@ -530,7 +536,7 @@ impl Skep {
             .items_center()
             .gap_3()
             .w_full()
-            .px_6()
+            .px(px(MARGIN))
             .py_1()
             .flex_shrink_0()
             .border_b_1()
@@ -617,15 +623,41 @@ impl Skep {
                     .justify_between()
                     .w_full()
                     .min_w_0()
-                    .px_6()
-                    .py_2()
+                    .px(px(MARGIN))
+                    .py_3()
                     .flex_shrink_0()
                     .child(
+                        // The message gets a face: its mark, its subject at
+                        // the size of a thing being read rather than a thing
+                        // being listed, and who it is from underneath.
                         div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
                             .min_w_0()
-                            .truncate()
-                            .label()
-                            .child(SharedString::from(body.subject.clone())),
+                            .child(self.sender_mark(&body.from))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_0p5()
+                                    .min_w_0()
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .title()
+                                            .child(SharedString::from(body.subject.clone())),
+                                    )
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .caption()
+                                            .text_color(theme.muted)
+                                            .child(SharedString::from(body.from.clone())),
+                                    ),
+                            ),
                     )
                     .child(
                         div()
@@ -764,7 +796,7 @@ impl Skep {
             .justify_between()
             .gap_3()
             .w_full()
-            .px_6()
+            .px(px(MARGIN))
             .py_2()
             .flex_shrink_0()
             .bg(theme.base)
@@ -820,7 +852,7 @@ impl Skep {
             .flex_1()
             .min_h_0()
             .w_full()
-            .px_6()
+            .px(px(MARGIN))
             .py_2()
             .overflow_y_scroll()
             .child(lines)
@@ -843,7 +875,7 @@ impl Skep {
                 .flex_1()
                 .min_h_0()
                 .w_full()
-                .px_6()
+                .px(px(MARGIN))
                 .py_3()
                 .gap_1()
                 .child(self.nothing("checking"))
@@ -934,7 +966,7 @@ impl Skep {
             .flex_1()
             .min_h_0()
             .w_full()
-            .px_6()
+            .px(px(MARGIN))
             .py_3()
             .overflow_y_scroll()
             .child(out)
@@ -1080,7 +1112,7 @@ impl Skep {
             .min_h_0()
             .w_full()
             .min_w_0()
-            .px_6()
+            .px(px(MARGIN))
             .pb_3()
             .gap_2()
             .overflow_y_scroll()
