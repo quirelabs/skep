@@ -5193,6 +5193,7 @@ dependencies = [
  "quire-comb-services",
  "raw-window-handle",
  "tokio",
+ "unicode-segmentation",
 ]
 
 [[package]]

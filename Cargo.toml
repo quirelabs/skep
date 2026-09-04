@@ -97,6 +97,11 @@ hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 
+# Where one character ends and the next begins, which is not where one Rust
+# char does. Already in the tree through gpui; taken directly so the text
+# field can put its cursor where a person would expect it.
+unicode-segmentation = "1"
+
 # Editing a person's config without reformatting the rest of it. The crate
 # cargo uses for the same job.
 toml_edit = { version = "0.25", default-features = false, features = ["display", "parse"] }
@@ -119,3 +124,15 @@ rmcp = { version = "3.1", default-features = false, features = [
     "macros",
     "transport-io",
 ] }
+
+# Dependencies built with optimisation even in a debug build. gpui does real
+# work every frame, and unoptimised it is slow enough to feel while typing.
+# Workspace crates stay unoptimised so a debug build is still debuggable and
+# still quick to rebuild.
+[profile.dev]
+codegen-units = 16
+split-debuginfo = "unpacked"
+debug = "limited"
+
+[profile.dev.package."*"]
+opt-level = 2

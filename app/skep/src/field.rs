@@ -7,12 +7,13 @@
 //! into a label and read key events, which cannot do any of that, and it felt
 //! exactly as far from the platform as it was.
 //!
-//! Boundaries are characters rather than grapheme clusters, which is the one
-//! thing given up by not taking a dependency for it. Backspace over a flag
-//! emoji removes half of it; in a field holding a hostname, a port or a
-//! command, that is a trade worth making.
+//! Boundaries are grapheme clusters rather than Rust chars, because a
+//! character is what a person sees, not what the encoding counts. Backspace
+//! over a flag removes the flag, and an accent stays on its letter.
 
 use std::ops::Range;
+
+use unicode_segmentation::UnicodeSegmentation;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
@@ -236,7 +237,10 @@ impl Field {
         let (Some(bounds), Some(line)) = (self.bounds.as_ref(), self.line.as_ref()) else {
             return 0;
         };
-        line.closest_index_for_x(at.x - bounds.left())
+        boundary(
+            &self.content,
+            line.closest_index_for_x(at.x - bounds.left()),
+        )
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -253,18 +257,11 @@ impl Field {
     }
 
     fn before(&self, offset: usize) -> usize {
-        self.content
-            .char_indices()
-            .rev()
-            .find_map(|(at, _)| (at < offset).then_some(at))
-            .unwrap_or(0)
+        before(&self.content, offset)
     }
 
     fn after(&self, offset: usize) -> usize {
-        self.content
-            .char_indices()
-            .find_map(|(at, _)| (at > offset).then_some(at))
-            .unwrap_or(self.content.len())
+        after(&self.content, offset)
     }
 
     fn utf8_at(&self, offset: usize) -> usize {
@@ -300,6 +297,38 @@ impl Field {
     fn range_from_utf16(&self, range: &Range<usize>) -> Range<usize> {
         self.utf8_at(range.start)..self.utf8_at(range.end)
     }
+}
+
+/// The boundary before an offset. Free functions rather than methods so the
+/// rules about where a character starts can be tested without a window.
+fn before(text: &str, offset: usize) -> usize {
+    text.grapheme_indices(true)
+        .map(|(at, _)| at)
+        .rev()
+        .find(|at| *at < offset)
+        .unwrap_or(0)
+}
+
+/// The boundary after an offset, which is the end of whatever cluster the
+/// offset falls inside.
+fn after(text: &str, offset: usize) -> usize {
+    text.grapheme_indices(true)
+        .map(|(at, cluster)| at + cluster.len())
+        .find(|end| *end > offset)
+        .unwrap_or(text.len())
+}
+
+/// Snaps an offset back to the start of the cluster it lands in, so a click
+/// never puts the cursor halfway through something drawn as one mark.
+fn boundary(text: &str, offset: usize) -> usize {
+    if offset >= text.len() {
+        return text.len();
+    }
+    text.grapheme_indices(true)
+        .map(|(at, _)| at)
+        .rev()
+        .find(|at| *at <= offset)
+        .unwrap_or(0)
 }
 
 impl EntityInputHandler for Field {
@@ -403,7 +432,8 @@ impl EntityInputHandler for Field {
     ) -> Option<usize> {
         let inside = self.bounds?.localize(&at)?;
         let line = self.line.as_ref()?;
-        Some(self.utf16_at(line.index_for_x(at.x - inside.x)?))
+        let index = boundary(&self.content, line.index_for_x(at.x - inside.x)?);
+        Some(self.utf16_at(index))
     }
 }
 
@@ -625,5 +655,52 @@ impl Render for Field {
             .child(Written {
                 field: cx.entity().clone(),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A flag is two code points and eight bytes, and deleting half of it
+    /// leaves a lone regional indicator on screen.
+    #[test]
+    fn a_flag_is_one_character() {
+        let flag = "🇳🇱";
+        assert_eq!(flag.len(), 8);
+        assert_eq!(before(flag, flag.len()), 0);
+        assert_eq!(after(flag, 0), flag.len());
+    }
+
+    #[test]
+    fn an_accent_stays_on_its_letter() {
+        // e followed by a combining acute, not the single precomposed form.
+        let text = "cafe\u{301}";
+        assert_eq!(before(text, text.len()), 3);
+        assert_eq!(after(text, 3), text.len());
+    }
+
+    #[test]
+    fn plain_text_moves_one_letter_at_a_time() {
+        assert_eq!(before("myapp.test", 6), 5);
+        assert_eq!(after("myapp.test", 5), 6);
+    }
+
+    #[test]
+    fn the_ends_hold() {
+        assert_eq!(before("myapp", 0), 0);
+        assert_eq!(after("myapp", 5), 5);
+        assert_eq!(before("", 0), 0);
+        assert_eq!(after("", 0), 0);
+    }
+
+    #[test]
+    fn a_click_lands_on_a_boundary() {
+        let text = "a🇳🇱b";
+        // Anywhere inside the flag is the start of the flag.
+        assert_eq!(boundary(text, 1), 1);
+        assert_eq!(boundary(text, 5), 1);
+        assert_eq!(boundary(text, 9), 9);
+        assert_eq!(boundary(text, 99), text.len());
     }
 }

@@ -20,6 +20,7 @@ gpui = { workspace = true }
 gpui_platform = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+unicode-segmentation = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
