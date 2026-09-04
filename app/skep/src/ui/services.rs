@@ -196,7 +196,6 @@ impl Skep {
             .min_w_0()
             .h_full()
             .child(self.header(cx))
-            .children(self.banner())
             .child(self.hero())
             .child(
                 div()
@@ -267,7 +266,7 @@ impl Skep {
 
     /// The only place anything speaks above a row: who holds the machine, and
     /// what this window is doing about it.
-    pub(super) fn banner(&self) -> Option<impl IntoElement> {
+    pub(super) fn banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let message: SharedString = match (&self.connection, &self.problem) {
             (Connection::Blocked { pid }, _) => match pid {
                 Some(pid) => format!("another skep is running this machine (pid {pid})").into(),
@@ -280,20 +279,32 @@ impl Skep {
         };
 
         let blocked = matches!(self.connection, Connection::Blocked { .. });
+        // Who holds the machine is a state, and states are not dismissed.
+        // Something that went wrong is news, and news can be read and put
+        // down: nothing clears it otherwise, and it now shows on every screen.
+        let news = self.problem.is_some() && !blocked;
         Some(
             div()
                 .flex()
                 .items_center()
                 .justify_between()
-                .px_6()
+                .gap_3()
+                .px(px(MARGIN))
                 .py_2p5()
                 .bg(self.theme.raised)
                 .border_b_1()
                 .border_color(self.theme.border)
                 .label()
                 .text_color(self.theme.muted)
-                .child(message)
-                .children(blocked.then(|| self.button("Take over", Command::TakeOver))),
+                .child(div().flex_1().min_w_0().child(message))
+                .children(blocked.then(|| self.button("Take over", Command::TakeOver)))
+                .children(news.then(|| {
+                    self.quiet("dismiss-problem", "Dismiss")
+                        .on_click(cx.listener(|skep, _, _, cx| {
+                            skep.problem = None;
+                            cx.notify();
+                        }))
+                })),
         )
     }
 

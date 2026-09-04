@@ -33,6 +33,36 @@ fn shout(message: &str) {
     std::mem::forget(stderr);
 }
 
+/// The fake service is its own workspace member, so a run of these tests has
+/// not built it. Built once, on demand, into its own target directory so the
+/// nested cargo never waits on the lock this run already holds.
+pub fn fake_service() -> PathBuf {
+    use std::sync::Once;
+    static BUILD: Once = Once::new();
+
+    let target = target_dir().join("fake-service-target");
+    BUILD.call_once(|| {
+        let status = Command::new(env!("CARGO"))
+            .args(["build", "--quiet", "-p", "fake-service", "--target-dir"])
+            .arg(&target)
+            .status()
+            .expect("cargo should be runnable from a test");
+        assert!(status.success(), "building fake-service failed");
+    });
+    let binary = target.join("debug").join("fake-service");
+    assert!(binary.is_file(), "no fake service at {}", binary.display());
+    binary
+}
+
+fn target_dir() -> PathBuf {
+    let mut dir = std::env::current_exe().expect("test binary has a path");
+    dir.pop();
+    if dir.ends_with("deps") {
+        dir.pop();
+    }
+    dir
+}
+
 /// Releases install once here, so only a cold checkout pays the download.
 pub fn shared_home() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/skep-test-home")

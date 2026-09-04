@@ -477,10 +477,17 @@ pub fn share_spec(name: &Label, origin: Origin, paths: &Paths) -> Result<Service
 pub fn run_spec(file: &Path, run: &project::Run, paths: &Paths) -> Result<(ServiceSpec, u16)> {
     let root = file.parent().unwrap_or(Path::new("."));
     let name = project_name(root)?;
+    // Asked before anything is allocated or spawned. Skep picks a free port
+    // and then waits for the project to answer on it, so a command that never
+    // says which port to use does not fail, it takes the whole startup
+    // timeout to fail, and says nothing useful when it does.
+    if !run.names_the_port() {
+        return Err(Error::InvalidId(project::NEEDS_PORT.to_string()));
+    }
     let port = comb::free_port()
         .ok_or_else(|| Error::InvalidId("no free port for the project".to_string()))?;
 
-    let parts = run.command.parts(port);
+    let (assigned, parts) = run.command.split(port);
     let (program, arguments) = parts
         .split_first()
         .ok_or_else(|| Error::InvalidId("the command in [run] is empty".to_string()))?;
@@ -508,7 +515,15 @@ pub fn run_spec(file: &Path, run: &project::Run, paths: &Paths) -> Result<(Servi
     // Listening is as much as skep can know: what a dev server serves is its
     // own business, and asking for a page would start compiling one.
     .with_health(HealthCheck::new(Probe::Tcp { port }));
-    for (key, value) in &run.env {
+    // The command's own assignments first, then [run.env], so a file that
+    // says both leaves the block as the last word. Both carry the placeholder,
+    // because a port that can only be written in one of two places is a rule
+    // nobody would guess.
+    for (key, value) in assigned
+        .iter()
+        .chain(run.env.iter())
+        .map(|(key, value)| (key, value.replace(project::PLACEHOLDER, &port.to_string())))
+    {
         spec = spec.with_env(key, value);
     }
     Ok((spec, port))

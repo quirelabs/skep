@@ -155,6 +155,17 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--touch" => options.touch.push(text(&mut args, &flag)?),
             "--ignore-term" => options.ignore_term = true,
             "--listen" => options.listen = Some(number(&mut args, &flag)? as u16),
+            // The shape of a dev server that takes its port from the
+            // environment rather than from a flag, which is the case the
+            // placeholder has to be able to reach.
+            "--listen-from-env" => {
+                options.listen = Some(
+                    std::env::var("PORT")
+                        .map_err(|_| "PORT is not set".to_string())?
+                        .parse()
+                        .map_err(|_| "PORT is not a number".to_string())?,
+                )
+            }
             "--listen-delay-ms" => {
                 options.listen_delay = Duration::from_millis(number(&mut args, &flag)?)
             }

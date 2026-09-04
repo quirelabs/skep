@@ -173,16 +173,27 @@ impl Skep {
     ) -> AnyElement {
         div()
             .flex()
-            .items_center()
-            .justify_between()
+            .flex_col()
             .w_full()
-            .px(px(MARGIN))
-            .h(px(TITLEBAR))
             .flex_shrink_0()
-            .border_b_1()
-            .border_color(self.theme.border)
-            .child(self.page_title(title, cx))
-            .children(trailing)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .w_full()
+                    .px(px(MARGIN))
+                    .h(px(TITLEBAR))
+                    .flex_shrink_0()
+                    .border_b_1()
+                    .border_color(self.theme.border)
+                    .child(self.page_title(title, cx))
+                    .children(trailing),
+            )
+            // Under the band on every screen rather than on the one that
+            // happened to be written first. A start refused from the Projects
+            // page used to say so on a page nobody was looking at.
+            .children(self.banner(cx))
             .into_any_element()
     }
 

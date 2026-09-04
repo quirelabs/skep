@@ -55,7 +55,10 @@ impl Skep {
         let running = self
             .projects
             .iter()
-            .filter(|project| self.project_status(&project.name).is_some())
+            .filter(|project| {
+                self.project_status(&project.name)
+                    .is_some_and(|status| status.state.is_running())
+            })
             .count();
         let rows: Vec<_> = self
             .projects
@@ -318,6 +321,14 @@ impl Skep {
             naming.complaint = Some("a command is needed: what starts this project".to_string());
             return;
         }
+        // Skep chooses the port and then watches that port for the process to
+        // answer on. A command that never says which port to use is a command
+        // skep waits thirty seconds on and then calls failed, which is a bad
+        // way to learn you left something out.
+        if !command.contains(comb_services::project::PLACEHOLDER) {
+            naming.complaint = Some(comb_services::project::NEEDS_PORT.to_string());
+            return;
+        }
         if !site.is_empty() && comb::valid_hostname(&site).is_err() {
             naming.complaint = Some(format!(
                 "{site:?} is not a hostname a certificate can cover"
@@ -340,7 +351,7 @@ impl Skep {
     fn project_status(&self, name: &str) -> Option<&ServiceStatus> {
         self.mirror
             .services()
-            .find(|status| status.id.service.as_str() == name && status.state.is_running())
+            .find(|status| status.id.service.as_str() == name)
     }
 
     fn project_row(
@@ -353,9 +364,32 @@ impl Skep {
         let status = self.project_status(&project.name);
         let port = status.and_then(|status| status.ports.values().next().copied());
         let directory = project.directory.clone();
+        // Working covers the whole of a start, which for a project is most of
+        // what there is to see: skep waits for the process to answer on the
+        // port it chose, and a dev server can take a while to get there.
+        let working = status
+            .is_some_and(|status| status.activity.is_some() || status.state.is_transitional());
+        let running = status.is_some_and(|status| status.state.is_running());
+        let failed =
+            status.is_some_and(|status| matches!(status.state, ServiceState::Failed { .. }));
         let colour = match status {
-            Some(_) => theme.running,
+            Some(status) => theme.dot(&status.state, working),
             None => theme.idle,
+        };
+        // What the row says about itself in words. Nothing while it is simply
+        // running: the dot and the port already say that.
+        let note: Option<SharedString> = match status.map(|status| &status.state) {
+            Some(ServiceState::Failed { reason }) => Some(reason.clone().into()),
+            Some(state) if state.is_transitional() => Some(state.to_string().into()),
+            _ => None,
+        };
+        // Only the states worth noticing, the same three a service row lights
+        // up for, so a list of projects nobody has started stays quiet.
+        let wash = match &status.map(|status| &status.state) {
+            Some(ServiceState::Ready) => Some(theme.running),
+            Some(ServiceState::Failed { .. }) => Some(theme.failed),
+            _ if working => Some(theme.accent),
+            _ => None,
         };
 
         div()
@@ -370,7 +404,7 @@ impl Skep {
             .py(px(14.))
             .border_b_1()
             .border_color(theme.border)
-            .children(status.map(|_| {
+            .children(wash.map(|colour| {
                 div().absolute().inset_0().bg(gpui::linear_gradient(
                     90.,
                     gpui::linear_color_stop(faded(colour, theme.wash), 0.),
@@ -384,7 +418,17 @@ impl Skep {
                     .gap_3()
                     .w_full()
                     .min_w_0()
-                    .child(div().size(px(7.)).rounded_full().flex_shrink_0().bg(colour))
+                    .children(match status {
+                        Some(status) => vec![self.dot(status, working, index)],
+                        None => vec![
+                            div()
+                                .size(px(7.))
+                                .rounded_full()
+                                .flex_shrink_0()
+                                .bg(colour)
+                                .into_any_element(),
+                        ],
+                    })
                     .child(
                         div()
                             .flex_shrink_0()
@@ -402,15 +446,36 @@ impl Skep {
                     }))
                     .children(port.map(|port| self.tag(port.to_string().into())))
                     .child(div().flex_1())
+                    // What it is doing, in words, because a start can take a
+                    // while and a dot alone does not say how long or why not.
+                    .children(note.map(|words| {
+                        // Truncated: a failure's reason can be a sentence, and
+                        // a sentence must not push the control that answers it
+                        // off the end of the row.
+                        div()
+                            .min_w_0()
+                            .max_w(px(300.))
+                            .truncate()
+                            .label()
+                            .text_color(if failed { theme.failed } else { theme.muted })
+                            .child(words)
+                    }))
                     .child({
                         let mut actions = div().flex().items_center().gap_2().flex_shrink_0();
-                        if let Some(status) = status {
-                            let id = status.id.clone();
-                            actions = actions.child(self.button("Stop", Command::Stop(id)));
-                        } else if project.command.is_some() {
-                            actions = actions.child(
-                                self.button("Start", Command::StartProject(directory.clone())),
-                            );
+                        match status {
+                            // Stopping is the way out of a start that is
+                            // taking too long as much as it is the way out of
+                            // one that worked.
+                            Some(status) if running || working => {
+                                actions = actions
+                                    .child(self.button("Stop", Command::Stop(status.id.clone())));
+                            }
+                            _ if project.command.is_some() => {
+                                actions = actions.child(
+                                    self.button("Start", Command::StartProject(directory.clone())),
+                                );
+                            }
+                            _ => {}
                         }
                         actions
                     }),

@@ -61,7 +61,10 @@ pub struct Projects {
 pub struct Run {
     /// What to start. A string is split on spaces; a list keeps arguments
     /// that have spaces in them. Not a shell: no pipes, no `&&`, no `$VAR`.
-    /// Those belong in a script, where they can be read and tested.
+    /// Those belong in a script, where they can be read and tested. Leading
+    /// `NAME=VALUE` pairs are the one borrowed convention, because a tool
+    /// that takes its port from the environment has no other way to be told
+    /// which port skep chose.
     pub command: Line,
     /// Where to run it, relative to this file. The file's own directory by
     /// default, which is what a project usually means.
@@ -71,6 +74,15 @@ pub struct Run {
     pub site: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+}
+
+impl Run {
+    /// Whether this project says which port to use anywhere it is allowed to.
+    /// The environment counts: a tool that reads `PORT` is told through it,
+    /// and `[run.env]` carries the placeholder like everything else does.
+    pub fn names_the_port(&self) -> bool {
+        self.command.names_the_port() || self.env.values().any(|value| value.contains(PLACEHOLDER))
+    }
 }
 
 /// A command, written either way round.
@@ -92,16 +104,78 @@ impl Line {
         }
     }
 
+    /// Whether the command says anywhere at all which port to use. A project
+    /// whose command does not is a project skep watches the wrong port for,
+    /// and the only way to find that out is to wait for the start to time
+    /// out, so it is worth asking before anything runs.
+    pub fn names_the_port(&self) -> bool {
+        self.shown().contains(PLACEHOLDER)
+    }
+
+    /// The environment the command sets, and the program it runs.
+    ///
+    /// Leading `NAME=VALUE` pairs become environment, the way they do in
+    /// every shell. This is not a shell and never will be, but that one
+    /// convention has to be here: a tool that reads its port out of the
+    /// environment has no other way of being told which port skep chose, and
+    /// `PORT={port} npm start` is how anybody would write it.
+    pub fn split(&self, port: u16) -> (BTreeMap<String, String>, Vec<String>) {
+        let mut environment = BTreeMap::new();
+        let mut rest = Vec::new();
+        for word in self.words(port) {
+            // Only before the program. After it, an argument that happens to
+            // contain an equals sign is an argument.
+            if rest.is_empty()
+                && let Some(assignment) = assignment(&word)
+            {
+                environment.insert(assignment.0, assignment.1);
+                continue;
+            }
+            rest.push(word);
+        }
+        (environment, rest)
+    }
+
     /// The program and its arguments, with `{port}` filled in wherever it
-    /// appears. Splitting on whitespace is a convenience for the common case;
-    /// anything with a space inside an argument is written as a list.
+    /// appears and any leading assignments taken out.
     pub fn parts(&self, port: u16) -> Vec<String> {
-        let filled = |text: &str| text.replace("{port}", &port.to_string());
+        self.split(port).1
+    }
+
+    /// Every word of the command, with the placeholder filled in. Splitting on
+    /// whitespace is a convenience for the common case; anything with a space
+    /// inside an argument is written as a list.
+    fn words(&self, port: u16) -> Vec<String> {
+        let filled = |text: &str| text.replace(PLACEHOLDER, &port.to_string());
         match self {
             Self::Whole(line) => line.split_whitespace().map(filled).collect(),
             Self::Parts(parts) => parts.iter().map(|part| filled(part)).collect(),
         }
     }
+}
+
+/// What skep writes the port it chose into, wherever it appears.
+pub const PLACEHOLDER: &str = "{port}";
+
+/// What to tell somebody whose project never says which port to use. One
+/// sentence in one place, because the window asks this question of a form and
+/// the engine asks it of a file, and they must not word it differently.
+pub const NEEDS_PORT: &str = "skep chooses the port, so the command has to say where it goes: \
+                              write {port} in a flag, or in front as PORT={port} if the tool \
+                              reads it from the environment";
+
+/// `NAME=VALUE`, split, if that is what this word is. The name has to look
+/// like an environment variable or `--flag=value` would be swallowed.
+fn assignment(word: &str) -> Option<(String, String)> {
+    let (name, value) = word.split_once('=')?;
+    let head = name.chars().next()?;
+    if !(head.is_ascii_alphabetic() || head == '_') {
+        return None;
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some((name.to_string(), value.to_string()))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -320,14 +394,19 @@ pub fn write_run(directory: &Path, command: &str, site: Option<&str>) -> Result<
 const PROJECT_TEMPLATE: &str = "\
 # What skep should run for this project, and the name to serve it at.
 #
-# Uncomment and change the command. Skep picks a free port, sets PORT in the
-# environment, and substitutes {port} anywhere it appears, so a tool that
-# reads the environment needs no flag and a tool that needs a flag has
-# somewhere to put it.
+# Uncomment and change the command. Skep picks a free port and then waits for
+# this project to answer on it, so the command has to say where that port
+# goes. Write {port} wherever it belongs:
 #
 #   [run]
 #   command = \"npm run dev -- --port {port} --strictPort\"
 #   site = \"myapp.test\"
+#
+# A tool that reads its port from the environment is told the same way. A
+# leading NAME=VALUE becomes environment, as it does in a shell:
+#
+#   [run]
+#   command = \"PORT={port} npm start\"
 #
 # There is no port to write down anywhere: whichever one it gets is the one
 # the name points at, which is the whole reason this file exists.
@@ -492,6 +571,35 @@ mod tests {
             run.command.parts(4321),
             ["npm", "run", "dev", "--", "--port", "4321"]
         );
+    }
+
+    #[test]
+    fn a_leading_assignment_is_environment_rather_than_a_program() {
+        let line = Line::Whole("PORT={port} npm start".to_string());
+
+        let (environment, parts) = line.split(4321);
+
+        assert_eq!(environment["PORT"], "4321");
+        assert_eq!(parts, ["npm", "start"]);
+    }
+
+    #[test]
+    fn an_equals_sign_after_the_program_is_an_argument() {
+        let line = Line::Whole("npm run dev -- --port={port}".to_string());
+
+        let (environment, parts) = line.split(4321);
+
+        assert!(environment.is_empty(), "a flag is not an assignment");
+        assert_eq!(parts, ["npm", "run", "dev", "--", "--port=4321"]);
+    }
+
+    #[test]
+    fn a_command_says_whether_it_names_the_port() {
+        assert!(Line::Whole("npm run dev -- --port {port}".to_string()).names_the_port());
+        assert!(Line::Whole("PORT={port} npm start".to_string()).names_the_port());
+        assert!(Line::Parts(vec!["npm".into(), "--port".into(), "{port}".into()]).names_the_port());
+        assert!(!Line::Whole("npm run dev".to_string()).names_the_port());
+        assert!(!Line::Whole("npm run dev -- --port 3000".to_string()).names_the_port());
     }
 
     #[test]
