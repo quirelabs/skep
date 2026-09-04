@@ -241,7 +241,12 @@ impl Skep {
             Ok(other) => return Ok(confused(other)),
             Err(problem) => return Ok(*problem),
         };
-        let Some(instance) = comb_services::shared_as(&target, &services) else {
+        let sites = match ask(&mut client, Request::Sites).await {
+            Ok(Response::Sites { sites }) => sites,
+            Ok(other) => return Ok(confused(other)),
+            Err(problem) => return Ok(*problem),
+        };
+        let Some(instance) = comb_services::shared_as(&target, &sites, &services) else {
             return Ok(sentence(format!("{target} is not shared")));
         };
         if let Err(problem) = ask(

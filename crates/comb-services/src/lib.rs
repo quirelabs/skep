@@ -571,21 +571,54 @@ pub fn share_plan(
         let name = tunnel_name(&host).map_err(|error| error.to_string())?;
         return Ok((name, Origin::site(&host, https_port)));
     }
-    let id = instance(target, None, paths).map_err(|error| error.to_string())?;
-    let status = running
-        .iter()
-        .find(|status| status.id == id)
-        .ok_or_else(|| format!("{id} is not registered here"))?;
+    let status = registered(target, running, paths)?;
+    let id = &status.id;
     if !status.state.is_running() {
         return Err(format!("{id} is {}; start it first", status.state));
     }
-    let main = main_port(target).map_err(|error| error.to_string())?;
-    let port = status
-        .ports
-        .get(main)
-        .ok_or_else(|| format!("{id} has no {main} port to share"))?;
+    let port = port_of(target, status)?;
+
+    // A name that already points at this port is the better thing to share.
+    // It goes through the proxy, so the request carries the name the app was
+    // built to answer on, and an app that writes absolute urls into its own
+    // pages keeps working through the tunnel. This is what makes sharing a
+    // project mean sharing the project's site without anybody saying so.
+    if let Some((host, _)) = sites.iter().find(|(_, pointed)| **pointed == port) {
+        let name = tunnel_name(host).map_err(|error| error.to_string())?;
+        return Ok((name, Origin::site(host, https_port)));
+    }
+
     let name = tunnel_name(id.service.as_str()).map_err(|error| error.to_string())?;
-    Ok((name, Origin::service(*port)))
+    Ok((name, Origin::service(port)))
+}
+
+/// The instance a name means. The catalog first, then whatever is registered,
+/// because a project runs under its own name and no catalog contains it.
+fn registered<'a>(
+    target: &str,
+    running: &'a [ServiceStatus],
+    paths: &Paths,
+) -> std::result::Result<&'a ServiceStatus, String> {
+    match instance(target, None, paths) {
+        Ok(id) => running
+            .iter()
+            .find(|status| status.id == id)
+            .ok_or_else(|| format!("{id} is not registered here")),
+        Err(unknown) => running
+            .iter()
+            .find(|status| status.id.service.as_str() == target)
+            .ok_or_else(|| unknown.to_string()),
+    }
+}
+
+/// Which of an instance's ports to share. The one the catalog calls its main
+/// port when it has an opinion, and otherwise the only one a project has.
+fn port_of(target: &str, status: &ServiceStatus) -> std::result::Result<u16, String> {
+    main_port(target)
+        .ok()
+        .and_then(|main| status.ports.get(main).copied())
+        .or_else(|| status.ports.values().next().copied())
+        .ok_or_else(|| format!("{} has no port to share", status.id))
 }
 
 /// Puts a target on a public url and waits for the url. Shared by the CLI and
@@ -667,16 +700,35 @@ pub async fn share(
 }
 
 /// The tunnel serving `target`, if one is registered, so it can be stopped.
-pub fn shared_as(target: &str, running: &[ServiceStatus]) -> Option<InstanceId> {
-    let name = tunnel_name(&target.to_ascii_lowercase()).ok()?;
-    running
-        .iter()
-        .map(|status| &status.id)
-        .find(|id| {
-            id.service.as_str() == Cloudflared.name()
-                && id.tag.as_ref().is_some_and(|tag| tag.name() == &name)
+pub fn shared_as(
+    target: &str,
+    sites: &BTreeMap<String, u16>,
+    running: &[ServiceStatus],
+) -> Option<InstanceId> {
+    let by = |name: Label| -> Option<InstanceId> {
+        running
+            .iter()
+            .map(|status| &status.id)
+            .find(|id| {
+                id.service.as_str() == Cloudflared.name()
+                    && id.tag.as_ref().is_some_and(|tag| tag.name() == &name)
+            })
+            .cloned()
+    };
+    // Under its own name first, then under the name of the site that points
+    // at it, which is how a project is shared. Unsharing has to look for the
+    // tunnel sharing found, not for the one its argument spells.
+    tunnel_name(&target.to_ascii_lowercase())
+        .ok()
+        .and_then(&by)
+        .or_else(|| {
+            let status = running
+                .iter()
+                .find(|status| status.id.service.as_str() == target)?;
+            let port = status.ports.values().next()?;
+            let (host, _) = sites.iter().find(|(_, pointed)| *pointed == port)?;
+            tunnel_name(host).ok().and_then(by)
         })
-        .cloned()
 }
 
 #[cfg(test)]
@@ -938,16 +990,63 @@ mod tests {
         assert!(error.contains("start it first"), "{error}");
     }
 
+    /// A project's instance: its own name, versioned local, one port.
+    fn project(name: &str, port: u16) -> ServiceStatus {
+        up(&format!("{name}@local"), "http", port)
+    }
+
+    #[test]
+    fn a_project_is_shared_through_the_name_that_points_at_it() {
+        let paths = home_with("share-project", "");
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let running = [project("shopfront", port)];
+        let sites = BTreeMap::from([("shopfront.test".to_string(), port)]);
+
+        let (name, origin) = share_plan("shopfront", &sites, &running, 8443, &paths).unwrap();
+
+        // Through the proxy, not at the port: the request has to carry the
+        // name the app answers on.
+        assert_eq!(name.as_str(), "shopfront-test");
+        assert_eq!(origin, Origin::site("shopfront.test", 8443));
+    }
+
+    #[test]
+    fn a_project_with_no_name_of_its_own_is_shared_at_its_port() {
+        let paths = home_with("share-bare", "");
+        let running = [project("shopfront", 4321)];
+
+        let (name, origin) =
+            share_plan("shopfront", &BTreeMap::new(), &running, 8443, &paths).unwrap();
+
+        assert_eq!(name.as_str(), "shopfront");
+        assert_eq!(origin, Origin::service(4321));
+    }
+
+    #[test]
+    fn unsharing_a_project_finds_the_tunnel_sharing_it_made() {
+        let mut tunnel = up("cloudflared@2026.8.3~shopfront-test", "metrics", 20999);
+        tunnel.notice = Some("https://x.trycloudflare.com".to_string());
+        let running = [project("shopfront", 4321), tunnel];
+        let sites = BTreeMap::from([("shopfront.test".to_string(), 4321)]);
+
+        // Asked for by the project's name, though the tunnel wears the site's.
+        let found = shared_as("shopfront", &sites, &running).unwrap();
+        assert_eq!(found.to_string(), "cloudflared@2026.8.3~shopfront-test");
+        // And by the site's name, which is the same tunnel.
+        assert_eq!(shared_as("shopfront.test", &sites, &running), Some(found));
+    }
+
     #[test]
     fn the_tunnel_serving_a_target_is_found_by_the_name_it_was_given() {
         let mut tunnel = up("cloudflared@2026.8.3~myapp-test", "metrics", 20999);
         tunnel.notice = Some("https://x.trycloudflare.com".to_string());
         let running = [up("mailpit@1.31.0", "http", 8025), tunnel];
 
-        let found = shared_as("MyApp.test", &running).unwrap();
+        let found = shared_as("MyApp.test", &BTreeMap::new(), &running).unwrap();
 
         assert_eq!(found.to_string(), "cloudflared@2026.8.3~myapp-test");
-        assert!(shared_as("postgres", &running).is_none());
+        assert!(shared_as("postgres", &BTreeMap::new(), &running).is_none());
     }
 
     #[test]

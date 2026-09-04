@@ -228,7 +228,10 @@ async fn unshare(args: &[String]) -> Result<()> {
     let Response::Status { overview } = client.send(&Request::Status).await? else {
         bail!("unexpected reply");
     };
-    let Some(id) = comb_services::shared_as(target, &overview.services) else {
+    let Response::Sites { sites } = client.send(&Request::Sites).await? else {
+        bail!("unexpected reply");
+    };
+    let Some(id) = comb_services::shared_as(target, &sites, &overview.services) else {
         println!("{target} is not shared");
         return Ok(());
     };
