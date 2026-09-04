@@ -108,3 +108,21 @@ async fn a_project_told_through_the_environment_reaches_ready() {
     assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
     engine.stop(&id).await.unwrap();
 }
+
+/// The command that actually happened: npm took the flag for itself, vite
+/// picked its own port, and skep sat watching the port it had chosen until
+/// the startup timeout ran out.
+#[tokio::test]
+async fn npm_keeping_the_port_for_itself_is_refused_with_the_fix() {
+    let file = project("npm", "npm run dev --port {port}");
+    let paths =
+        Paths::new(std::env::temp_dir().join(format!("skep-npm-home-{}", std::process::id())));
+    let loaded = comb_services::project::load(&file).unwrap();
+
+    let refused = comb_services::run_spec(&file, &loaded.run.unwrap(), &paths).unwrap_err();
+
+    assert!(
+        refused.to_string().contains("npm run dev -- --port {port}"),
+        "the refusal has to hand back the command that works: {refused}"
+    );
+}

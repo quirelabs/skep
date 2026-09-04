@@ -484,6 +484,12 @@ pub fn run_spec(file: &Path, run: &project::Run, paths: &Paths) -> Result<(Servi
     if !run.names_the_port() {
         return Err(Error::InvalidId(project::NEEDS_PORT.to_string()));
     }
+    if let Some(fixed) = run.command.npm_needs_a_separator() {
+        return Err(Error::InvalidId(format!(
+            "{}: {fixed}",
+            project::NEEDS_SEPARATOR
+        )));
+    }
     let port = comb::free_port()
         .ok_or_else(|| Error::InvalidId("no free port for the project".to_string()))?;
 

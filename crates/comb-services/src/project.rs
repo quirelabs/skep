@@ -112,6 +112,49 @@ impl Line {
         self.shown().contains(PLACEHOLDER)
     }
 
+    /// The command written the way it should have been, if this is an npm
+    /// command whose flags npm will keep for itself.
+    ///
+    /// The one mistake worth knowing about by name. Everything else skep can
+    /// only find out by running it and waiting, but this one is visible in
+    /// the words: `npm run dev --port 54233` starts the dev server with no
+    /// port at all, npm prints a warning nobody reads, and the server picks
+    /// its own port while skep watches the one it chose. Only npm; pnpm, bun
+    /// and yarn all pass what follows the script straight through.
+    pub fn npm_needs_a_separator(&self) -> Option<String> {
+        let words: Vec<String> = match self {
+            Self::Whole(line) => line.split_whitespace().map(str::to_string).collect(),
+            Self::Parts(parts) => parts.clone(),
+        };
+        // Whatever the leading assignments set is not the program.
+        let start = words.iter().position(|word| assignment(word).is_none())?;
+        let words = &words[start..];
+        let [program, verb, rest @ ..] = words else {
+            return None;
+        };
+        if program != "npm" {
+            return None;
+        }
+        // `npm run` takes the script's name first; `npm start` and `npm test`
+        // are the script.
+        let named = match verb.as_str() {
+            "run" | "run-script" => 1,
+            "start" | "test" => 0,
+            _ => return None,
+        };
+        let tail = rest.get(named..)?;
+        if tail.iter().any(|word| word == "--") {
+            return None;
+        }
+        if !tail.iter().any(|word| word.starts_with('-')) {
+            return None;
+        }
+        let mut fixed: Vec<&str> = words[..2 + named].iter().map(String::as_str).collect();
+        fixed.push("--");
+        fixed.extend(tail.iter().map(String::as_str));
+        Some(fixed.join(" "))
+    }
+
     /// The environment the command sets, and the program it runs.
     ///
     /// Leading `NAME=VALUE` pairs become environment, the way they do in
@@ -163,6 +206,11 @@ pub const PLACEHOLDER: &str = "{port}";
 pub const NEEDS_PORT: &str = "skep chooses the port, so the command has to say where it goes: \
                               write {port} in a flag, or in front as PORT={port} if the tool \
                               reads it from the environment";
+
+/// The same, for the one command shape that names the port and still does not
+/// pass it on.
+pub const NEEDS_SEPARATOR: &str = "npm keeps flags for itself unless a bare -- comes first, so \
+                                   the port would never reach the script. Write it as";
 
 /// `NAME=VALUE`, split, if that is what this word is. The name has to look
 /// like an environment variable or `--flag=value` would be swallowed.
@@ -591,6 +639,61 @@ mod tests {
 
         assert!(environment.is_empty(), "a flag is not an assignment");
         assert_eq!(parts, ["npm", "run", "dev", "--", "--port=4321"]);
+    }
+
+    #[test]
+    fn npm_keeping_the_flags_for_itself_is_caught_in_the_words() {
+        // The exact command that sent a dev server to 5174 while skep watched
+        // the port it had chosen.
+        let line = Line::Whole("npm run dev --port {port}".to_string());
+
+        assert_eq!(
+            line.npm_needs_a_separator().as_deref(),
+            Some("npm run dev -- --port {port}")
+        );
+    }
+
+    #[test]
+    fn the_separator_is_only_wanted_where_npm_would_eat_the_flag() {
+        let fine = [
+            // Already written correctly.
+            "npm run dev -- --port {port}",
+            // No flags for npm to take.
+            "npm run dev",
+            // Every other runner passes what follows the script straight on.
+            "pnpm dev --port {port}",
+            "bun run dev --port {port}",
+            "yarn dev --port {port}",
+            // Not a script runner at all.
+            "vite dev --port {port}",
+        ];
+        for command in fine {
+            assert_eq!(
+                Line::Whole(command.to_string()).npm_needs_a_separator(),
+                None,
+                "{command} needs no separator"
+            );
+        }
+    }
+
+    #[test]
+    fn npm_start_is_the_script_rather_than_taking_one() {
+        assert_eq!(
+            Line::Whole("npm start --port {port}".to_string())
+                .npm_needs_a_separator()
+                .as_deref(),
+            Some("npm start -- --port {port}")
+        );
+    }
+
+    #[test]
+    fn the_environment_in_front_does_not_hide_the_program() {
+        assert_eq!(
+            Line::Whole("NODE_ENV=development npm run dev --port {port}".to_string())
+                .npm_needs_a_separator()
+                .as_deref(),
+            Some("npm run dev -- --port {port}")
+        );
     }
 
     #[test]

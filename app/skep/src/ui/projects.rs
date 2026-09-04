@@ -329,6 +329,16 @@ impl Skep {
             naming.complaint = Some(comb_services::project::NEEDS_PORT.to_string());
             return;
         }
+        // Named and still not passed on, which is the one way a command can
+        // look right and be wrong.
+        let written = comb_services::project::Line::Whole(command.clone());
+        if let Some(fixed) = written.npm_needs_a_separator() {
+            naming.complaint = Some(format!(
+                "{}: {fixed}",
+                comb_services::project::NEEDS_SEPARATOR
+            ));
+            return;
+        }
         if !site.is_empty() && comb::valid_hostname(&site).is_err() {
             naming.complaint = Some(format!(
                 "{site:?} is not a hostname a certificate can cover"
