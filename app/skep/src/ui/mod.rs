@@ -27,6 +27,7 @@ use crate::theme::{Scale, Theme};
 /// them apart.
 mod mail;
 mod paint;
+mod projects;
 mod rail;
 mod services;
 mod settings;
@@ -68,6 +69,7 @@ const MONO: &str = "Menlo";
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Services,
+    Projects,
     Sites,
     Mail,
     Settings,
@@ -169,6 +171,8 @@ pub struct Skep {
     was_active: bool,
     /// Whether a site opens in the browser rather than in the pane.
     sites_in_browser: bool,
+    /// Every project this machine knows about.
+    projects: Vec<crate::bridge::Project>,
     /// The light in the window. One picture, stretched to fit.
     sky: Option<std::sync::Arc<gpui::Image>>,
     /// The page's own tooth, so both halves of the window are one material.
@@ -267,6 +271,7 @@ impl Skep {
             scout: Rc::new(RefCell::new(None)),
             was_active: true,
             sites_in_browser: false,
+            projects: Vec::new(),
             sky: None,
             tooth: None,
             authority_trusted: false,
@@ -391,6 +396,7 @@ impl Skep {
                     Some(draft) => draft.complaint = Some(why),
                     None => self.site_trouble.push(why),
                 },
+                Update::Projects(projects) => self.projects = projects,
                 Update::Preferences { sites_in_browser } => {
                     self.sites_in_browser = sites_in_browser;
                 }
@@ -517,8 +523,19 @@ impl Render for Skep {
         // Coming back to the window is as deliberate as opening the tab, so
         // the count is never older than the glance being taken at it.
         let active = window.is_window_active();
-        if active && !self.was_active && self.page == Page::Sites {
-            let _ = self.commands.send(Command::CheckSites);
+        if active && !self.was_active {
+            match self.page {
+                Page::Sites => {
+                    let _ = self.commands.send(Command::CheckSites);
+                }
+                // A project can be remembered by the command line while the
+                // window is in the background, so the list is asked for again
+                // rather than kept from whenever the window last looked.
+                Page::Projects => {
+                    let _ = self.commands.send(Command::Projects);
+                }
+                _ => {}
+            }
         }
         self.was_active = active;
         // The webviews belong to the window, so they cannot exist before one.
@@ -620,6 +637,7 @@ impl Render for Skep {
                     }))
                     .child(match self.page {
                         Page::Services => self.content(cx),
+                        Page::Projects => self.projects_page(cx),
                         Page::Sites => self.sites_page(cx),
                         Page::Mail => self.mail_page(cx),
                         Page::Settings => self.settings(cx),

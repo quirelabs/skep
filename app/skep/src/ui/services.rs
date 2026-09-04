@@ -540,9 +540,9 @@ impl Skep {
             .children(lines)
     }
 
-    /// Status colour lives here and nowhere else. Orange means motion: while a
-    /// service is working the dot breathes, which is the only thing in the
-    /// interface that repeats.
+    /// Status colour lives here and nowhere else. While a service is working
+    /// the dot breathes, which is the only thing in the interface that
+    /// repeats.
     pub(super) fn dot(&self, status: &ServiceStatus, working: bool, index: usize) -> AnyElement {
         let colour = self.theme.dot(&status.state, working);
         let dot = div()

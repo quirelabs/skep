@@ -10,7 +10,7 @@ pub(super) const RAIL: &[(&str, &str, Option<Page>)] = &[
     // the cell is the app's own shape rather than a borrowed one.
     ("Services", "hexagon", Some(Page::Services)),
     ("Sites", "globe-simple", Some(Page::Sites)),
-    ("Projects", "squares-four", None),
+    ("Projects", "squares-four", Some(Page::Projects)),
     ("Logs", "list-dashes", None),
     ("Mail", "envelope-simple", Some(Page::Mail)),
     ("Agent", "sparkle", None),

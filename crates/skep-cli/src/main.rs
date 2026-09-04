@@ -281,6 +281,15 @@ async fn up() -> Result<()> {
     // been started.
     let mut wanted_sites = project::sites(&Default::default(), &project)?;
     if let Some(run) = &project.run {
+        // Worth remembering only once it is a project skep runs: a file that
+        // only lists services is not something the window has anything to
+        // show about.
+        if let Some(directory) = path.parent()
+            && let Ok(settings) = project::ensure_settings(&Paths::from_env())
+            && project::remember_project(&settings, directory).unwrap_or(false)
+        {
+            println!("  remembered, so the app can start it too");
+        }
         match start_project(&mut client, &path, run, &running).await {
             Ok((line, served)) => {
                 println!("  {line}");

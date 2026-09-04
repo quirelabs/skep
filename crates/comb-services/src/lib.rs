@@ -514,6 +514,13 @@ pub fn run_spec(file: &Path, run: &project::Run, paths: &Paths) -> Result<(Servi
     Ok((spec, port))
 }
 
+/// What a project's file makes it called, which is what its directory is
+/// called. The same answer `run_spec` uses, so a window and the engine agree
+/// on the name without either guessing.
+pub fn project_name_of(file: &Path) -> Result<comb::ServiceName> {
+    project_name(file.parent().unwrap_or(Path::new(".")))
+}
+
 /// What to call a project: its directory, cut down to what a name may be.
 fn project_name(root: &Path) -> Result<comb::ServiceName> {
     let raw = root

@@ -23,6 +23,12 @@ pub enum Command {
     CheckSites,
     /// Remember one of the app's own preferences.
     Prefer(&'static str, bool),
+    /// The projects this machine knows about, and what they are doing.
+    Projects,
+    /// Start what a project runs, on a port skep chooses.
+    StartProject(String),
+    /// Stop showing a project. Its files are untouched.
+    ForgetProject(String),
     /// What the mail catcher has caught.
     Mail,
     /// One message, in full.
@@ -96,6 +102,8 @@ pub enum Update {
     Preferences {
         sites_in_browser: bool,
     },
+    /// Every project this machine knows about.
+    Projects(Vec<Project>),
     /// Every hostname this machine serves, and anything stopping it.
     Sites {
         sites: std::collections::BTreeMap<String, u16>,
@@ -223,6 +231,41 @@ async fn start_sites(host: &comb::Host, reports: &UnboundedSender<Update>) {
         public_https: serving.public_https,
     });
     tell_preferences(&paths, reports);
+    let _ = reports.send(Update::Projects(known_projects(&paths)));
+}
+
+/// A project as the window shows it: what it is called, where it lives, and
+/// the name it is served at. What it is doing comes from the replica, since
+/// a project is an ordinary instance once it is running.
+#[derive(Clone, Debug)]
+pub struct Project {
+    pub name: String,
+    pub directory: String,
+    pub site: Option<String>,
+    pub command: String,
+}
+
+/// Reads every remembered project's file. A directory that has been deleted
+/// or a file that no longer parses is dropped from the list rather than
+/// reported: the window shows what it can run.
+fn known_projects(paths: &comb::Paths) -> Vec<Project> {
+    let settings = comb_services::project::settings(paths).unwrap_or_default();
+    settings
+        .projects
+        .paths
+        .iter()
+        .filter_map(|directory| {
+            let file = std::path::Path::new(directory).join(comb_services::project::FILE);
+            let project = comb_services::project::load(&file).ok()?;
+            let run = project.run?;
+            Some(Project {
+                name: comb_services::project_name_of(&file).ok()?.to_string(),
+                directory: directory.clone(),
+                site: run.site.clone(),
+                command: run.command.shown(),
+            })
+        })
+        .collect()
 }
 
 /// What config.toml says the app should do, sent the same way everything else
@@ -307,6 +350,60 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
                         // A branch nobody can connect to is not much of a branch.
                         Ok(_) => engine.start(&id).await,
                         Err(error) => Err(error),
+                    }
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Command::Projects => {
+            let _ = reports.send(Update::Projects(known_projects(engine.paths())));
+            Ok(())
+        }
+        Command::ForgetProject(directory) => {
+            let paths = engine.paths().clone();
+            if let Ok(settings) = comb_services::project::ensure_settings(&paths) {
+                let _ = comb_services::project::forget_project(&settings, &directory);
+            }
+            let _ = reports.send(Update::Projects(known_projects(&paths)));
+            Ok(())
+        }
+        Command::StartProject(directory) => {
+            let paths = engine.paths().clone();
+            let file = std::path::Path::new(&directory).join(comb_services::project::FILE);
+            let outcome = comb_services::project::load(&file).and_then(|project| {
+                let run = project.run.ok_or_else(|| {
+                    comb::Error::InvalidId(format!("{directory} has no [run] to start"))
+                })?;
+                let spec = comb_services::run_spec(&file, &run, &paths)?;
+                Ok((spec, run.site))
+            });
+            match outcome {
+                Ok(((spec, port), site)) => {
+                    let id = spec.id.clone();
+                    // Upserted rather than registered: the port is new every
+                    // time, so the spec it ran under last time is stale.
+                    if let Err(error) = engine.upsert(spec).await {
+                        Err(error)
+                    } else if let Err(error) = engine.start(&id).await {
+                        Err(error)
+                    } else {
+                        // The name follows the port that was actually taken,
+                        // which is the whole reason a project runs this way.
+                        if let Some(host) = site {
+                            engine.add_sites([(host, port)].into_iter().collect());
+                            let _ = reports.send(Update::Sites {
+                                sites: engine.site_list(),
+                                trouble: Vec::new(),
+                                trusted: comb::Authority::open(&paths)
+                                    .map(|authority| authority.is_trusted())
+                                    .unwrap_or(false),
+                                public_https: comb::public_https_port(
+                                    &comb::Layout::system(comb::SUFFIX).control,
+                                )
+                                .await,
+                            });
+                        }
+                        Ok(())
                     }
                 }
                 Err(error) => Err(error),

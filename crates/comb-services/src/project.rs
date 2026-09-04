@@ -26,6 +26,12 @@ pub struct Project {
     /// so the port it listens on is skep's to choose rather than yours to
     /// keep track of.
     pub run: Option<Run>,
+    /// Where the projects skep has been asked to run live. Only ever read
+    /// from config.toml, like every other preference: which projects this
+    /// machine knows about is the machine's business, and a checkout that
+    /// carried the list would be describing somebody else's disk.
+    #[serde(default)]
+    pub projects: Projects,
     /// How the app behaves. Only ever read from config.toml: a preference is
     /// the machine's, never a repository's, so a project file carrying one is
     /// ignored rather than obeyed.
@@ -40,6 +46,14 @@ pub struct App {
     /// pane beside the list.
     #[serde(default)]
     pub sites_in_browser: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Projects {
+    /// The directory each one lives in, holding its skep.toml.
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +82,16 @@ pub enum Line {
 }
 
 impl Line {
+    /// The command as it was written, for showing to somebody. The
+    /// placeholder is left in it: what is worth reading is the shape of the
+    /// command, and the port it happened to get is on the row already.
+    pub fn shown(&self) -> String {
+        match self {
+            Self::Whole(line) => line.clone(),
+            Self::Parts(parts) => parts.join(" "),
+        }
+    }
+
     /// The program and its arguments, with `{port}` filled in wherever it
     /// appears. Splitting on whitespace is a convenience for the common case;
     /// anything with a space inside an argument is written as a list.
@@ -104,23 +128,54 @@ pub fn sites(settings: &Project, project: &Project) -> Result<comb::Sites> {
     Ok(all)
 }
 
+/// Remembers that a project exists, so a window that was never opened in its
+/// directory can still show it. Says whether it was new, because telling
+/// somebody about the first time is worth more than telling them every time.
+pub fn remember_project(path: &Path, directory: &Path) -> Result<bool> {
+    let directory = directory.display().to_string();
+    let mut document = read(path)?;
+    let paths = table(path, &mut document, "projects")?
+        .entry("paths")
+        .or_insert_with(|| toml_edit::value(toml_edit::Array::new()));
+    let Some(list) = paths.as_array_mut() else {
+        return Err(Error::Project {
+            path: path.display().to_string(),
+            message: "projects.paths is not a list".to_string(),
+        });
+    };
+    if list.iter().any(|held| held.as_str() == Some(&directory)) {
+        return Ok(false);
+    }
+    list.push(directory);
+    write(path, &document)?;
+    Ok(true)
+}
+
+/// Forgets one. The project itself is untouched: this is only the list of
+/// what to show.
+pub fn forget_project(path: &Path, directory: &str) -> Result<bool> {
+    let mut document = read(path)?;
+    let Some(list) = document
+        .get_mut("projects")
+        .and_then(|projects| projects.get_mut("paths"))
+        .and_then(|paths| paths.as_array_mut())
+    else {
+        return Ok(false);
+    };
+    let before = list.len();
+    list.retain(|held| held.as_str() != Some(directory));
+    if list.len() == before {
+        return Ok(false);
+    }
+    write(path, &document)?;
+    Ok(true)
+}
+
 /// Writes one of the app's own preferences, leaving the rest of the file as
 /// it was found. Only ever config.toml, for the reason on the field itself.
 pub fn set_preference(path: &Path, name: &str, value: bool) -> Result<()> {
     let mut document = read(path)?;
-    if !document.contains_key("app") {
-        let mut fresh = toml_edit::Table::new();
-        fresh.set_implicit(false);
-        document.insert("app", toml_edit::Item::Table(fresh));
-    }
-    let table = document["app"]
-        .as_table_mut()
-        .ok_or_else(|| Error::Project {
-            path: path.display().to_string(),
-            message: "app is written inline; put it under an [app] heading to edit it here"
-                .to_string(),
-        })?;
-    table.insert(name, toml_edit::value(value));
+    table(path, &mut document, "app")?.insert(name, toml_edit::value(value));
     write(path, &document)
 }
 
@@ -132,7 +187,7 @@ pub fn set_preference(path: &Path, name: &str, value: bool) -> Result<()> {
 pub fn add_site(path: &Path, host: &str, port: u16) -> Result<()> {
     let host = comb::valid_hostname(host)?.to_ascii_lowercase();
     let mut document = read(path)?;
-    sites_table(path, &mut document)?.insert(&host, toml_edit::value(i64::from(port)));
+    table(path, &mut document, "sites")?.insert(&host, toml_edit::value(i64::from(port)));
     write(path, &document)
 }
 
@@ -140,7 +195,7 @@ pub fn add_site(path: &Path, host: &str, port: u16) -> Result<()> {
 /// tell somebody the difference.
 pub fn remove_site(path: &Path, host: &str) -> Result<bool> {
     let mut document = read(path)?;
-    let had = sites_table(path, &mut document)?
+    let had = table(path, &mut document, "sites")?
         .remove(&host.to_ascii_lowercase())
         .is_some();
     if had {
@@ -171,26 +226,38 @@ fn write(path: &Path, document: &toml_edit::DocumentMut) -> Result<()> {
     std::fs::write(path, document.to_string()).map_err(Error::Io)
 }
 
-fn sites_table<'a>(
+/// Finds a table, adding it if it is not there yet.
+///
+/// Two things it gets right that a bare insert does not. A file that is only
+/// comments, which is what the settings template is, keeps all of that as
+/// trailing trivia, so a table inserted into one lands above the very
+/// comments explaining the file; they are moved in front of the new table
+/// instead. And `sites = { ... }` written on one line loads fine but is not a
+/// table to edit in place, so that is a sentence rather than a panic, and
+/// nobody's file is rewritten into a shape they did not pick.
+fn table<'a>(
     path: &Path,
     document: &'a mut toml_edit::DocumentMut,
+    name: &'static str,
 ) -> Result<&'a mut toml_edit::Table> {
-    if !document.contains_key("sites") {
+    if !document.contains_key(name) {
         let mut fresh = toml_edit::Table::new();
-        // Written as [sites] rather than folded onto one line, which is the
-        // shape the settings template teaches.
+        // A heading rather than one folded line, which is the shape the
+        // settings template teaches.
         fresh.set_implicit(false);
-        document.insert("sites", toml_edit::Item::Table(fresh));
+        if document.iter().next().is_none() {
+            let leading = document.trailing().as_str().unwrap_or_default().to_string();
+            if !leading.trim().is_empty() {
+                fresh.decor_mut().set_prefix(leading);
+                document.set_trailing("");
+            }
+        }
+        document.insert(name, toml_edit::Item::Table(fresh));
     }
-    // `sites = { ... }` on one line loads fine but is not a table to edit in
-    // place, and nobody's file gets rewritten into a shape they did not pick.
-    document["sites"]
-        .as_table_mut()
-        .ok_or_else(|| Error::Project {
-            path: path.display().to_string(),
-            message: "sites is written inline; put it under a [sites] heading to edit it here"
-                .to_string(),
-        })
+    document[name].as_table_mut().ok_or_else(|| Error::Project {
+        path: path.display().to_string(),
+        message: format!("{name} is written inline; put it under a [{name}] heading to edit it"),
+    })
 }
 
 /// Walks up from `start`, so the command works from any subdirectory.
@@ -379,6 +446,54 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("port"), "{error}");
+    }
+
+    #[test]
+    fn a_new_table_goes_under_the_comments_that_explain_the_file() {
+        let path = scratch("headed");
+        // What ensure_settings writes: a file that is entirely comments.
+        std::fs::write(&path, "# Skep's own settings.\n#\n#   [sites]\n").unwrap();
+
+        set_preference(&path, "sites_in_browser", true).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let heading = text.find("[app]").expect("the table was written");
+        let comment = text
+            .find("# Skep's own settings.")
+            .expect("the comments are kept");
+        assert!(
+            comment < heading,
+            "the file's own explanation belongs above what was added to it:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_project_is_remembered_once_and_can_be_forgotten() {
+        let path = scratch("projects");
+        std::fs::write(&path, "# mine\n[sites]\n\"a.test\" = 1\n").unwrap();
+        let directory = std::path::Path::new("/tmp/some/myapp");
+
+        assert!(
+            remember_project(&path, directory).unwrap(),
+            "the first time"
+        );
+        assert!(
+            !remember_project(&path, directory).unwrap(),
+            "and not again"
+        );
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# mine"), "{text}");
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.projects.paths, ["/tmp/some/myapp"]);
+        assert_eq!(loaded.sites["a.test"], 1);
+
+        assert!(forget_project(&path, "/tmp/some/myapp").unwrap());
+        assert!(load(&path).unwrap().projects.paths.is_empty());
+        assert!(
+            !forget_project(&path, "/tmp/some/myapp").unwrap(),
+            "forgetting what is not there is not a change"
+        );
     }
 
     #[test]
