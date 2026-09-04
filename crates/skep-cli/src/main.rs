@@ -39,10 +39,11 @@ usage:
   skep domains install        take ports 80 and 443 and route .test here
                               (needs sudo, and refuses to trample another tool)
   skep domains uninstall      give all of that back
-  skep share <site|service>   put a site or a service on a public url
-                              (a quick tunnel through cloudflared, http only,
-                              no account needed; a site goes through the proxy)
-  skep unshare <site|service> take it back off
+  skep share <name>           put a site, a project or a service on a public
+                              url (a quick tunnel through cloudflared, http
+                              only, no account needed; a site goes through the
+                              proxy, and so does a project that has a name)
+  skep unshare <name>         take it back off
 
   skep snapshot <service> <name>          keep a copy of a service's data
   skep snapshots <service>                list the copies kept
@@ -206,7 +207,9 @@ async fn start_project(
 
 async fn share(args: &[String]) -> Result<()> {
     let Some(target) = args.first() else {
-        bail!("share what? a site like myapp.test, or a service like mailpit\n\n{USAGE}");
+        bail!(
+            "share what? a site like myapp.test, a project like shopfront, or a service like mailpit\n\n{USAGE}"
+        );
     };
     let mut client = connect().await?;
     println!("asking the edge for a url");

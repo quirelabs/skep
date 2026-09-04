@@ -196,8 +196,10 @@ impl Skep {
 
     #[tool(
         name = "skep_share",
-        description = "Put a site or a service on a public url through a quick cloudflared \
-                       tunnel, no account needed, and wait for the url. Returns \
+        description = "Put a site, a project or a service on a public url through a quick \
+                       cloudflared tunnel, no account needed, and wait for the url. A project \
+                       is shared through the site that points at it when there is one, so the \
+                       request arrives wearing the name the app answers on. Returns \
                        {\"url\":\"https://....trycloudflare.com\",\"instance\":\
                        \"cloudflared@...~myapp-test\"}. The url lasts as long as the tunnel \
                        runs and is also carried as the tunnel's notice in skep_status. Quick \
@@ -224,9 +226,9 @@ impl Skep {
 
     #[tool(
         name = "skep_unshare",
-        description = "Stop sharing a site or a service: the tunnel is stopped and its public \
-                       url stops answering. Returns the tunnel's status, or a sentence saying \
-                       the target was not shared."
+        description = "Stop sharing a site, a project or a service: the tunnel is stopped and \
+                       its public url stops answering. Returns the tunnel's status, or a \
+                       sentence saying the target was not shared."
     )]
     async fn unshare(
         &self,
