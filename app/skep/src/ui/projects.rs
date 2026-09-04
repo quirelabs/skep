@@ -12,8 +12,16 @@ use super::*;
 pub(super) struct Naming {
     pub(super) directory: std::path::PathBuf,
     pub(super) command: Entity<Field>,
+    /// How the tool takes its port. Offered as `--port`, which is what most
+    /// of them take, and editable because some take `-p` and some take none.
+    pub(super) flag: Entity<Field>,
     pub(super) site: Entity<Field>,
     pub(super) complaint: Option<String>,
+    /// The preview is only true if it is redrawn as the fields change, and a
+    /// field notifies itself rather than the window that holds it. Held
+    /// rather than read: a subscription lasts exactly as long as it is kept.
+    #[expect(dead_code)]
+    watching: Vec<Subscription>,
 }
 
 impl Naming {
@@ -38,12 +46,29 @@ impl Naming {
             .unwrap_or_default();
         let site = cx.new(|cx| Field::new("myapp.test", look, cx));
         site.update(cx, |field, cx| field.set(suggested, cx));
+        let command = cx.new(|cx| Field::new("npm run dev", look, cx));
+        let flag = cx.new(|cx| Field::new("none", look, cx));
+        flag.update(cx, |field, cx| {
+            field.set(comb_services::project::USUAL_FLAG, cx)
+        });
+        let watching = [&command, &flag, &site]
+            .map(|field| cx.observe(field, |_, _, cx| cx.notify()))
+            .into_iter()
+            .collect();
         Self {
             directory,
-            command: cx.new(|cx| Field::new("npm run dev -- --port {port}", look, cx)),
+            command,
+            flag,
             site,
             complaint: None,
+            watching,
         }
+    }
+
+    /// What will be written, exactly as it will be written. The form composes
+    /// once, here, so nothing is added behind anybody's back at run time.
+    fn composed(&self, cx: &gpui::App) -> String {
+        comb_services::project::with_port(self.command.read(cx).text(), self.flag.read(cx).text())
     }
 }
 
@@ -238,10 +263,48 @@ impl Skep {
                         )
                         .child(labelled(
                             "Command",
-                            "Run from that folder. PORT is set for you, and {port} is filled in \
-                             wherever you put it.",
+                            "Run from that folder.",
                             &naming.command,
                         ))
+                        .child(labelled(
+                            "Port flag",
+                            "How the tool takes the port. Leave it empty if it reads PORT from \
+                             the environment.",
+                            &naming.flag,
+                        ))
+                        // What will be written, before it is written. Skep
+                        // picks the port, so the command has to carry it, and
+                        // seeing where it landed is the difference between a
+                        // form that helps and one that guesses for you.
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1p5()
+                                .w_full()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .caption()
+                                        .text_color(theme.muted)
+                                        .child(SharedString::from("Written to skep.toml as")),
+                                )
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .min_w_0()
+                                        .truncate()
+                                        .px_3()
+                                        .py_2()
+                                        .rounded(px(CHIP))
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .body()
+                                        .font_family(MONO)
+                                        .text_color(theme.muted)
+                                        .child(SharedString::from(naming.composed(cx))),
+                                ),
+                        )
                         .child(labelled(
                             "Site",
                             "The name to serve it at. Leave it empty to run it without one.",
@@ -293,13 +356,14 @@ impl Skep {
                 cx.notify();
             }
             "tab" => {
-                let on_command = naming.command.focus_handle(cx).contains_focused(window, cx);
-                let next = if on_command {
-                    &naming.site
-                } else {
-                    &naming.command
-                };
-                next.focus_handle(cx).focus(window, cx);
+                let fields = [&naming.command, &naming.flag, &naming.site];
+                let here = fields
+                    .iter()
+                    .position(|field| field.focus_handle(cx).contains_focused(window, cx))
+                    .unwrap_or(fields.len() - 1);
+                fields[(here + 1) % fields.len()]
+                    .focus_handle(cx)
+                    .focus(window, cx);
                 cx.notify();
             }
             "enter" => {
@@ -315,24 +379,19 @@ impl Skep {
         let Some(naming) = self.naming.as_mut() else {
             return;
         };
-        let command = naming.command.read(cx).text().trim().to_string();
+        let typed = naming.command.read(cx).text().trim().to_string();
         let site = naming.site.read(cx).text().trim().to_string();
-        if command.is_empty() {
+        if typed.is_empty() {
             naming.complaint = Some("a command is needed: what starts this project".to_string());
             return;
         }
-        // Skep chooses the port and then watches that port for the process to
-        // answer on. A command that never says which port to use is a command
-        // skep waits thirty seconds on and then calls failed, which is a bad
-        // way to learn you left something out.
-        if !command.contains(comb_services::project::PLACEHOLDER) {
-            naming.complaint = Some(comb_services::project::NEEDS_PORT.to_string());
-            return;
-        }
-        // Named and still not passed on, which is the one way a command can
-        // look right and be wrong.
-        let written = comb_services::project::Line::Whole(command.clone());
-        if let Some(fixed) = written.npm_needs_a_separator() {
+        // The line under the fields, which is the line that gets written.
+        let command = naming.composed(cx);
+        // The one thing composing cannot fix: a command somebody wrote the
+        // placeholder into themselves, in a place npm will keep for itself.
+        if let Some(fixed) =
+            comb_services::project::Line::Whole(command.clone()).npm_needs_a_separator()
+        {
             naming.complaint = Some(format!(
                 "{}: {fixed}",
                 comb_services::project::NEEDS_SEPARATOR

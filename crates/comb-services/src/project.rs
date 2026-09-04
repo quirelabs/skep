@@ -207,6 +207,45 @@ pub const NEEDS_PORT: &str = "skep chooses the port, so the command has to say w
                               write {port} in a flag, or in front as PORT={port} if the tool \
                               reads it from the environment";
 
+/// The command to write down, given what somebody typed and the flag their
+/// tool takes its port on.
+///
+/// Composed once, when the project is written down, rather than added to the
+/// command every time it runs. A file that says `npm run dev` and quietly
+/// runs something else is a file not worth reading, so what is written is
+/// what runs, placeholder and all, and can be edited by hand afterwards.
+///
+/// Nothing here is guessed at: the flag is a thing somebody typed or left as
+/// it came, and what this returns is shown to them before it is written.
+pub fn with_port(command: &str, flag: &str) -> String {
+    let command = command.trim();
+    // Already said where the port goes. Nothing to add and nothing to argue
+    // with: somebody who writes the placeholder has taken the decision.
+    if command.contains(PLACEHOLDER) {
+        return command.to_string();
+    }
+    // No flag means the tool takes its port from the environment, which is
+    // what a leading assignment is for.
+    let flag = flag.trim();
+    if flag.is_empty() {
+        return format!("PORT={PLACEHOLDER} {command}");
+    }
+    // `--port=` joins to its value; `--port` takes the next word.
+    let joined = if flag.ends_with('=') {
+        format!("{command} {flag}{PLACEHOLDER}")
+    } else {
+        format!("{command} {flag} {PLACEHOLDER}")
+    };
+    // And where that puts a flag npm would keep for itself, the check that
+    // catches it by hand is the one that fixes it here.
+    let line = Line::Whole(joined);
+    line.npm_needs_a_separator().unwrap_or_else(|| line.shown())
+}
+
+/// The flag most tools take their port on, offered so nobody has to know
+/// about the placeholder to add a project.
+pub const USUAL_FLAG: &str = "--port";
+
 /// The same, for the one command shape that names the port and still does not
 /// pass it on.
 pub const NEEDS_SEPARATOR: &str = "npm keeps flags for itself unless a bare -- comes first, so \
@@ -639,6 +678,64 @@ mod tests {
 
         assert!(environment.is_empty(), "a flag is not an assignment");
         assert_eq!(parts, ["npm", "run", "dev", "--", "--port=4321"]);
+    }
+
+    #[test]
+    fn the_flag_is_put_where_the_tool_will_actually_see_it() {
+        // npm needs the separator, and gets it without anybody knowing.
+        assert_eq!(
+            with_port("npm run dev", "--port"),
+            "npm run dev -- --port {port}"
+        );
+        // Everything else takes the flag as it stands.
+        assert_eq!(with_port("vite dev", "--port"), "vite dev --port {port}");
+        assert_eq!(with_port("pnpm dev", "--port"), "pnpm dev --port {port}");
+        // Rails and its like.
+        assert_eq!(
+            with_port("bin/rails server", "-p"),
+            "bin/rails server -p {port}"
+        );
+        // A flag that joins to its value.
+        assert_eq!(
+            with_port("php artisan serve", "--port="),
+            "php artisan serve --port={port}"
+        );
+    }
+
+    #[test]
+    fn no_flag_means_the_tool_reads_it_from_the_environment() {
+        assert_eq!(with_port("npm start", ""), "PORT={port} npm start");
+        assert_eq!(with_port("npm start", "   "), "PORT={port} npm start");
+    }
+
+    #[test]
+    fn a_command_that_already_says_where_the_port_goes_is_left_alone() {
+        // Including the shapes no flag field could have produced, which is
+        // the reason writing it yourself has to keep working.
+        for command in [
+            "npm run dev -- --port {port} --strictPort",
+            "python -m http.server {port}",
+            "PORT={port} npm start",
+        ] {
+            assert_eq!(with_port(command, "--port"), command);
+        }
+    }
+
+    #[test]
+    fn what_is_composed_is_something_the_engine_would_accept() {
+        for (command, flag) in [
+            ("npm run dev", "--port"),
+            ("vite dev", "--port"),
+            ("npm start", ""),
+        ] {
+            let written = Line::Whole(with_port(command, flag));
+            assert!(written.names_the_port(), "{command} should name the port");
+            assert_eq!(
+                written.npm_needs_a_separator(),
+                None,
+                "{command} should need no fixing"
+            );
+        }
     }
 
     #[test]
