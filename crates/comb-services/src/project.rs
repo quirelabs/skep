@@ -246,6 +246,113 @@ pub fn with_port(command: &str, flag: &str) -> String {
 /// about the placeholder to add a project.
 pub const USUAL_FLAG: &str = "--port";
 
+/// What a folder looks like it needs, for a form to fill in.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Guess {
+    /// What to run, as somebody would have typed it.
+    pub command: String,
+    /// The flag its port goes on. Empty is a real answer: it means the tool
+    /// reads `PORT` out of the environment, or that the command already
+    /// carries the placeholder itself.
+    pub flag: String,
+}
+
+/// What is in the folder, read rather than predicted.
+///
+/// The answer is written down in the project already: a package.json says
+/// which script starts it, a lock file says which runner to say it with, and
+/// a framework that has one command leaves a file only it leaves. Reading
+/// those is exact, testable, and explains itself; a model asked the same
+/// question would be none of the three, and would be guessing at something
+/// that is not actually unknown.
+///
+/// What makes any of this safe is where the answer goes: into a form, before
+/// anything is written, next to a line showing exactly what it composes to.
+/// A folder nobody recognises gets nothing and the form asks, as it did
+/// before. Nothing here is ever consulted at run time.
+pub fn guess(directory: &Path) -> Option<Guess> {
+    node(directory).or_else(|| conventional(directory))
+}
+
+/// The script somebody would run by hand, said with the runner whose lock
+/// file is sitting there.
+fn node(directory: &Path) -> Option<Guess> {
+    let manifest = std::fs::read_to_string(directory.join("package.json")).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&manifest).ok()?;
+    let scripts = parsed.get("scripts")?.as_object()?;
+    // In the order somebody would try them.
+    let (name, body) = ["dev", "start", "serve"].into_iter().find_map(|name| {
+        scripts
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(|body| (name, body))
+    })?;
+    Some(Guess {
+        command: format!("{} run {name}", runner(directory)),
+        // Create React App is the one common tool that takes no port flag at
+        // all and reads the environment instead.
+        flag: if body.contains("react-scripts") {
+            String::new()
+        } else {
+            USUAL_FLAG.to_string()
+        },
+    })
+}
+
+/// Whichever package manager left its lock file behind, and where a project
+/// has been through two of them, whichever wrote one last.
+///
+/// A repository that changed managers keeps both files, so having one proves
+/// nothing on its own. Which was touched most recently is the closest thing
+/// to an answer that is actually in the folder, and it is right for the two
+/// repositories on this machine that have two.
+fn runner(directory: &Path) -> &'static str {
+    [
+        ("bun.lock", "bun"),
+        ("bun.lockb", "bun"),
+        ("package-lock.json", "npm"),
+        ("pnpm-lock.yaml", "pnpm"),
+        ("yarn.lock", "yarn"),
+    ]
+    .into_iter()
+    .filter_map(|(lock, runner)| {
+        let touched = std::fs::metadata(directory.join(lock))
+            .ok()?
+            .modified()
+            .ok()?;
+        Some((touched, runner))
+    })
+    .max_by_key(|(touched, _)| *touched)
+    .map(|(_, runner)| runner)
+    .unwrap_or("npm")
+}
+
+/// Frameworks whose dev command is the same in every project that has one,
+/// found by a file only they leave in a directory.
+fn conventional(directory: &Path) -> Option<Guess> {
+    if directory.join("artisan").is_file() {
+        return Some(Guess {
+            command: "php artisan serve".to_string(),
+            flag: "--port=".to_string(),
+        });
+    }
+    if directory.join("bin").join("rails").is_file() {
+        return Some(Guess {
+            command: "bin/rails server".to_string(),
+            flag: "-p".to_string(),
+        });
+    }
+    if directory.join("manage.py").is_file() {
+        // Django takes its port as an argument rather than on a flag, so the
+        // placeholder goes in the command and there is no flag to offer.
+        return Some(Guess {
+            command: format!("python3 manage.py runserver {PLACEHOLDER}"),
+            flag: String::new(),
+        });
+    }
+    None
+}
+
 /// The same, for the one command shape that names the port and still does not
 /// pass it on.
 pub const NEEDS_SEPARATOR: &str = "npm keeps flags for itself unless a bare -- comes first, so \
@@ -685,6 +792,143 @@ mod tests {
 
         assert!(environment.is_empty(), "a flag is not an assignment");
         assert_eq!(parts, ["npm", "run", "dev", "--", "--port=4321"]);
+    }
+
+    /// A folder with the given files in it, each with the given contents.
+    fn folder(label: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("skep-guess-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (name, body) in files {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_node_project_is_read_out_of_its_own_manifest() {
+        let root = folder(
+            "node",
+            &[(
+                "package.json",
+                r#"{"scripts":{"build":"vite build","dev":"vite dev"}}"#,
+            )],
+        );
+
+        let guessed = guess(&root).unwrap();
+
+        assert_eq!(guessed.command, "npm run dev");
+        assert_eq!(guessed.flag, "--port");
+        // And what it composes to is the command that actually works.
+        assert_eq!(
+            with_port(&guessed.command, &guessed.flag),
+            "npm run dev -- --port {port}"
+        );
+    }
+
+    #[test]
+    fn the_runner_is_whichever_one_left_its_lock_file() {
+        for (lock, expected) in [
+            ("pnpm-lock.yaml", "pnpm run dev"),
+            ("yarn.lock", "yarn run dev"),
+            ("bun.lockb", "bun run dev"),
+            ("package-lock.json", "npm run dev"),
+        ] {
+            let root = folder(
+                lock,
+                &[
+                    ("package.json", r#"{"scripts":{"dev":"vite dev"}}"#),
+                    (lock, ""),
+                ],
+            );
+            assert_eq!(guess(&root).unwrap().command, expected);
+        }
+    }
+
+    /// A real one: a repository here holds both a bun lock from August and an
+    /// npm lock from a fortnight later, and npm is what actually runs it.
+    #[test]
+    fn a_project_that_changed_managers_is_read_as_the_one_it_changed_to() {
+        let root = folder(
+            "two-locks",
+            &[
+                ("package.json", r#"{"scripts":{"dev":"vite dev"}}"#),
+                ("bun.lock", ""),
+                ("package-lock.json", ""),
+            ],
+        );
+        // Written at the same instant by the test, so the older one is aged
+        // deliberately rather than by hoping the clock ticked between writes.
+        let old = std::fs::File::options()
+            .write(true)
+            .open(root.join("bun.lock"))
+            .unwrap();
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60 * 24);
+        old.set_times(std::fs::FileTimes::new().set_modified(long_ago))
+            .unwrap();
+
+        assert_eq!(guess(&root).unwrap().command, "npm run dev");
+    }
+
+    #[test]
+    fn a_script_that_takes_no_port_flag_is_offered_none() {
+        let root = folder(
+            "cra",
+            &[(
+                "package.json",
+                r#"{"scripts":{"start":"react-scripts start"}}"#,
+            )],
+        );
+
+        let guessed = guess(&root).unwrap();
+
+        assert_eq!(guessed.flag, "", "create react app reads PORT instead");
+        assert_eq!(
+            with_port(&guessed.command, &guessed.flag),
+            "PORT={port} npm run start"
+        );
+    }
+
+    #[test]
+    fn a_framework_with_one_command_is_known_by_the_file_only_it_leaves() {
+        let laravel = folder("laravel", &[("artisan", "")]);
+        assert_eq!(
+            guess(&laravel).unwrap(),
+            Guess {
+                command: "php artisan serve".to_string(),
+                flag: "--port=".to_string(),
+            }
+        );
+
+        let rails = folder("rails", &[("bin/rails", "")]);
+        assert_eq!(guess(&rails).unwrap().command, "bin/rails server");
+
+        // Django's port is an argument, so the placeholder is in the command
+        // and composing leaves it exactly as it is.
+        let django = folder("django", &[("manage.py", "")]);
+        let guessed = guess(&django).unwrap();
+        assert_eq!(guessed.command, "python3 manage.py runserver {port}");
+        assert_eq!(with_port(&guessed.command, &guessed.flag), guessed.command);
+    }
+
+    #[test]
+    fn a_folder_nobody_recognises_is_left_to_the_person() {
+        assert_eq!(guess(&folder("bare", &[("README.md", "")])), None);
+        // Including one whose manifest has no script worth starting.
+        assert_eq!(
+            guess(&folder(
+                "no-dev",
+                &[("package.json", r#"{"scripts":{"build":"tsc"}}"#)]
+            )),
+            None
+        );
+        // And one whose manifest is not valid json, which is not a panic.
+        assert_eq!(
+            guess(&folder("broken", &[("package.json", "{ oh dear")])),
+            None
+        );
     }
 
     #[test]

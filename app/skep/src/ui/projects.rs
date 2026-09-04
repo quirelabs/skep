@@ -46,11 +46,21 @@ impl Naming {
             .unwrap_or_default();
         let site = cx.new(|cx| Field::new("myapp.test", look, cx));
         site.update(cx, |field, cx| field.set(suggested, cx));
+        // Read out of the folder rather than asked for. Whatever comes back
+        // lands in a field, beside the line it composes to, so it is a
+        // suggestion somebody looks at rather than a decision taken for them.
+        let found = comb_services::project::guess(&directory);
         let command = cx.new(|cx| Field::new("npm run dev", look, cx));
         let flag = cx.new(|cx| Field::new("none", look, cx));
-        flag.update(cx, |field, cx| {
-            field.set(comb_services::project::USUAL_FLAG, cx)
-        });
+        match &found {
+            Some(guessed) => {
+                command.update(cx, |field, cx| field.set(guessed.command.clone(), cx));
+                flag.update(cx, |field, cx| field.set(guessed.flag.clone(), cx));
+            }
+            None => flag.update(cx, |field, cx| {
+                field.set(comb_services::project::USUAL_FLAG, cx)
+            }),
+        }
         let watching = [&command, &flag, &site]
             .map(|field| cx.observe(field, |_, _, cx| cx.notify()))
             .into_iter()
@@ -181,6 +191,11 @@ impl Skep {
     pub(super) fn naming_form(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let naming = self.naming.as_ref()?;
         let theme = &self.theme;
+        let carries = naming
+            .command
+            .read(cx)
+            .text()
+            .contains(comb_services::project::PLACEHOLDER);
 
         let labelled = |name: &'static str, about: &'static str, held: &Entity<Field>| {
             div()
@@ -266,12 +281,17 @@ impl Skep {
                             "Run from that folder.",
                             &naming.command,
                         ))
-                        .child(labelled(
-                            "Port flag",
-                            "How the tool takes the port. Leave it empty if it reads PORT from \
-                             the environment.",
-                            &naming.flag,
-                        ))
+                        // A command that already says where its port goes has
+                        // nothing to ask about, and a field that does nothing
+                        // is worse than one that is not there.
+                        .children((!carries).then(|| {
+                            labelled(
+                                "Port flag",
+                                "How the tool takes the port. Leave it empty if it reads PORT \
+                                 from the environment.",
+                                &naming.flag,
+                            )
+                        }))
                         // What will be written, before it is written. Skep
                         // picks the port, so the command has to carry it, and
                         // seeing where it landed is the difference between a
@@ -356,7 +376,16 @@ impl Skep {
                 cx.notify();
             }
             "tab" => {
-                let fields = [&naming.command, &naming.flag, &naming.site];
+                let carries = naming
+                    .command
+                    .read(cx)
+                    .text()
+                    .contains(comb_services::project::PLACEHOLDER);
+                let fields: Vec<_> = if carries {
+                    vec![&naming.command, &naming.site]
+                } else {
+                    vec![&naming.command, &naming.flag, &naming.site]
+                };
                 let here = fields
                     .iter()
                     .position(|field| field.focus_handle(cx).contains_focused(window, cx))
