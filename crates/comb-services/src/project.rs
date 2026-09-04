@@ -295,6 +295,28 @@ pub fn ensure_project(directory: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Writes what to run into a project's file, leaving everything else in it
+/// alone. The file is created from the template first if there is none, so a
+/// directory that has never been a project becomes one that explains itself.
+pub fn write_run(directory: &Path, command: &str, site: Option<&str>) -> Result<PathBuf> {
+    let path = ensure_project(directory)?;
+    let mut document = read(&path)?;
+    let run = table(&path, &mut document, "run")?;
+    run.insert("command", toml_edit::value(command));
+    match site {
+        Some(site) if !site.trim().is_empty() => {
+            run.insert("site", toml_edit::value(site.trim().to_ascii_lowercase()));
+        }
+        // Removed rather than left behind: a name nobody asked for would go
+        // on being served.
+        _ => {
+            run.remove("site");
+        }
+    }
+    write(&path, &document)?;
+    Ok(path)
+}
+
 const PROJECT_TEMPLATE: &str = "\
 # What skep should run for this project, and the name to serve it at.
 #
@@ -523,6 +545,36 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "[run]\ncommand = \"mine\"\n"
         );
+    }
+
+    #[test]
+    fn writing_what_to_run_leaves_the_rest_of_the_file_alone() {
+        let directory = std::env::temp_dir().join(format!("skep-run-w-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(FILE);
+        std::fs::write(&path, "# mine\n[services.postgres]\nversion = \"17\"\n").unwrap();
+
+        write_run(
+            &directory,
+            "npm run dev -- --port {port}",
+            Some("MyApp.test"),
+        )
+        .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# mine"), "{text}");
+        let loaded = load(&path).unwrap();
+        let run = loaded.run.expect("a run block");
+        assert_eq!(run.site.as_deref(), Some("myapp.test"), "lowercased");
+        assert_eq!(run.command.shown(), "npm run dev -- --port {port}");
+        assert_eq!(loaded.services["postgres"].version.as_deref(), Some("17"));
+
+        // A site taken away stops being served rather than lingering.
+        write_run(&directory, "npm start", None).unwrap();
+        let run = load(&path).unwrap().run.unwrap();
+        assert!(run.site.is_none());
+        assert_eq!(run.command.shown(), "npm start");
     }
 
     #[test]

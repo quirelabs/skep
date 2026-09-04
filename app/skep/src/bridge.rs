@@ -29,9 +29,12 @@ pub enum Command {
     StartProject(String),
     /// Stop showing a project. Its files are untouched.
     ForgetProject(String),
-    /// Take a directory to be a project, writing it a starting point if it
-    /// has no skep.toml yet.
-    AddProject(String),
+    /// Take a directory to be a project, with what to run in it.
+    AddProject {
+        directory: String,
+        command: String,
+        site: Option<String>,
+    },
     /// What the mail catcher has caught.
     Mail,
     /// One message, in full.
@@ -366,16 +369,24 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
             let _ = reports.send(Update::Projects(known_projects(engine.paths())));
             Ok(())
         }
-        Command::AddProject(directory) => {
+        Command::AddProject {
+            directory,
+            command,
+            site,
+        } => {
             let paths = engine.paths().clone();
-            let outcome = comb_services::project::ensure_project(std::path::Path::new(&directory))
-                .and_then(|_| comb_services::project::ensure_settings(&paths))
-                .and_then(|settings| {
-                    comb_services::project::remember_project(
-                        &settings,
-                        std::path::Path::new(&directory),
-                    )
-                });
+            let outcome = comb_services::project::write_run(
+                std::path::Path::new(&directory),
+                &command,
+                site.as_deref(),
+            )
+            .and_then(|_| comb_services::project::ensure_settings(&paths))
+            .and_then(|settings| {
+                comb_services::project::remember_project(
+                    &settings,
+                    std::path::Path::new(&directory),
+                )
+            });
             match outcome {
                 Ok(_) => {
                     let _ = reports.send(Update::Projects(known_projects(&paths)));

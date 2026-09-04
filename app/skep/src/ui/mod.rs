@@ -173,6 +173,8 @@ pub struct Skep {
     sites_in_browser: bool,
     /// Every project this machine knows about.
     projects: Vec<crate::bridge::Project>,
+    /// A project being described, after its folder has been chosen.
+    naming: Option<projects::Naming>,
     /// The light in the window. One picture, stretched to fit.
     sky: Option<std::sync::Arc<gpui::Image>>,
     /// The page's own tooth, so both halves of the window are one material.
@@ -211,6 +213,19 @@ impl Skep {
                 if let Some(this) = this.upgrade() {
                     this.update(cx, |skep, cx| {
                         skep.theme = Theme::for_appearance(appearance);
+                        // A form open across a change of appearance keeps
+                        // its own colours otherwise.
+                        let look = skep.writing();
+                        if let Some(draft) = &skep.draft {
+                            for held in [&draft.host, &draft.port] {
+                                held.update(cx, |field, _| field.look(look));
+                            }
+                        }
+                        if let Some(naming) = &skep.naming {
+                            for held in [&naming.command, &naming.site] {
+                                held.update(cx, |field, _| field.look(look));
+                            }
+                        }
                         // Drawn from the palette, so they are drawn again.
                         skep.sky = None;
                         skep.tooth = None;
@@ -272,6 +287,7 @@ impl Skep {
             was_active: true,
             sites_in_browser: false,
             projects: Vec::new(),
+            naming: None,
             sky: None,
             tooth: None,
             authority_trusted: false,
@@ -480,6 +496,16 @@ impl Skep {
         }
     }
 
+    /// How a field is painted, from the palette the rest of the window uses.
+    fn writing(&self) -> crate::field::Look {
+        crate::field::Look {
+            text: self.theme.text,
+            hint: self.theme.idle,
+            cursor: self.theme.accent,
+            selection: paint::faded(self.theme.accent, 0.25),
+        }
+    }
+
     fn remember(&mut self, line: LogLine) {
         // Subscribing before reading the tail can repeat one line. Dropping a
         // repeat is cheaper than dropping a line.
@@ -642,7 +668,8 @@ impl Render for Skep {
                         Page::Mail => self.mail_page(cx),
                         Page::Settings => self.settings(cx),
                     })
-                    .children(self.adding(cx)),
+                    .children(self.adding(cx))
+                    .children(self.naming_form(cx)),
             )
     }
 }

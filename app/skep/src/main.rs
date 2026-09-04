@@ -2,6 +2,7 @@
 //! is open, and takes them down with it when it closes.
 
 mod bridge;
+mod field;
 mod icons;
 mod platform;
 mod preview;
@@ -64,6 +65,8 @@ fn main() -> Result<()> {
     gpui_platform::application()
         .with_assets(crate::icons::Icons)
         .run(move |cx: &mut App| {
+            crate::field::bind(cx);
+
             // AppKit only, and only here.
             let menubar = objc2_foundation::MainThreadMarker::new()
                 .map(|mtm| platform::Menubar::new(mtm, commands.clone()));

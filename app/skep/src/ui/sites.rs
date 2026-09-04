@@ -1,6 +1,10 @@
 //! The Sites page: the contact sheet, the preview beside it, and the form
 //! for adding a site.
 
+use gpui::{AppContext as _, Entity, Focusable as _};
+
+use crate::field::{self, Field};
+
 use super::paint::{dither, faded, snow};
 
 /// A tile keeps a page's proportions, because it is a picture of one.
@@ -12,12 +16,20 @@ use super::*;
 /// A site being written. Kept as text rather than as a port number, because
 /// half a number is not a number and refusing to show what somebody typed is
 /// worse than waiting until they finish.
-#[derive(Default)]
 pub(super) struct Draft {
-    host: String,
-    port: String,
-    on_port: bool,
+    pub(super) host: Entity<Field>,
+    pub(super) port: Entity<Field>,
     pub(super) complaint: Option<String>,
+}
+
+impl Draft {
+    pub(super) fn new(look: field::Look, cx: &mut Context<Skep>) -> Self {
+        Self {
+            host: cx.new(|cx| Field::new("myapp.test", look, cx)),
+            port: cx.new(|cx| Field::new("3000", look, cx)),
+            complaint: None,
+        }
+    }
 }
 
 impl Skep {
@@ -40,9 +52,10 @@ impl Skep {
             .flex_shrink_0()
             .cursor_pointer()
             .on_click(cx.listener(|skep, _, window, cx| {
-                skep.draft = Some(Draft::default());
-                // Focus goes with it, or the keys would land nowhere.
-                skep.entry.clone().focus(window, cx);
+                let draft = Draft::new(skep.writing(), cx);
+                // Focus goes to the first field, or the keys land nowhere.
+                draft.host.focus_handle(cx).focus(window, cx);
+                skep.draft = Some(draft);
                 cx.notify();
             }))
             .child(
@@ -112,8 +125,10 @@ impl Skep {
         let draft = self.draft.as_ref()?;
         let theme = &self.theme;
 
-        let field = |name: &'static str, hint: &'static str, text: &str, here: bool| {
-            let empty = text.is_empty();
+        // A label over a real field. The field draws itself, including the
+        // cursor and any selection, because those are things a person expects
+        // to be able to put where they want with the mouse.
+        let labelled = |name: &'static str, held: &Entity<Field>| {
             div()
                 .flex()
                 .flex_col()
@@ -130,27 +145,15 @@ impl Skep {
                     div()
                         .w_full()
                         .min_w_0()
-                        .truncate()
                         .px_3()
                         .py_2()
                         .rounded(px(CHIP))
                         .bg(theme.base)
                         .border_1()
-                        .border_color(if here { theme.accent } else { theme.border })
+                        .border_color(theme.border)
                         .body()
                         .font_family(MONO)
-                        .text_color(if empty && !here {
-                            theme.idle
-                        } else {
-                            theme.text
-                        })
-                        .child(SharedString::from(if empty && !here {
-                            hint.to_string()
-                        } else if here {
-                            format!("{text}|")
-                        } else {
-                            text.to_string()
-                        })),
+                        .child(held.clone()),
                 )
         };
 
@@ -200,8 +203,8 @@ impl Skep {
                                     ),
                                 )),
                         )
-                        .child(field("Hostname", "myapp.test", &draft.host, !draft.on_port))
-                        .child(field("Port", "3000", &draft.port, draft.on_port))
+                        .child(labelled("Hostname", &draft.host))
+                        .child(labelled("Port", &draft.port))
                         .child(
                             div()
                                 .caption()
@@ -252,7 +255,7 @@ impl Skep {
                                         .cursor_pointer()
                                         .hover(|style| style.border_color(theme.accent))
                                         .on_click(cx.listener(|skep, _, _, cx| {
-                                            skep.submit_site();
+                                            skep.submit_site(cx);
                                             cx.notify();
                                         }))
                                         .child(SharedString::from("Add site")),
@@ -268,13 +271,17 @@ impl Skep {
     /// Takes what has been typed, or says what is wrong with it. The form
     /// stays until the file has the site, so a refusal has somewhere to be
     /// said.
-    pub(super) fn submit_site(&mut self) {
+    pub(super) fn submit_site(&mut self, cx: &mut Context<Self>) {
         let Some(draft) = self.draft.as_mut() else {
             return;
         };
         draft.complaint = None;
-        let host = draft.host.trim().to_string();
-        let port: Option<u16> = draft.port.trim().parse().ok();
+        let (typed_host, typed_port) = (
+            draft.host.read(cx).text().trim().to_string(),
+            draft.port.read(cx).text().trim().to_string(),
+        );
+        let host = typed_host;
+        let port: Option<u16> = typed_port.parse().ok();
         match (comb::valid_hostname(&host), port) {
             (Ok(_), Some(port)) if port > 0 => {
                 let _ = self.commands.send(Command::AddSite(host, port));
@@ -284,7 +291,7 @@ impl Skep {
                     "{host:?} is not a hostname a certificate can cover"
                 ))
             }
-            (_, None) if draft.port.trim().is_empty() => {
+            (_, None) if typed_port.is_empty() => {
                 draft.complaint =
                     Some("a port is needed: the one your app already listens on".to_string())
             }
@@ -293,60 +300,39 @@ impl Skep {
         }
     }
 
+    /// Only the keys that are about the form rather than about the text in
+    /// it. Everything else, including every character, belongs to whichever
+    /// field has focus.
     pub(super) fn typing(
         &mut self,
         event: &gpui::KeyDownEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(draft) = self.draft.as_mut() else {
+        let Some(draft) = self.draft.as_ref() else {
             return;
         };
-        draft.complaint = None;
-
         match event.keystroke.key.as_str() {
             "escape" => {
                 self.draft = None;
                 cx.notify();
-                return;
             }
-            "tab" => draft.on_port = !draft.on_port,
-            "backspace" => {
-                if draft.on_port {
-                    draft.port.pop();
-                } else {
-                    draft.host.pop();
-                }
+            "tab" => {
+                // Round the two of them, since there are only two.
+                let on_host = draft.host.focus_handle(cx).contains_focused(window, cx);
+                let next = if on_host { &draft.port } else { &draft.host };
+                next.focus_handle(cx).focus(window, cx);
+                cx.notify();
             }
             "enter" => {
-                self.submit_site();
+                self.submit_site(cx);
                 cx.notify();
-                return;
             }
-            _ => {
-                if let Some(typed) = &event.keystroke.key_char {
-                    for character in typed.chars() {
-                        if draft.on_port {
-                            // Only digits, and no more than a port can be.
-                            if character.is_ascii_digit() && draft.port.len() < 5 {
-                                draft.port.push(character);
-                            }
-                        } else if character.is_ascii_alphanumeric()
-                            || character == '-'
-                            || character == '.'
-                        {
-                            draft.host.push(character);
-                        }
-                    }
-                }
-            }
+            _ => {}
         }
-        cx.notify();
     }
 
-    /// A site, shown. If something is behind it you get the thing itself; if
-    /// nothing is, you get a dead channel, which is the truth said in the only
-    /// way a picture can say it.
+    /// What each column of a site is. A hostname and a number side by side
     pub(super) fn watching(&self, host: &str, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
         let alive = self.answering.get(host) == Some(&true);
@@ -475,7 +461,8 @@ impl Skep {
             .into_any_element()
     }
 
-    /// What each column of a site is. A hostname and a number side by side
+    /// The contact sheet: every site as a picture of itself, with the one
+    /// being looked at opening into the pane below.
     pub(super) fn sites_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let answering = self.answering.values().filter(|alive| **alive).count();
 
