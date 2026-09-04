@@ -498,6 +498,13 @@ const PROJECT_TEMPLATE: &str = "\
 # There is no port to write down anywhere: whichever one it gets is the one
 # the name points at, which is the whole reason this file exists.
 #
+# For the rare tool that cannot be told its port at all, do not use [run]:
+# start it yourself and give the port it insists on a name. Skep serves the
+# name and its certificate and leaves the process alone.
+#
+#   [sites]
+#   \"legacy.test\" = 3000
+#
 # Services this project needs can go here too:
 #
 #   [services.postgres]
@@ -810,6 +817,17 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("port"), "{error}");
+    }
+
+    /// And the door for the one case that refusal shuts: a tool that cannot be
+    /// told its port is not something skep runs, it is something skep serves.
+    /// The number is allowed here because nothing else chose it.
+    #[test]
+    fn a_process_skep_does_not_start_may_name_its_own_port() {
+        let project = parse("[sites]\n\"legacy.test\" = 3000\n").unwrap();
+
+        assert_eq!(project.sites["legacy.test"], 3000);
+        assert!(project.run.is_none(), "nothing here is skep's to start");
     }
 
     #[test]
