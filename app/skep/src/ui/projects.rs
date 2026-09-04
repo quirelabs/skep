@@ -32,12 +32,16 @@ impl Skep {
                     "Projects",
                     Some(
                         div()
-                            .label()
-                            .text_color(self.theme.muted)
-                            .child(SharedString::from(format!(
-                                "{running} of {} running",
-                                self.projects.len()
-                            )))
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(div().label().text_color(self.theme.muted).child(
+                                SharedString::from(format!(
+                                    "{running} of {} running",
+                                    self.projects.len()
+                                )),
+                            ))
+                            .child(self.add_project(cx))
                             .into_any_element(),
                     ),
                     cx,
@@ -57,6 +61,46 @@ impl Skep {
                     ),
             )
             .into_any_element()
+    }
+
+    /// The way in. A folder chooser rather than a form: a project is a
+    /// directory that already exists, so the only question is which one, and
+    /// the machine's own chooser answers that better than anything this app
+    /// could draw.
+    fn add_project(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("add-project")
+            .flex_shrink_0()
+            .px_3()
+            .py_1p5()
+            .rounded(px(CHIP))
+            .border_1()
+            .border_color(self.theme.border)
+            .label()
+            .text_color(self.theme.accent)
+            .cursor_pointer()
+            .hover(|style| style.border_color(self.theme.accent))
+            .on_click(cx.listener(|skep, _, _, cx| {
+                let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
+                    files: false,
+                    directories: true,
+                    multiple: false,
+                    prompt: Some(SharedString::from("Add")),
+                });
+                let commands = skep.commands.clone();
+                cx.spawn(async move |skep, cx| {
+                    let Ok(Ok(Some(paths))) = picked.await else {
+                        return;
+                    };
+                    let Some(directory) = paths.first() else {
+                        return;
+                    };
+                    let _ = commands.send(Command::AddProject(directory.display().to_string()));
+                    let _ = skep.update(cx, |_, cx| cx.notify());
+                })
+                .detach();
+            }))
+            .child(SharedString::from("Add a project"))
     }
 
     /// The instance a project runs as, if it is registered at all. A project
@@ -133,7 +177,7 @@ impl Skep {
                         if let Some(status) = status {
                             let id = status.id.clone();
                             actions = actions.child(self.button("Stop", Command::Stop(id)));
-                        } else {
+                        } else if project.command.is_some() {
                             actions = actions.child(
                                 self.button("Start", Command::StartProject(directory.clone())),
                             );
@@ -165,7 +209,13 @@ impl Skep {
                             .caption()
                             .font_family(MONO)
                             .text_color(theme.idle)
-                            .child(SharedString::from(project.command.clone())),
+                            .child(SharedString::from(match &project.command {
+                                Some(command) => command.clone(),
+                                // What a project looks like the moment it is
+                                // added, so the row says what to do next
+                                // rather than looking broken.
+                                None => "add a [run] command to skep.toml".to_string(),
+                            })),
                     )
                     .child(
                         // Forgetting is not deleting, so it lives quietly and

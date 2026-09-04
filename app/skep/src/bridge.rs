@@ -29,6 +29,9 @@ pub enum Command {
     StartProject(String),
     /// Stop showing a project. Its files are untouched.
     ForgetProject(String),
+    /// Take a directory to be a project, writing it a starting point if it
+    /// has no skep.toml yet.
+    AddProject(String),
     /// What the mail catcher has caught.
     Mail,
     /// One message, in full.
@@ -242,7 +245,9 @@ pub struct Project {
     pub name: String,
     pub directory: String,
     pub site: Option<String>,
-    pub command: String,
+    /// None when the file is there but says nothing to run yet, which is
+    /// what a project looks like the moment it is added.
+    pub command: Option<String>,
 }
 
 /// Reads every remembered project's file. A directory that has been deleted
@@ -256,13 +261,15 @@ fn known_projects(paths: &comb::Paths) -> Vec<Project> {
         .iter()
         .filter_map(|directory| {
             let file = std::path::Path::new(directory).join(comb_services::project::FILE);
+            // A project whose file says nothing to run yet is still one: it
+            // was just added, and the window is where it says what is
+            // missing.
             let project = comb_services::project::load(&file).ok()?;
-            let run = project.run?;
             Some(Project {
                 name: comb_services::project_name_of(&file).ok()?.to_string(),
                 directory: directory.clone(),
-                site: run.site.clone(),
-                command: run.command.shown(),
+                site: project.run.as_ref().and_then(|run| run.site.clone()),
+                command: project.run.as_ref().map(|run| run.command.shown()),
             })
         })
         .collect()
@@ -358,6 +365,24 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
         Command::Projects => {
             let _ = reports.send(Update::Projects(known_projects(engine.paths())));
             Ok(())
+        }
+        Command::AddProject(directory) => {
+            let paths = engine.paths().clone();
+            let outcome = comb_services::project::ensure_project(std::path::Path::new(&directory))
+                .and_then(|_| comb_services::project::ensure_settings(&paths))
+                .and_then(|settings| {
+                    comb_services::project::remember_project(
+                        &settings,
+                        std::path::Path::new(&directory),
+                    )
+                });
+            match outcome {
+                Ok(_) => {
+                    let _ = reports.send(Update::Projects(known_projects(&paths)));
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
         }
         Command::ForgetProject(directory) => {
             let paths = engine.paths().clone();

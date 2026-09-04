@@ -282,6 +282,40 @@ pub fn ensure_settings(paths: &comb::Paths) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Writes a commented starting point into a directory that has no skep.toml
+/// yet, and returns the path either way. The same bargain the settings file
+/// strikes: editing a file that explains itself beats inventing a form for
+/// something with as many shapes as a dev command.
+pub fn ensure_project(directory: &Path) -> Result<PathBuf> {
+    let path = directory.join(FILE);
+    if path.is_file() {
+        return Ok(path);
+    }
+    std::fs::write(&path, PROJECT_TEMPLATE).map_err(Error::Io)?;
+    Ok(path)
+}
+
+const PROJECT_TEMPLATE: &str = "\
+# What skep should run for this project, and the name to serve it at.
+#
+# Uncomment and change the command. Skep picks a free port, sets PORT in the
+# environment, and substitutes {port} anywhere it appears, so a tool that
+# reads the environment needs no flag and a tool that needs a flag has
+# somewhere to put it.
+#
+#   [run]
+#   command = \"npm run dev -- --port {port} --strictPort\"
+#   site = \"myapp.test\"
+#
+# There is no port to write down anywhere: whichever one it gets is the one
+# the name points at, which is the whole reason this file exists.
+#
+# Services this project needs can go here too:
+#
+#   [services.postgres]
+#   version = \"17\"
+";
+
 const TEMPLATE: &str = "\
 # Skep's own settings. A project's skep.toml wins wherever both speak.
 #
@@ -464,6 +498,30 @@ mod tests {
         assert!(
             comment < heading,
             "the file's own explanation belongs above what was added to it:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_folder_with_nothing_in_it_gets_a_file_that_explains_itself() {
+        let directory = std::env::temp_dir().join(format!("skep-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+
+        let path = ensure_project(&directory).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+
+        // It parses, and says nothing to run: a project that was just added.
+        let project = load(&path).unwrap();
+        assert!(project.run.is_none());
+        assert!(text.contains("[run]"), "the shape is shown: {text}");
+        assert!(text.contains("{port}"), "and the placeholder is explained");
+
+        // A file already there is somebody's, and is left alone.
+        std::fs::write(&path, "[run]\ncommand = \"mine\"\n").unwrap();
+        ensure_project(&directory).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[run]\ncommand = \"mine\"\n"
         );
     }
 
