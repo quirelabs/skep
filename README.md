@@ -78,13 +78,27 @@ Three caveats, because the number is only worth what its method is worth:
 
 ## Sixty seconds
 
-Requires macOS on Apple silicon and Rust 1.96 (the toolchain is pinned, so
-`rustup` fetches it).
+macOS on Apple silicon. No toolchain, no account, nothing installed system
+wide.
+
+```sh
+curl -fsSL https://github.com/quirelabs/skep/releases/latest/download/skep-aarch64-apple-darwin.tar.gz | tar -xz
+export PATH="$PWD/skep:$PATH"
+```
+
+Fetched with `curl` the binaries are not quarantined and run as they are. A
+copy downloaded through a browser is, and macOS will refuse it until you clear
+that with `xattr -d com.apple.quarantine skep/*`. There is a
+`skep-aarch64-apple-darwin.tar.gz.sha256` beside the archive if you would
+rather check than trust.
+
+Building it yourself takes Rust 1.96, which `rustup` fetches because the
+toolchain is pinned:
 
 ```sh
 git clone https://github.com/quirelabs/skep
 cd skep
-cargo build --workspace
+cargo build --workspace       # then target/debug in place of skep/ below
 ```
 
 Describe what a project needs, in `skep.toml` at its root:
@@ -96,12 +110,9 @@ version = "17"
 [services.mailpit]
 ```
 
-Put the command somewhere your shell can find it, then host the engine in one
-terminal and bring the project up in another:
+Host the engine in one terminal and bring the project up in another:
 
 ```sh
-export PATH="$PWD/target/debug:$PATH"
-
 skep serve                         # holds the services; ctrl-c stops them
 cd path/to/your/project && skep up
 ```
@@ -124,7 +135,9 @@ than failing with an exit code:
   `brew services stop postgresql@17`, or change the port in skep.toml.
 ```
 
-For the window, which hosts the engine itself and stops services when it quits:
+There is a window too, which hosts the engine itself and stops services when
+it quits. It is not in the release yet; it ships on its own once it is signed
+and notarised. Until then it is a checkout away:
 
 ```sh
 cargo run -p skep-app
@@ -142,7 +155,7 @@ Wire the MCP server into a client by pointing it at the built binary:
 {
   "mcpServers": {
     "skep": {
-      "command": "/absolute/path/to/skep/target/debug/skep-mcp"
+      "command": "/absolute/path/to/skep/skep-mcp"
     }
   }
 }

@@ -1,0 +1,82 @@
+name: Release
+
+# Cut by tagging. Nothing here runs on a push to main: a release is a
+# deliberate act, and the tag is the record of it.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  binaries:
+    # Skep pins arm64 releases of every service it runs, so the binaries that
+    # drive them are built on the architecture they are for.
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm the runner is Apple silicon
+        run: |
+          test "$(uname -m)" = "arm64" || {
+            echo "skep pins arm64 releases; this runner is $(uname -m)" >&2
+            exit 1
+          }
+
+      # rustup reads rust-toolchain.toml, so the pinned version is what builds.
+      - name: Toolchain
+        run: rustup show
+
+      # The command line, the agent surface, and the privileged helper that
+      # `skep domains install` puts in place. Not the window: it ships on its
+      # own, signed and notarised, and building gpui here would add minutes to
+      # every release for an artifact nobody is downloading yet.
+      - name: Build
+        run: cargo build --release -p skep-cli -p skep-mcp -p skep-helper
+
+      - name: Everything it claims to be
+        run: |
+          ./target/release/skep help > /dev/null
+          test -x ./target/release/skep-mcp
+          test -x ./target/release/skep-helper
+
+      # A tag saying one version while the binary says another is the kind of
+      # thing nobody notices until somebody reports a bug against the wrong
+      # one. Bump workspace.package.version before tagging.
+      - name: The tag and the binary agree
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          built="$(./target/release/skep --version | awk '{print $2}')"
+          test "$tagged" = "$built" || {
+            echo "tagged v${tagged} but the binary says ${built}" >&2
+            echo "bump workspace.package.version in Cargo.toml and tag again" >&2
+            exit 1
+          }
+
+      # One archive under a name that does not move, so the install line in
+      # the README can point at `releases/latest/download` and keep working.
+      # The version is on the release itself, and in `skep --version`.
+      - name: Package
+        run: |
+          name="skep-aarch64-apple-darwin"
+          mkdir -p dist/skep
+          cp target/release/skep target/release/skep-mcp target/release/skep-helper dist/skep/
+          cp README.md LICENSE-APACHE LICENSE-MIT dist/skep/
+          tar -czf "dist/${name}.tar.gz" -C dist skep
+          # Beside it, so a download can be checked rather than trusted.
+          cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true
