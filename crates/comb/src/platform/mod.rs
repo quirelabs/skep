@@ -9,20 +9,24 @@ use crate::error::{Error, Result};
 
 #[cfg(target_os = "macos")]
 mod mac;
+#[cfg(all(target_os = "macos", feature = "sites"))]
+pub(crate) use mac::{
+    HELPER_LABEL, daemon_plist, drop_privileges, effective_group, effective_user, flush_dns,
+    give_to, load_daemon, resolver_file, resolves_to, root_is_trusted, trust_root, unload_daemon,
+    untrust_root, write_private,
+};
 #[cfg(target_os = "macos")]
 pub(crate) use mac::{
-    HELPER_LABEL, build_tools_missing, can_clone, clone_directory, daemon_plist, describe_exit,
-    drop_privileges, effective_group, effective_user, flush_dns, give_to, listener_on, load_daemon,
-    resolver_file, resolves_to, restrict, root_is_trusted, terminate, trust_root,
-    try_lock_exclusive, unload_daemon, untrust_root, write_private,
+    build_tools_missing, can_clone, clone_directory, describe_exit, listener_on, restrict,
+    terminate, try_lock_exclusive,
 };
 
 #[cfg(not(target_os = "macos"))]
 mod unsupported;
+#[cfg(all(not(target_os = "macos"), feature = "sites"))]
+pub(crate) use unsupported::give_to;
 #[cfg(not(target_os = "macos"))]
-pub(crate) use unsupported::{
-    describe_exit, give_to, listener_on, restrict, terminate, try_lock_exclusive,
-};
+pub(crate) use unsupported::{describe_exit, listener_on, restrict, terminate, try_lock_exclusive};
 
 /// A lookup key for pinned downloads. Never spelled out inside a URL.
 #[derive(

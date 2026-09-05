@@ -43,7 +43,12 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "e17dc4f9
 # the libraries keep their own.
 # The version is what makes these publishable: cargo refuses a path
 # dependency without one.
-comb = { package = "quire-comb", version = "0.0.0", path = "crates/comb" }
+# `sites` on here rather than in each member: everything in this workspace is
+# skep, and skep serves local domains. A consumer taking the published crate
+# gets the default, which is off.
+comb = { package = "quire-comb", version = "0.0.0", path = "crates/comb", features = [
+    "sites",
+] }
 comb-services = { package = "quire-comb-services", version = "0.0.0", path = "crates/comb-services" }
 
 tokio = { version = "1", features = [

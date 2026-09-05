@@ -8,7 +8,9 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::{Command, ExitStatus};
+#[cfg(feature = "sites")]
+use std::process::Command;
+use std::process::ExitStatus;
 
 use std::time::Duration;
 
@@ -185,23 +187,31 @@ pub fn clone_directory(from: &Path, into: &Path) -> io::Result<()> {
     }
 }
 
+// Everything below is the local domains half: the keychain, launchd, the
+// resolver file and dropping privileges. It is built only when the feature
+// that uses it is, so a supervision-only build carries none of it.
+
 /// Who this process is really running as.
+#[cfg(feature = "sites")]
 pub fn effective_user() -> u32 {
     // Safety: geteuid cannot fail and touches nothing.
     unsafe { libc::geteuid() }
 }
 
+#[cfg(feature = "sites")]
 pub fn effective_group() -> u32 {
     // Safety: getegid cannot fail and touches nothing.
     unsafe { libc::getegid() }
 }
 
 /// The launchd job that owns the privileged ports.
+#[cfg(feature = "sites")]
 pub const HELPER_LABEL: &str = "com.quirelabs.skep.helper";
 
 /// A launchd daemon description. Started at boot and restarted if it dies,
 /// because a forwarder that stays down makes every local domain fail with no
 /// hint as to why.
+#[cfg(feature = "sites")]
 pub fn daemon_plist(label: &str, program: &Path, args: &[String]) -> String {
     let mut arguments = String::new();
     for value in std::iter::once(program.display().to_string()).chain(args.iter().cloned()) {
@@ -228,6 +238,7 @@ pub fn daemon_plist(label: &str, program: &Path, args: &[String]) -> String {
 
 /// A path with an ampersand in it would otherwise produce a plist launchd
 /// refuses to read.
+#[cfg(feature = "sites")]
 fn escaped(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -235,14 +246,17 @@ fn escaped(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
+#[cfg(feature = "sites")]
 pub fn load_daemon(plist: &Path) -> io::Result<()> {
     launchctl(&["bootstrap", "system"], Some(plist))
 }
 
+#[cfg(feature = "sites")]
 pub fn unload_daemon(label: &str) -> io::Result<()> {
     launchctl(&["bootout", &format!("system/{label}")], None)
 }
 
+#[cfg(feature = "sites")]
 fn launchctl(args: &[&str], path: Option<&Path>) -> io::Result<()> {
     let mut command = Command::new("launchctl");
     command.args(args);
@@ -263,6 +277,7 @@ fn launchctl(args: &[&str], path: Option<&Path>) -> io::Result<()> {
 
 /// macOS caches resolution, so a file that has been written is not proof that
 /// anything resolves through it yet.
+#[cfg(feature = "sites")]
 pub fn flush_dns() -> io::Result<()> {
     let _ = Command::new("dscacheutil").arg("-flushcache").output()?;
     let _ = Command::new("killall")
@@ -273,6 +288,7 @@ pub fn flush_dns() -> io::Result<()> {
 
 /// Asks the system resolver, not our own server, so the answer proves the
 /// whole path works rather than that we can talk to ourselves.
+#[cfg(feature = "sites")]
 pub fn resolves_to(name: &str) -> Vec<String> {
     let Ok(output) = Command::new("dscacheutil")
         .args(["-q", "host", "-a", "name", name])
@@ -294,6 +310,7 @@ pub fn resolves_to(name: &str) -> Vec<String> {
 /// A socket bound by root is owned by root, and connecting to a unix socket
 /// needs write permission on it. Without this the helper's control socket is
 /// unreachable by the very engine it was installed to serve.
+#[cfg(feature = "sites")]
 pub fn give_to(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
     let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
         .map_err(|_| io::Error::other("path contains a nul byte"))?;
@@ -304,6 +321,7 @@ pub fn give_to(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "sites")]
 pub fn drop_privileges(uid: u32, gid: u32) -> io::Result<()> {
     if uid == 0 {
         return Err(io::Error::other("refusing to drop privileges to root"));
@@ -335,16 +353,19 @@ pub fn drop_privileges(uid: u32, gid: u32) -> io::Result<()> {
 /// Where macOS looks when it sends a whole domain somewhere other than the
 /// usual resolvers. Writing here needs root, which is why it is the last thing
 /// local domains need and the first thing that asks for a password.
+#[cfg(feature = "sites")]
 pub fn resolver_file(suffix: &str) -> std::path::PathBuf {
     std::path::PathBuf::from("/etc/resolver").join(suffix)
 }
 
 /// The system trust store. Writing to it is what needs an administrator, and
 /// why trusting the root is a step a person takes on purpose.
+#[cfg(feature = "sites")]
 const SYSTEM_KEYCHAIN: &str = "/Library/Keychains/System.keychain";
 
 /// Writes a file only its owner can read. The mode is set as the file is
 /// created, so a secret is never briefly readable by anyone else.
+#[cfg(feature = "sites")]
 pub fn write_private(path: &Path, contents: &str) -> io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -360,6 +381,7 @@ pub fn write_private(path: &Path, contents: &str) -> io::Result<()> {
     file.write_all(contents.as_bytes())
 }
 
+#[cfg(feature = "sites")]
 pub fn trust_root(certificate: &Path) -> io::Result<()> {
     security(
         &[
@@ -374,11 +396,13 @@ pub fn trust_root(certificate: &Path) -> io::Result<()> {
     )
 }
 
+#[cfg(feature = "sites")]
 pub fn untrust_root(certificate: &Path) -> io::Result<()> {
     security(&["remove-trusted-cert", "-d"], certificate)
 }
 
 /// Whether this machine would accept what the root signs.
+#[cfg(feature = "sites")]
 pub fn root_is_trusted(certificate: &Path) -> bool {
     Command::new("security")
         .args(["verify-cert", "-c"])
@@ -390,6 +414,7 @@ pub fn root_is_trusted(certificate: &Path) -> bool {
 
 /// Blocking on purpose: these prompt for a password, and the caller is a person
 /// waiting for that prompt rather than the event loop.
+#[cfg(feature = "sites")]
 fn security(args: &[&str], certificate: &Path) -> io::Result<()> {
     let output = Command::new("security")
         .args(args)

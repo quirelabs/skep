@@ -91,7 +91,7 @@ struct Inner {
     events: broadcast::Sender<Event>,
     seq: AtomicU64,
     paths: Paths,
-    sites: crate::proxy::Book,
+    sites: crate::book::Book,
 }
 
 struct Instance {
@@ -174,7 +174,7 @@ impl Engine {
 
     /// The live map the proxy reads. Shared rather than copied, so a project
     /// adding a site reaches a host that is already serving.
-    pub fn sites(&self) -> crate::proxy::Book {
+    pub fn sites(&self) -> crate::book::Book {
         self.inner.sites.clone()
     }
 
@@ -202,7 +202,7 @@ impl Engine {
     }
 
     /// Adds sites, with later ones winning, and says which are new.
-    pub fn add_sites(&self, more: crate::proxy::Sites) -> Vec<String> {
+    pub fn add_sites(&self, more: crate::book::Sites) -> Vec<String> {
         let Ok(mut book) = self.inner.sites.write() else {
             return Vec::new();
         };

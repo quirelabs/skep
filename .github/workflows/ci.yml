@@ -60,6 +60,24 @@ jobs:
       - name: Pinned releases still match their hashes
         run: cargo test --workspace -- --ignored
 
+      # The pitch is a supervision engine, so the default build has to compile
+      # without a TLS stack in it. This is what keeps the sites feature honest:
+      # nothing outside it may reach into what it gates.
+      - name: The engine builds without local domains
+        run: cargo check -p quire-comb --all-targets
+
+      # And the toll really is gone, rather than merely unreferenced. Catches
+      # an optional dependency quietly becoming a required one.
+      - name: ...and carries none of what that would drag in
+        run: |
+          found=$(cargo tree -p quire-comb -e normal --prefix none \
+            | sort -u | grep -cE '^(rustls|hyper|hyper-util|rcgen|tokio-rustls|http-body-util) ' || true)
+          test "$found" -eq 0 || {
+            echo "the default build pulled $found sites dependencies" >&2
+            cargo tree -p quire-comb -e normal --prefix none | sort -u >&2
+            exit 1
+          }
+
       # The libraries have to stay publishable. quire-comb-services cannot be
       # checked this way until quire-comb is actually on crates.io, because a
       # dry run resolves its dependencies from the registry: add it here on the

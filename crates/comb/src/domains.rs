@@ -12,10 +12,10 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+use crate::book::{HTTP_PORT, HTTPS_PORT};
 use crate::dns;
 use crate::error::{Error, Result};
 use crate::platform;
-use crate::proxy::{HTTP_PORT, HTTPS_PORT};
 
 /// Bumped whenever the helper's control protocol changes. A helper left behind
 /// by an older install answers with its own number rather than pretending.
