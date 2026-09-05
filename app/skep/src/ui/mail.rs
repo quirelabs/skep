@@ -59,7 +59,11 @@ impl Skep {
         if let Some(trouble) = &self.mail_trouble {
             rows = rows.child(self.note(trouble));
         } else if self.mail.is_empty() {
-            rows = rows.child(self.nothing("no mail caught yet"));
+            rows = rows.child(self.nothing(
+                "No mail yet",
+                "Point an app at port 1025 on this machine and whatever it sends lands here \
+                 instead of in somebody's inbox.",
+            ));
         }
 
         for (index, message) in self.mail.iter().enumerate() {
@@ -849,7 +853,7 @@ impl Skep {
     pub(super) fn source_view(&self) -> AnyElement {
         let theme = &self.theme;
         let Some(source) = &self.source else {
-            return self.nothing("reading the message").into_any_element();
+            return self.working("Reading the message").into_any_element();
         };
 
         let mut lines = div().flex().flex_col().w_full();
@@ -885,7 +889,9 @@ impl Skep {
     pub(super) fn checks_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = &self.theme;
         if self.opened.is_none() {
-            return self.nothing("no message").into_any_element();
+            return self
+                .nothing("No message", "Open one from the list to check it.")
+                .into_any_element();
         }
 
         let Some(found) = &self.checks else {
@@ -898,7 +904,7 @@ impl Skep {
                 .px(px(MARGIN))
                 .py_3()
                 .gap_1()
-                .child(self.nothing("checking"))
+                .child(self.working("Checking how it renders elsewhere"))
                 .child(
                     div()
                         .caption()

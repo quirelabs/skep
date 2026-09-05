@@ -238,6 +238,15 @@ impl Skep {
                                         cx.notify();
                                     },
                                 ))),
+                        )
+                        // It arrives rather than appears. A panel that is
+                        // simply there the next frame reads as a jump cut;
+                        // the same 180ms every other move in this window
+                        // takes is enough to say it came from somewhere.
+                        .with_animation(
+                            "draft-in",
+                            Animation::new(MOTION).with_easing(ease_in_out),
+                            |card, delta| card.opacity(delta).mt(px(10. * (1. - delta))),
                         ),
                 )
                 .into_any_element(),
@@ -335,25 +344,22 @@ impl Skep {
                 )
                 .into_any_element()
         } else {
+            let phase = self.snow_phase();
             div()
                 .relative()
                 .flex_1()
                 .min_h_0()
                 .w_full()
                 .overflow_hidden()
-                .child(div().absolute().size_full().with_animation(
-                    "snow",
-                    Animation::new(Duration::from_millis(900)).repeat(),
-                    move |field, delta| {
-                        field.child(
-                            gpui::canvas(
-                                |_, _, _| (),
-                                move |bounds, _, window, _| snow(bounds, ink, delta, window),
-                            )
-                            .size_full(),
+                .child(
+                    div().absolute().size_full().child(
+                        gpui::canvas(
+                            |_, _, _| (),
+                            move |bounds, _, window, _| snow(bounds, ink, phase, window),
                         )
-                    },
-                ))
+                        .size_full(),
+                    ),
+                )
                 .child(
                     div()
                         .absolute()
@@ -552,19 +558,16 @@ impl Skep {
             }
         }
         if gone {
-            frame = frame.child(div().absolute().size_full().with_animation(
-                SharedString::from(format!("snow-{host}")),
-                Animation::new(Duration::from_millis(900)).repeat(),
-                move |field, delta| {
-                    field.child(
-                        gpui::canvas(
-                            |_, _, _| (),
-                            move |bounds, _, window, _| snow(bounds, ink, delta, window),
-                        )
-                        .size_full(),
+            let phase = self.snow_phase();
+            frame = frame.child(
+                div().absolute().size_full().child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| snow(bounds, ink, phase, window),
                     )
-                },
-            ));
+                    .size_full(),
+                ),
+            );
         }
 
         div()

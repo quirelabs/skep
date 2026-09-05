@@ -190,6 +190,8 @@ pub struct Skep {
     rail_from: f32,
     rail_to: f32,
     rail_since: Instant,
+    /// When the window opened, which is all the static needs to know.
+    since: Instant,
     /// Changing this restarts the slide, which is how the animation is told
     /// to run again rather than only on first appearance.
     rail_moves: usize,
@@ -297,6 +299,7 @@ impl Skep {
             rail_from: RAIL_WIDE,
             rail_to: RAIL_WIDE,
             rail_since: Instant::now(),
+            since: Instant::now(),
             rail_moves: 0,
             _following: following,
         };
@@ -455,7 +458,30 @@ impl Skep {
         if moved {
             self.reflect();
             cx.notify();
+        } else if self.snowing() {
+            // Static is the one thing in the window that moves on its own
+            // with nothing behind it. It used to ride a repeating animation,
+            // which asks for a frame sixty times a second for a pattern that
+            // changes eight, so fifty-two frames in sixty repainted the whole
+            // window to produce the same picture. It rides this loop instead,
+            // which was already beating anyway.
+            cx.notify();
         }
+    }
+
+    /// Whether anything on screen is snowing, which is the only reason to
+    /// paint a frame nobody asked for.
+    fn snowing(&self) -> bool {
+        self.page == Page::Sites
+            && (self.site.is_some() || self.answering.values().any(|alive| !alive))
+    }
+
+    /// How far through the static's cycle the window is. Read from the clock
+    /// rather than handed down by an animation, so nothing has to be running
+    /// for it to advance.
+    fn snow_phase(&self) -> f32 {
+        const CYCLE: f32 = 900.;
+        (self.since.elapsed().as_millis() as f32 % CYCLE) / CYCLE
     }
 
     /// Keeps the contact sheet supplied. Asks for a picture of any site that

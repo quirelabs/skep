@@ -138,9 +138,13 @@ impl Skep {
                     .min_w_0()
                     .overflow_y_scroll()
                     .children(rows)
-                    .children(
-                        empty.then(|| self.nothing("run skep up in a project to see it here")),
-                    ),
+                    .children(empty.then(|| {
+                        self.nothing(
+                            "No projects yet",
+                            "Add a folder above, or run skep up inside one. Skep starts \
+                                 what it declares and serves it at a name of its own.",
+                        )
+                    })),
             )
             .into_any_element()
     }
@@ -354,6 +358,15 @@ impl Skep {
                                         cx.notify();
                                     }),
                                 )),
+                        )
+                        // It arrives rather than appears. A panel that is
+                        // simply there the next frame reads as a jump cut;
+                        // the same 180ms every other move in this window
+                        // takes is enough to say it came from somewhere.
+                        .with_animation(
+                            "naming-in",
+                            Animation::new(MOTION).with_easing(ease_in_out),
+                            |card, delta| card.opacity(delta).mt(px(10. * (1. - delta))),
                         ),
                 )
                 .into_any_element(),

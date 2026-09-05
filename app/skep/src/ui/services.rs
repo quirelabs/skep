@@ -207,7 +207,13 @@ impl Skep {
                     .max_h(px(LIST_CEILING))
                     .overflow_y_scroll()
                     .children(rows)
-                    .children(empty.then(|| self.nothing("no services yet"))),
+                    .children(empty.then(|| {
+                        self.nothing(
+                            "No services",
+                            "Everything skep can run appears here the moment it is connected \
+                             to the engine.",
+                        )
+                    })),
             )
             .child(self.stream())
             .into_any_element()
@@ -221,14 +227,22 @@ impl Skep {
     /// cell's own coordinates, so it does not crawl when the window resizes
     /// and it draws the same way twice. It fades out towards the words so it
     /// never competes with them.
-    pub(super) fn nothing(&self, what: &'static str) -> impl IntoElement {
+    ///
+    /// Two lines rather than one. A screen with nothing on it is the first
+    /// one somebody sees, and a single grey word tells them the app is empty
+    /// without telling them what would fill it or how, which is the one
+    /// moment the interface has to say both.
+    pub(super) fn nothing(&self, what: &'static str, next: &'static str) -> impl IntoElement {
         let ink = self.theme.idle;
         div()
             .relative()
             .flex()
+            .flex_col()
             .flex_1()
             .items_center()
             .justify_center()
+            .gap_1()
+            .px(px(MARGIN))
             .py_10()
             .child(
                 gpui::canvas(
@@ -241,8 +255,43 @@ impl Skep {
             .child(
                 div()
                     .label()
-                    .text_color(self.theme.idle)
+                    .text_color(self.theme.muted)
                     .child(SharedString::from(what)),
+            )
+            .child(
+                div()
+                    .max_w(px(360.))
+                    .caption()
+                    .text_center()
+                    .text_color(self.theme.idle)
+                    .child(SharedString::from(next)),
+            )
+    }
+
+    /// Something is on its way. Not the empty texture, which says there is
+    /// nothing here and would be a lie while something is being fetched, and
+    /// not a spinner either: the same slow breath the working dot uses, so
+    /// one thing in this window means waiting rather than two.
+    pub(super) fn working(&self, what: &'static str) -> impl IntoElement {
+        let ink = self.theme.muted;
+        div()
+            .flex()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .py_10()
+            .child(
+                div()
+                    .label()
+                    .text_color(ink)
+                    .child(SharedString::from(what))
+                    .with_animation(
+                        SharedString::from(format!("waiting-{what}")),
+                        Animation::new(BREATH)
+                            .repeat()
+                            .with_easing(pulsating_between(0.35, 1.0)),
+                        move |line, delta| line.text_color(faded(ink, delta)),
+                    ),
             )
     }
 
