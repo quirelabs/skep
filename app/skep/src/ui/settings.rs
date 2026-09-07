@@ -34,11 +34,121 @@ impl Skep {
                     .w_full()
                     .min_w_0()
                     .overflow_y_scroll()
+                    .child(self.command_line(cx))
                     .child(self.behaviour(cx))
                     .child(self.certificates(cx))
                     .child(self.service_settings()),
             )
             .into_any_element()
+    }
+
+    /// Where the command is, and how to put it somewhere if it is nowhere.
+    ///
+    /// The window hosts the engine, so somebody who only opens the app has a
+    /// working skep already; what they do not have is the thing they type in
+    /// a project, or the path an agent's config has to name. This says which
+    /// of those is true right now rather than assuming either.
+    pub(super) fn command_line(&self, cx: &mut Context<Self>) -> AnyElement {
+        let path = std::env::var("PATH").unwrap_or_default();
+        let beside = crate::tools::beside();
+        let found = beside
+            .as_ref()
+            .map(|from| crate::tools::placed("skep", &path, &from.join("skep")));
+
+        let mut out = div().flex().flex_col().w_full().child(self.section(
+            "Command line",
+            "skep in a terminal, and skep-mcp for an agent. They are links to the copies inside \
+             this application, so the command and the window are never two different versions.",
+            true,
+        ));
+
+        out = match &found {
+            Some(crate::tools::Placed::Ours(at)) => out.child(self.fact(
+                "installed",
+                at.parent().unwrap_or(at).display().to_string(),
+                true,
+            )),
+            // Named rather than replaced. A command already on PATH may not be
+            // this application's to take.
+            Some(crate::tools::Placed::Other(at)) => out.child(self.fact(
+                "another skep",
+                format!("{} is first on your PATH", at.display()),
+                true,
+            )),
+            _ => out.child(self.fact(
+                "installed",
+                "not yet, so skep in a terminal will not be found".to_string(),
+                false,
+            )),
+        };
+
+        if !matches!(found, Some(crate::tools::Placed::Ours(_))) {
+            out = out.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .w_full()
+                    .px(px(MARGIN))
+                    .py_2()
+                    .child(div().w(px(120.)).flex_shrink_0())
+                    .child(
+                        self.chip("install-cli", "Install the command")
+                            .on_click(cx.listener(|skep, _, _, cx| {
+                                skep.place_tools();
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+
+        out.into_any_element()
+    }
+
+    /// Links the tools into the first place that will have them, and says
+    /// where. Nothing here asks for a password: where one would be needed,
+    /// the sentence is the offer, the same way trusting the authority is.
+    pub(super) fn place_tools(&mut self) {
+        let Some(from) = crate::tools::beside() else {
+            self.problem = Some("could not find this application on disk".into());
+            return;
+        };
+        let home = std::env::var("HOME").map(std::path::PathBuf::from);
+        let Ok(home) = home else {
+            self.problem = Some("no home directory to install into".into());
+            return;
+        };
+        let places = crate::tools::candidates(&home);
+        let Some(into) = crate::tools::writable(&places, &home) else {
+            self.problem = Some(
+                format!(
+                    "nowhere writable to put it. Run: sudo ln -sf {}/skep /usr/local/bin/skep",
+                    from.display()
+                )
+                .into(),
+            );
+            return;
+        };
+        match crate::tools::install(&from, &into) {
+            Ok(into) => {
+                let path = std::env::var("PATH").unwrap_or_default();
+                if !crate::tools::on_path(&into, &path) {
+                    // Installed, and still not findable. Saying so is the
+                    // difference between a button that worked and one that
+                    // appeared to.
+                    self.problem = Some(
+                        format!(
+                            "installed in {}, which is not on your PATH. Add it with: export \
+                             PATH=\"{}:$PATH\"",
+                            into.display(),
+                            into.display()
+                        )
+                        .into(),
+                    );
+                }
+            }
+            Err(error) => self.problem = Some(format!("could not install: {error}").into()),
+        }
     }
 
     /// What the app does, as opposed to what it holds. Written to
@@ -51,7 +161,7 @@ impl Skep {
             .child(self.section(
                 "Behaviour",
                 "How this window acts. Kept in config.toml, beside everything else it remembers.",
-                true,
+                false,
             ))
             .child(self.choice(
                 "Open sites in the browser",

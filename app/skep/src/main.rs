@@ -7,6 +7,7 @@ mod icons;
 mod platform;
 mod preview;
 mod theme;
+mod tools;
 mod ui;
 
 use std::sync::Arc;
