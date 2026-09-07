@@ -29,6 +29,8 @@ pub enum Command {
     StartProject(String),
     /// Stop showing a project. Its files are untouched.
     ForgetProject(String),
+    /// Which appearance to wear, or to follow the system.
+    Wear(&'static str),
     /// Which screens the sidebar should not show. The whole list, since the
     /// list is the answer rather than a change to one.
     Hide(Vec<String>),
@@ -111,6 +113,7 @@ pub enum Update {
     Preferences {
         sites_in_browser: bool,
         hidden: Vec<String>,
+        appearance: Option<String>,
     },
     /// Every project this machine knows about.
     Projects(Vec<Project>),
@@ -289,6 +292,7 @@ fn tell_preferences(paths: &comb::Paths, reports: &UnboundedSender<Update>) {
     let _ = reports.send(Update::Preferences {
         sites_in_browser: settings.app.sites_in_browser,
         hidden: settings.app.hidden,
+        appearance: settings.app.appearance,
     });
 }
 
@@ -449,6 +453,18 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
                 }
                 Err(error) => Err(error),
             }
+        }
+        Command::Wear(appearance) => {
+            let paths = engine.paths().clone();
+            match comb_services::project::ensure_settings(&paths).and_then(|path| {
+                comb_services::project::set_choice(&path, "appearance", appearance)
+            }) {
+                Ok(()) => tell_preferences(&paths, reports),
+                Err(error) => {
+                    let _ = reports.send(Update::Failed(error.to_string()));
+                }
+            }
+            Ok(())
         }
         Command::Hide(hidden) => {
             let paths = engine.paths().clone();

@@ -213,6 +213,46 @@ impl Skep {
             .into_any_element()
     }
 
+    /// A choice with a few positions, laid on a track. The track is what says
+    /// these are one choice rather than several words that happen to sit
+    /// together, and it lives here so the reading pane's views and the
+    /// settings' pages cannot drift apart.
+    pub(super) fn track(&self) -> Div {
+        div()
+            .flex()
+            .items_center()
+            .gap_0p5()
+            .flex_shrink_0()
+            .p(px(2.))
+            .rounded(px(CARD))
+            .bg(self.theme.base)
+    }
+
+    /// One position on that track, raised out of it when it is the one.
+    pub(super) fn segment(
+        &self,
+        id: impl Into<ElementId>,
+        label: &str,
+        here: bool,
+    ) -> Stateful<Div> {
+        let theme = self.theme.clone();
+        div()
+            .id(id)
+            .px_2p5()
+            .py_1()
+            .rounded(px(CARD - 2.))
+            .label()
+            .cursor_pointer()
+            .text_color(if here { theme.text } else { theme.muted })
+            .bg(if here {
+                theme.raised
+            } else {
+                gpui::transparent_black()
+            })
+            .hover(move |style| style.text_color(theme.text))
+            .child(SharedString::from(label.to_string()))
+    }
+
     /// The one control shape in this window: a quiet edge that lights up
     /// under the pointer, with the accent for the words. Every button on
     /// every screen is this, so none of them can drift from the others.

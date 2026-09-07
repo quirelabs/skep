@@ -24,21 +24,134 @@ impl Skep {
             .flex_1()
             .h_full()
             .overflow_hidden()
-            .child(self.page_header("Settings", Some(self.open_settings(cx)), cx))
+            .child(
+                self.page_header(
+                    "Settings",
+                    Some(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .flex_shrink_0()
+                            .child(self.settings_tabs(cx))
+                            // Beside the tabs rather than on one of them: every
+                            // page here is written to that file, so it belongs to
+                            // the screen rather than to a section of it.
+                            .child(self.open_settings(cx))
+                            .into_any_element(),
+                    ),
+                    cx,
+                ),
+            )
             .child(
                 div()
-                    .id("settings-list")
+                    .id(SharedString::from(format!("settings-{:?}", self.tab)))
                     .flex()
                     .flex_col()
                     .flex_1()
                     .w_full()
                     .min_w_0()
                     .overflow_y_scroll()
-                    .child(self.command_line(cx))
-                    .child(self.sidebar(cx))
-                    .child(self.behaviour(cx))
-                    .child(self.certificates(cx))
-                    .child(self.service_settings()),
+                    .children(match self.tab {
+                        Tab::General => {
+                            vec![self.appearance(cx), self.behaviour(cx), self.sidebar(cx)]
+                        }
+                        Tab::Machine => vec![self.command_line(cx), self.certificates(cx)],
+                        Tab::Services => vec![self.service_settings()],
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// Three pages rather than one long column. What was here was every
+    /// setting the app has in a single scroll, which is fine while there are
+    /// four of them and stops being fine before anybody notices.
+    fn settings_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut tabs = self.track();
+        for (tab, name) in [
+            (Tab::General, "General"),
+            (Tab::Machine, "This machine"),
+            (Tab::Services, "Services"),
+        ] {
+            tabs = tabs.child(
+                self.segment(
+                    SharedString::from(format!("tab-{name}")),
+                    name,
+                    self.tab == tab,
+                )
+                .on_click(cx.listener(move |skep, _, _, cx| {
+                    skep.tab = tab;
+                    cx.notify();
+                })),
+            );
+        }
+        tabs
+    }
+
+    /// Which appearance to wear. The window follows the system unless it is
+    /// told otherwise, which is right for nearly everybody; this is for the
+    /// people who keep one appearance whatever the hour.
+    pub(super) fn appearance(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut choices = self.track();
+        for (wearing, name) in [
+            (Wearing::System, "System"),
+            (Wearing::Light, "Light"),
+            (Wearing::Dark, "Dark"),
+        ] {
+            choices = choices.child(
+                self.segment(
+                    SharedString::from(format!("wear-{name}")),
+                    name,
+                    self.wearing == wearing,
+                )
+                .on_click(cx.listener(move |skep, _, _, cx| {
+                    // Said to the one place that writes it down, and worn when
+                    // that place says what it now holds. A window that dressed
+                    // itself first would be showing something the file might
+                    // not agree with.
+                    let _ = skep.commands.send(Command::Wear(wearing.written()));
+                    cx.notify();
+                })),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .child(self.section(
+                "Appearance",
+                "Light or dark, or whichever the system is in. Kept in config.toml with \
+                 everything else this window remembers.",
+                true,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .w_full()
+                    .px(px(MARGIN))
+                    .py_3()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().label().child(SharedString::from("Theme")))
+                            .child(div().caption().text_color(self.theme.muted).child(
+                                SharedString::from(match self.wearing {
+                                    Wearing::System => {
+                                        "Following the system, and changing with it."
+                                    }
+                                    _ => "Held here whatever the system does.",
+                                }),
+                            )),
+                    )
+                    .child(choices),
             )
             .into_any_element()
     }
@@ -536,7 +649,7 @@ impl Skep {
             "Ports and versions",
             "Set in config.toml. A project's skep.toml wins wherever both speak, so a \
              repository always gets what it asks for.",
-            false,
+            true,
         ));
 
         let last = services.len().saturating_sub(1);

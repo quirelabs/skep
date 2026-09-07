@@ -51,6 +51,11 @@ pub struct App {
     /// asking for their mail to stop being caught.
     #[serde(default)]
     pub hidden: Vec<String>,
+    /// Which appearance to wear: "system", "light" or "dark". Following the
+    /// system is the default because it is right for nearly everybody, and a
+    /// choice is here because nearly everybody is not everybody.
+    #[serde(default)]
+    pub appearance: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -447,6 +452,13 @@ pub fn forget_project(path: &Path, directory: &str) -> Result<bool> {
 /// Writes one of the app's own preferences, leaving the rest of the file as
 /// it was found. Only ever config.toml, for the reason on the field itself.
 pub fn set_preference(path: &Path, name: &str, value: bool) -> Result<()> {
+    let mut document = read(path)?;
+    table(path, &mut document, "app")?.insert(name, toml_edit::value(value));
+    write(path, &document)
+}
+
+/// A preference whose answer is a word rather than yes or no.
+pub fn set_choice(path: &Path, name: &str, value: &str) -> Result<()> {
     let mut document = read(path)?;
     table(path, &mut document, "app")?.insert(name, toml_edit::value(value));
     write(path, &document)
@@ -1089,6 +1101,18 @@ mod tests {
 
         assert_eq!(project.sites["legacy.test"], 3000);
         assert!(project.run.is_none(), "nothing here is skep's to start");
+    }
+
+    #[test]
+    fn a_preference_can_be_a_word() {
+        let path = scratch("choice");
+        std::fs::write(&path, "# mine\n[app]\nsites_in_browser = true\n").unwrap();
+
+        set_choice(&path, "appearance", "dark").unwrap();
+
+        let read: Project = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(read.app.appearance.as_deref(), Some("dark"));
+        assert!(read.app.sites_in_browser, "the other preference survives");
     }
 
     #[test]

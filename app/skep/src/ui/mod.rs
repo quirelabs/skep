@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 
 use comb::{Applied, InstanceId, Label, LogLine, Mirror, ServiceState, ServiceStatus, Snapshot};
 use gpui::{
-    Animation, AnimationExt, AnyElement, Bounds, ClipboardItem, Context, Div, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Render, ScrollHandle, SharedString,
-    Stateful, StatefulInteractiveElement, Styled, Subscription, Window, div, ease_in_out,
-    pulsating_between, px, svg,
+    Animation, AnimationExt, AnyElement, Bounds, ClipboardItem, Context, Div, ElementId,
+    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, Render, ScrollHandle,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Window, div,
+    ease_in_out, pulsating_between, px, svg,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -173,6 +173,14 @@ pub struct Skep {
     sites_in_browser: bool,
     /// Screens put away, by the name the rail knows them under.
     hidden: BTreeSet<String>,
+    /// The appearance this machine asked for, and the one the system is in.
+    /// Kept apart so following the system can go back to following it.
+    wearing: Wearing,
+    system: gpui::WindowAppearance,
+    /// Which page of Settings is open. Not remembered between runs: which
+    /// tab you were last on is not a preference, it is where you happened to
+    /// stop.
+    tab: Tab,
     /// Every project this machine knows about.
     projects: Vec<crate::bridge::Project>,
     /// A project being described, after its folder has been chosen.
@@ -201,6 +209,60 @@ pub struct Skep {
     _following: Subscription,
 }
 
+/// Which page of Settings is open. Three rather than one long column: every
+/// setting the app has in a single scroll is fine while there are four of
+/// them and stops being fine before anybody notices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Tab {
+    /// How it looks and what it shows.
+    General,
+    /// What it has done to the machine it runs on: the command line, and the
+    /// authority browsers are asked to trust.
+    Machine,
+    /// What each service is set to, and by whom.
+    Services,
+}
+
+/// Which appearance the window wears.
+///
+/// Following the system is what nearly everybody wants and what the window
+/// did before there was a choice. The other two are for the people who keep
+/// one appearance whatever the hour, and for looking at both halves of a
+/// design without changing the whole machine to do it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Wearing {
+    System,
+    Light,
+    Dark,
+}
+
+impl Wearing {
+    pub(super) fn of(written: Option<&str>) -> Self {
+        match written {
+            Some("light") => Self::Light,
+            Some("dark") => Self::Dark,
+            _ => Self::System,
+        }
+    }
+
+    pub(super) fn written(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    /// The theme this asks for, given what the system happens to be in.
+    pub(super) fn theme(self, system: gpui::WindowAppearance) -> Theme {
+        match self {
+            Self::System => Theme::for_appearance(system),
+            Self::Light => Theme::light(),
+            Self::Dark => Theme::dark(),
+        }
+    }
+}
+
 impl Skep {
     pub fn new(
         bridge: Bridge,
@@ -216,24 +278,11 @@ impl Skep {
                 let appearance = window.appearance();
                 if let Some(this) = this.upgrade() {
                     this.update(cx, |skep, cx| {
-                        skep.theme = Theme::for_appearance(appearance);
-                        // A form open across a change of appearance keeps
-                        // its own colours otherwise.
-                        let look = skep.writing();
-                        if let Some(draft) = &skep.draft {
-                            for held in [&draft.host, &draft.port] {
-                                held.update(cx, |field, _| field.look(look));
-                            }
-                        }
-                        if let Some(naming) = &skep.naming {
-                            for held in [&naming.command, &naming.site] {
-                                held.update(cx, |field, _| field.look(look));
-                            }
-                        }
-                        // Drawn from the palette, so they are drawn again.
-                        skep.sky = None;
-                        skep.tooth = None;
-                        cx.notify();
+                        // Remembered even while it is not being worn, so a
+                        // window told to follow the system again knows what
+                        // the system has been doing in the meantime.
+                        skep.system = appearance;
+                        skep.dress(cx);
                     });
                 }
             })
@@ -291,6 +340,9 @@ impl Skep {
             was_active: true,
             sites_in_browser: false,
             hidden: BTreeSet::new(),
+            wearing: Wearing::System,
+            system: window.appearance(),
+            tab: Tab::General,
             projects: Vec::new(),
             naming: None,
             sky: None,
@@ -321,6 +373,28 @@ impl Skep {
             let services: Vec<_> = self.mirror.services().cloned().collect();
             menubar.show(self.mirror.summary().glyph(), &services);
         }
+    }
+
+    /// Puts the window in whatever it should be wearing, and throws away
+    /// everything drawn from the palette so it is drawn again.
+    fn dress(&mut self, cx: &mut Context<Self>) {
+        self.theme = self.wearing.theme(self.system);
+        // A form open across a change of appearance keeps its own colours
+        // otherwise.
+        let look = self.writing();
+        if let Some(draft) = &self.draft {
+            for held in [&draft.host, &draft.port] {
+                held.update(cx, |field, _| field.look(look));
+            }
+        }
+        if let Some(naming) = &self.naming {
+            for held in [&naming.command, &naming.flag, &naming.site] {
+                held.update(cx, |field, _| field.look(look));
+            }
+        }
+        self.sky = None;
+        self.tooth = None;
+        cx.notify();
     }
 
     fn drain(&mut self, cx: &mut Context<Self>) {
@@ -422,8 +496,11 @@ impl Skep {
                 Update::Preferences {
                     sites_in_browser,
                     hidden,
+                    appearance,
                 } => {
                     self.sites_in_browser = sites_in_browser;
+                    self.wearing = Wearing::of(appearance.as_deref());
+                    self.dress(cx);
                     self.hidden = hidden.into_iter().collect();
                     // A screen put away while you are standing on it cannot
                     // stay under you.

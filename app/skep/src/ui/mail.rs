@@ -694,17 +694,7 @@ impl Skep {
         body: &comb_services::mail::Body,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let theme = &self.theme;
-        // A track with the chosen one raised out of it, rather than three
-        // words that happen to sit together. The track is what says these are
-        // one choice with three positions.
-        let mut tabs = div()
-            .flex()
-            .items_center()
-            .gap_0p5()
-            .p(px(2.))
-            .rounded(px(CARD))
-            .bg(theme.base);
+        let mut tabs = self.track();
 
         for (which, name) in [
             (MailView::Rendered, "Rendered"),
@@ -716,46 +706,33 @@ impl Skep {
             if which == MailView::Rendered && body.html.is_empty() {
                 continue;
             }
-            let here = self.mail_view == which;
             let id = body.id.clone();
             tabs = tabs.child(
-                div()
-                    .id(SharedString::from(format!("mail-tab-{name}")))
-                    .px_2p5()
-                    .py_1()
-                    .rounded(px(CARD - 2.))
-                    .label()
-                    .cursor_pointer()
-                    .text_color(if here { theme.text } else { theme.muted })
-                    .bg(if here {
-                        theme.raised
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .hover(|style| style.text_color(theme.text))
-                    .on_click(cx.listener(move |skep, _, _, cx| {
-                        skep.mail_view = which;
-                        // Asked for on the way in rather than kept fresh: the
-                        // source never changes and the checks reach out over
-                        // the network.
-                        // Choosing a view is the asking. Making somebody then
-                        // press a button to get what the view is for is one
-                        // act too many, and the rule was never that checks
-                        // should be hard to reach: it was that opening a
-                        // message must not reach out on its own. It still
-                        // does not.
-                        match which {
-                            MailView::Source if skep.source.is_none() => {
-                                let _ = skep.commands.send(Command::MailSource(id.clone()));
-                            }
-                            MailView::Checks if skep.checks.is_none() => {
-                                let _ = skep.commands.send(Command::MailChecks(id.clone()));
-                            }
-                            _ => {}
+                self.segment(
+                    SharedString::from(format!("mail-tab-{name}")),
+                    name,
+                    self.mail_view == which,
+                )
+                .on_click(cx.listener(move |skep, _, _, cx| {
+                    skep.mail_view = which;
+                    // Asked for on the way in rather than kept fresh: the
+                    // source never changes and the checks reach out over the
+                    // network. Choosing a view is the asking. Making somebody
+                    // then press a button to get what the view is for is one
+                    // act too many, and the rule was never that checks should
+                    // be hard to reach: it was that opening a message must not
+                    // reach out on its own. It still does not.
+                    match which {
+                        MailView::Source if skep.source.is_none() => {
+                            let _ = skep.commands.send(Command::MailSource(id.clone()));
                         }
-                        cx.notify();
-                    }))
-                    .child(SharedString::from(name)),
+                        MailView::Checks if skep.checks.is_none() => {
+                            let _ = skep.commands.send(Command::MailChecks(id.clone()));
+                        }
+                        _ => {}
+                    }
+                    cx.notify();
+                })),
             );
         }
         tabs.into_any_element()
