@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Skep</string>
+	<key>CFBundleDisplayName</key>
+	<string>Skep</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.quirelabs.skep</string>
+	<key>CFBundleExecutable</key>
+	<string>skep-app</string>
+	<key>CFBundleIconFile</key>
+	<string>skep</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<!-- The window calls setInspectable, which arrived in 13.3. Anything
+	     older raises on an unrecognised selector rather than degrading, so
+	     this is the oldest macOS the app actually runs on rather than the
+	     oldest it compiles for. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>13.3</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Apache-2.0 OR MIT</string>
+</dict>
+</plist>
