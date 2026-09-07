@@ -26,8 +26,11 @@ PAPER = (0xFB, 0xFA, 0xF8)
 ORANGE = (0xFF, 0x7A, 0x2A)
 ROSE = (0xFF, 0x3D, 0x6E)
 BLUE = (0x4B, 0x5C, 0xFF)
-# The same orange with the light off it, for the far side of the cell.
-DEEP = (0xD8, 0x4A, 0x12)
+# The same orange with the light off it, for the far side of the cell. Chosen
+# by drawing four depths side by side: shallower than this and nobody can see
+# it, which is worse than not doing it, and deeper reads as a second colour
+# rather than as the first one in shadow.
+DEEP = (0xC0, 0x3A, 0x0A)
 
 # Apple draws the body of an icon inside a 1024 grid rather than across it.
 GRID = 1024
@@ -63,7 +66,10 @@ STROKE = 0.115
 # ground: a lit edge was drawn first and it washed out against the paper at
 # exactly the sizes where the mark is smallest. Deepening costs no contrast
 # because it only ever adds it.
-FALL = 1.4
+#
+# Straight rather than eased, so the fall is spread across the whole mark
+# instead of crowded into one corner of it where it cannot be seen.
+FALL = 1.0
 
 
 def squircle(size, radius, power):
