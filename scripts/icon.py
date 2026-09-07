@@ -19,11 +19,13 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter
 
-# Paper, and the one colour on it. The window's light theme is this paper and
-# the app's orange is this orange, so the icon and the app are the same two
-# things rather than a family resemblance.
+# Paper, and the three colours the window's light is made of. The app's light
+# theme is this paper and these are its three, so the icon and the app are the
+# same things rather than a family resemblance to each other.
 PAPER = (0xFB, 0xFA, 0xF8)
 ORANGE = (0xFF, 0x7A, 0x2A)
+ROSE = (0xFF, 0x3D, 0x6E)
+BLUE = (0x4B, 0x5C, 0xFF)
 
 # Apple draws the body of an icon inside a 1024 grid rather than across it.
 GRID = 1024
@@ -33,16 +35,20 @@ RADIUS = 185.4
 # an Apple icon sits right beside the others in a dock.
 SQUIRCLE = 5.0
 
-# How far the light carries, and how much grain is in it. Both quieter than
-# they were on a dark ground: orange over paper is already loud, and grain
-# that read as texture on black reads as dirt on white.
-CARRY = 0.50
+# How much grain is in the light. Quieter than the window's: grain that reads
+# as texture on black reads as dirt on white.
 GRAIN = 0.030
 
-# The light: where it sits, and how wide it spreads. One bloom low in a corner
-# rather than three across the bottom. Three colours need a whole window to
-# blend across; an icon is 16 pixels wide often enough that it needs one.
-BLOOM = (0.18, 0.94, 0.85)
+# The light: where each colour sits, how wide it spreads, and how strong it
+# is. Low and left to right, the way the three lie across the bottom of the
+# window. The orange is the app's own and leads; the other two are there to be
+# noticed second, and were drawn at four strengths to find where that is.
+# Louder than this and the corner where rose meets blue goes grey.
+BLOOMS = [
+    (0.18, 0.94, 0.85, 0.50, ORANGE),
+    (0.55, 1.00, 0.72, 0.28, ROSE),
+    (0.94, 0.88, 0.70, 0.18, BLUE),
+]
 
 # The mark. Outlined rather than solid, and this thick because thinner is a
 # grey ring at 16 pixels while thicker closes the hole up and becomes a blob.
@@ -72,22 +78,22 @@ def squircle(size, radius, power):
 
 
 def light(size):
-    """Paper with the orange lying low in one corner of it."""
+    """Paper, with the three lying low across one corner of it."""
     body = Image.new("RGB", (size, size), PAPER)
     pixels = body.load()
-    across_at, down_at, spread = BLOOM
     for y in range(size):
         down = y / size
         for x in range(size):
-            away = math.hypot(x / size - across_at, down - down_at) / spread
-            if away >= 1:
-                pixels[x, y] = PAPER
-                continue
-            weight = (1 - away) ** 2 * CARRY
-            pixels[x, y] = tuple(
-                int(max(0, min(255, PAPER[c] + (ORANGE[c] - PAPER[c]) * weight)))
-                for c in range(3)
-            )
+            across = x / size
+            colour = list(PAPER)
+            for (at_x, at_y, spread, strength, tint) in BLOOMS:
+                away = math.hypot(across - at_x, down - at_y) / spread
+                if away >= 1:
+                    continue
+                weight = (1 - away) ** 2 * strength
+                for channel in range(3):
+                    colour[channel] += (tint[channel] - colour[channel]) * weight
+            pixels[x, y] = tuple(int(max(0, min(255, v))) for v in colour)
     return body
 
 
@@ -153,26 +159,58 @@ def icon():
     return canvas
 
 
-def template(size=36):
-    """The mark alone, for the menu bar.
+def state(size, kind, across=0.41, stroke=0.15):
+    """One menu bar state, black on nothing.
 
-    Black on nothing, which is what a template image is: macOS throws the
-    colour away and redraws it in whatever the menu bar wants, light, dark or
-    highlighted. Colour here would be ignored at best and wrong at worst.
+    That is what a template image is: macOS throws the colour away and redraws
+    the shape in whatever the bar wants, light, dark, or inverted while a menu
+    is open over it. Colour here is ignored at best and wrong at worst.
+
+    The stroke is lighter than the icon's. The icon's ratio drawn at eighteen
+    points leaves a hole too small to see, so hollow and solid stop being two
+    different things, and telling them apart is the entire job up there.
     """
-    mark = cell(size, across=0.40, stroke=0.15)
-    drawn = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    scale = size * 8
+    mark = Image.new("L", (scale, scale), 0)
+    pen = ImageDraw.Draw(mark)
+    middle = scale // 2
+    wide = scale * across
+    tall = wide * 2 / math.sqrt(3)
+    points = [
+        (middle, middle - tall),
+        (middle + wide, middle - tall / 2),
+        (middle + wide, middle + tall / 2),
+        (middle, middle + tall),
+        (middle - wide, middle + tall / 2),
+        (middle - wide, middle - tall / 2),
+    ]
+    if kind == "running":
+        pen.polygon(points, fill=255)
+    else:
+        pen.polygon(points, outline=255, width=int(scale * stroke))
+        if kind == "working":
+            # Filled from the left, the way the symbol it replaces was.
+            filled = Image.new("L", (scale, scale), 0)
+            ImageDraw.Draw(filled).polygon(points, fill=255)
+            left = Image.new("L", (scale, scale), 0)
+            ImageDraw.Draw(left).rectangle([0, 0, middle, scale], fill=255)
+            mark.paste(255, (0, 0), Image.composite(filled, left.point(lambda _: 0), left))
+
+    drawn = Image.new("RGBA", (scale, scale), (0, 0, 0, 0))
     drawn.putalpha(mark)
-    return drawn
+    return drawn.resize((size, size), Image.LANCZOS)
 
 
 def main():
     args = sys.argv[1:]
-    if args and args[0] == "--template":
-        out = Path(args[1] if len(args) > 1 else "skep-menu.png")
-        template(36).save(out)
-        template(18).save(out.with_name(out.stem.replace("@2x", "") + ".png"))
-        print(f"{out} written")
+    if args and args[0] == "--menu":
+        # Eighteen points is what the menu bar gives an image, drawn at two
+        # times so it stays sharp on a retina display.
+        into = Path(args[1] if len(args) > 1 else ".")
+        into.mkdir(parents=True, exist_ok=True)
+        for kind in ("idle", "running", "working"):
+            state(36, kind).save(into / f"{kind}.png")
+        print(f"{into}/*.png written")
         return
     out = Path(args[0] if args else "skep.icns")
     full = icon()

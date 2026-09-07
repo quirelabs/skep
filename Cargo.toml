@@ -92,6 +92,10 @@ objc2-foundation = { version = "0.3", features = [
     "NSString",
     "NSAttributedString",
     "NSDictionary",
+    # The menu bar mark is a png compiled in, and this is what turns bytes
+    # into something NSImage will take.
+    "NSData",
+    "NSGeometry",
 ] }
 sha2 = "0.10"
 # The proxy behind local domains. rustls is pinned to ring so a clone builds
