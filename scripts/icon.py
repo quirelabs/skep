@@ -26,6 +26,8 @@ PAPER = (0xFB, 0xFA, 0xF8)
 ORANGE = (0xFF, 0x7A, 0x2A)
 ROSE = (0xFF, 0x3D, 0x6E)
 BLUE = (0x4B, 0x5C, 0xFF)
+# The same orange with the light off it, for the far side of the cell.
+DEEP = (0xD8, 0x4A, 0x12)
 
 # Apple draws the body of an icon inside a 1024 grid rather than across it.
 GRID = 1024
@@ -53,8 +55,15 @@ BLOOMS = [
 # The mark. Outlined rather than solid, and this thick because thinner is a
 # grey ring at 16 pixels while thicker closes the hole up and becomes a blob.
 # Both were drawn and looked at.
-ACROSS = 0.215
-STROKE = 0.105
+ACROSS = 0.250
+STROKE = 0.115
+
+# How much the far side of the cell falls away from the near one. Depth by
+# darkening rather than by lightening, which is the whole trick on a pale
+# ground: a lit edge was drawn first and it washed out against the paper at
+# exactly the sizes where the mark is smallest. Deepening costs no contrast
+# because it only ever adds it.
+FALL = 1.4
 
 
 def squircle(size, radius, power):
@@ -138,9 +147,23 @@ def cell(size, across=ACROSS, stroke=STROKE):
     return mark.resize((size, size), Image.LANCZOS)
 
 
+def sloped(size, near, far):
+    """One colour falling into another across the top left to bottom right."""
+    slope = Image.new("RGB", (size, size))
+    pixels = slope.load()
+    for y in range(size):
+        down = y / size
+        for x in range(size):
+            along = (((x / size) + down) / 2) ** FALL
+            pixels[x, y] = tuple(
+                int(near[c] + (far[c] - near[c]) * along) for c in range(3)
+            )
+    return slope
+
+
 def draw(size):
     body = grain(light(size), GRAIN)
-    body.paste(Image.new("RGB", (size, size), ORANGE), (0, 0), cell(size))
+    body.paste(sloped(size, ORANGE, DEEP), (0, 0), cell(size))
     return body
 
 
