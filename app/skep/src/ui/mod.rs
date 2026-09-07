@@ -173,6 +173,9 @@ pub struct Skep {
     sites_in_browser: bool,
     /// Screens put away, by the name the rail knows them under.
     hidden: BTreeSet<String>,
+    /// What each service is pinned to in config.toml, which is not the same
+    /// question as what it is running.
+    configured: BTreeMap<String, (Option<String>, Option<u16>)>,
     /// The appearance this machine asked for, and the one the system is in.
     /// Kept apart so following the system can go back to following it.
     wearing: Wearing,
@@ -342,6 +345,7 @@ impl Skep {
             was_active: true,
             sites_in_browser: false,
             hidden: BTreeSet::new(),
+            configured: BTreeMap::new(),
             wearing: Wearing::System,
             system: window.appearance(),
             tab: Tab::General,
@@ -500,7 +504,9 @@ impl Skep {
                     sites_in_browser,
                     hidden,
                     appearance,
+                    configured,
                 } => {
+                    self.configured = configured;
                     self.sites_in_browser = sites_in_browser;
                     self.wearing = Wearing::of(appearance.as_deref());
                     self.dress(cx);

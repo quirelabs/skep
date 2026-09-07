@@ -13,42 +13,64 @@ use super::*;
 /// A service's settings, open over the window.
 pub(super) struct Tuning {
     pub(super) service: String,
-    pub(super) version: Entity<Field>,
+    /// The version pinned in config.toml, or None for whichever is newest.
+    /// Chosen from a list rather than typed, because only pinned builds can
+    /// be downloaded and a free field invites writing one that does not
+    /// exist, which is a failure that arrives at the end of a download.
+    pub(super) version: Option<String>,
+    /// Every major this machine could install, newest first.
+    pub(super) majors: Vec<String>,
     pub(super) port: Entity<Field>,
+    /// The port it is on now, shown as the field's hint so an empty field
+    /// still says what you are getting.
+    pub(super) running_port: Option<u16>,
     /// Whether it is up, which is the difference between changing a setting
     /// and interrupting something.
     pub(super) running: bool,
     pub(super) complaint: Option<String>,
-    /// Dropping these stops the card redrawing as the fields are typed in.
+    /// Dropping these stops the card redrawing as the field is typed in.
     _watching: Vec<Subscription>,
 }
 
 impl Tuning {
     pub(super) fn new(
         service: &str,
-        version: &str,
-        port: Option<u16>,
+        set: Option<&(Option<String>, Option<u16>)>,
+        running_port: Option<u16>,
         running: bool,
         look: field::Look,
         cx: &mut Context<Skep>,
     ) -> Self {
-        // Filled in with what it is now rather than with what it would be if
-        // nobody had said anything, so the form opens showing the truth and
-        // clearing a field is the way to say "whatever you think".
-        let version_field = cx.new(|cx| Field::new("newest pinned", look, cx));
-        version_field.update(cx, |field, cx| field.set(version.to_string(), cx));
-        let port_field = cx.new(|cx| Field::new("the default", look, cx));
+        let mut majors: Vec<String> = comb_services::find(service)
+            .map(|adapter| {
+                comb_services::versions(adapter)
+                    .iter()
+                    .filter_map(|version| version.to_string().split('.').next().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        majors.dedup();
+
+        // What was written down, not what is running. A field showing 5432
+        // when nobody chose 5432 says somebody did, and saving it would make
+        // that true: a default quietly becomes a decision, and the service
+        // stops moving out of the way of whatever wants that port later.
+        let (version, port) = set.cloned().unwrap_or((None, None));
+        let hint = match running_port {
+            Some(port) => SharedString::from(port.to_string()),
+            None => SharedString::from("the default"),
+        };
+        let field = cx.new(|cx| Field::new(hint, look, cx));
         if let Some(port) = port {
-            port_field.update(cx, |field, cx| field.set(port.to_string(), cx));
+            field.update(cx, |field, cx| field.set(port.to_string(), cx));
         }
-        let watching = [&version_field, &port_field]
-            .map(|field| cx.observe(field, |_, _, cx| cx.notify()))
-            .into_iter()
-            .collect();
+        let watching = vec![cx.observe(&field, |_, _, cx| cx.notify())];
         Self {
             service: service.to_string(),
-            version: version_field,
-            port: port_field,
+            version,
+            majors,
+            port: field,
+            running_port,
             running,
             complaint: None,
             _watching: watching,
@@ -1051,7 +1073,6 @@ impl Skep {
         if !status.id.is_branch() {
             let name = status.id.service.as_str().to_string();
             let running = live;
-            let version = status.id.version.to_string();
             let port = status.ports.values().next().copied();
             row = row.child(
                 self.quiet(
@@ -1060,7 +1081,9 @@ impl Skep {
                 )
                 .on_click(cx.listener(move |skep, _, window, cx| {
                     cx.stop_propagation();
-                    let tuning = Tuning::new(&name, &version, port, running, skep.writing(), cx);
+                    let set = skep.configured.get(&name).cloned();
+                    let tuning =
+                        Tuning::new(&name, set.as_ref(), port, running, skep.writing(), cx);
                     tuning.port.focus_handle(cx).focus(window, cx);
                     skep.tuning = Some(tuning);
                     cx.notify();
@@ -1165,12 +1188,18 @@ impl Skep {
                                     ),
                                 )),
                         )
-                        .child(labelled("Port", "empty for the default", &tuning.port))
                         .child(labelled(
-                            "Version",
-                            "empty for the newest pinned",
-                            &tuning.version,
+                            "Port",
+                            match tuning.running_port {
+                                // The hint in the field is the number itself,
+                                // so this says what leaving it alone means
+                                // rather than repeating it.
+                                Some(_) => "empty to leave it to skep",
+                                None => "empty for the default",
+                            },
+                            &tuning.port,
                         ))
+                        .child(self.pinning(tuning, cx))
                         // Said before it happens rather than asked about
                         // afterwards. One fewer press, and the sentence is
                         // where the decision is being made.
@@ -1217,6 +1246,78 @@ impl Skep {
         )
     }
 
+    /// Which version to pin to, out of the ones this machine could actually
+    /// install.
+    ///
+    /// A list rather than a field, because only pinned builds exist: typing
+    /// 17.4 into a box would be accepted here and fail at the end of a
+    /// download, which is the worst place to find out. Where a service has
+    /// one pinned version there is no choice to offer, so it says what it is
+    /// instead of drawing a control with a single position.
+    fn pinning(&self, tuning: &Tuning, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let heading = div()
+            .flex()
+            .items_baseline()
+            .gap_2()
+            .child(div().label().child(SharedString::from("Version")))
+            .child(
+                div()
+                    .caption()
+                    .text_color(theme.idle)
+                    .child(SharedString::from(if tuning.majors.len() > 1 {
+                        "newest unless you pin one"
+                    } else {
+                        "the only one pinned for this machine"
+                    })),
+            );
+
+        if tuning.majors.len() < 2 {
+            return div()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .w_full()
+                .child(heading)
+                .child(
+                    div()
+                        .label()
+                        .font_family(MONO)
+                        .text_color(theme.muted)
+                        .child(SharedString::from(
+                            tuning.majors.first().cloned().unwrap_or_default(),
+                        )),
+                )
+                .into_any_element();
+        }
+
+        let mut choices = self.track();
+        // Newest first, because that is the answer for nearly everybody and
+        // the one that keeps working as pins move on.
+        for major in std::iter::once(None).chain(tuning.majors.iter().map(|m| Some(m.clone()))) {
+            let label = major.clone().unwrap_or_else(|| "Newest".to_string());
+            let here = tuning.version == major;
+            choices = choices.child(
+                self.segment(SharedString::from(format!("pin-{label}")), &label, here)
+                    .on_click(cx.listener(move |skep, _, _, cx| {
+                        if let Some(tuning) = skep.tuning.as_mut() {
+                            tuning.version = major.clone();
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .w_full()
+            .child(heading)
+            .child(choices)
+            .into_any_element()
+    }
+
     /// Only the keys about the form. The fields own everything else.
     pub(super) fn tuning_keys(
         &mut self,
@@ -1233,13 +1334,9 @@ impl Skep {
                 cx.notify();
             }
             "tab" => {
-                let on_port = tuning.port.focus_handle(cx).contains_focused(window, cx);
-                let next = if on_port {
-                    &tuning.version
-                } else {
-                    &tuning.port
-                };
-                next.focus_handle(cx).focus(window, cx);
+                // One field, so tab has nowhere else to go. Held anyway, or
+                // it escapes the card and lands on the window behind it.
+                tuning.port.focus_handle(cx).focus(window, cx);
                 cx.notify();
             }
             "enter" => self.submit_tuning(cx),
@@ -1269,11 +1366,9 @@ impl Skep {
                 Ok(port) => Some(port),
             }
         };
-        let version = tuning.version.read(cx).text().trim().to_string();
-        let service = tuning.service.clone();
         let _ = self.commands.send(Command::Configure {
-            service,
-            version: (!version.is_empty()).then_some(version),
+            service: tuning.service.clone(),
+            version: tuning.version.clone(),
             port,
         });
         self.tuning = None;

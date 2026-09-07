@@ -2,6 +2,8 @@
 //! interface, which lives on GPUI's main thread. Everything crosses as a
 //! message; neither side reaches into the other.
 
+use std::collections::BTreeMap;
+
 use comb::{Engine, Event, Host, InstanceId, Label, LogLine, Overview, Snapshot};
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast::error::RecvError;
@@ -121,6 +123,10 @@ pub enum Update {
         sites_in_browser: bool,
         hidden: Vec<String>,
         appearance: Option<String>,
+        /// What each service is pinned to in config.toml, which is a
+        /// different question from what it happens to be running. A form has
+        /// to show the first or it turns defaults into decisions.
+        configured: BTreeMap<String, (Option<String>, Option<u16>)>,
     },
     /// Every project this machine knows about.
     Projects(Vec<Project>),
@@ -300,6 +306,11 @@ fn tell_preferences(paths: &comb::Paths, reports: &UnboundedSender<Update>) {
         sites_in_browser: settings.app.sites_in_browser,
         hidden: settings.app.hidden,
         appearance: settings.app.appearance,
+        configured: settings
+            .services
+            .iter()
+            .map(|(name, set)| (name.clone(), (set.version.clone(), set.port)))
+            .collect(),
     });
 }
 
