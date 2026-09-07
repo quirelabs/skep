@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Draws Skep's icon out of the same material as its window.
+"""Draws Skep's icon, and the mark for the menu bar.
 
-The window is lit by three colours lying low behind a fine grain; this is that
-same light, turned into a corner so it reads at 32 pixels, with the comb cell
-the rail already uses as the app's own shape. Made by a script rather than by
-hand so it can be argued with: every number here is a number somebody can
-change and re-run.
+Paper rather than darkness, with the app's own orange lying low in one corner
+of it and the fine grain the window has, and the comb cell the rail already
+uses as the app's own shape. Made by a script rather than by hand so it can be
+argued with: every number here is one somebody can change and re-run.
 
     python3 scripts/icon.py app/skep/assets/skep.icns
+    python3 scripts/icon.py /tmp/look.png          # just look at it
+    python3 scripts/icon.py --template out.png     # the menu bar mark
 """
 
 import math
@@ -18,10 +19,11 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter
 
-# The window's own palette. Base first, then the three the light is made of.
-BASE = (0x0B, 0x0B, 0x0C)
-SKY = [(0xFF, 0x7A, 0x2A), (0xFF, 0x3D, 0x6E), (0x4B, 0x5C, 0xFF)]
-INK = (0xFF, 0xFF, 0xFF)
+# Paper, and the one colour on it. The window's light theme is this paper and
+# the app's orange is this orange, so the icon and the app are the same two
+# things rather than a family resemblance.
+PAPER = (0xFB, 0xFA, 0xF8)
+ORANGE = (0xFF, 0x7A, 0x2A)
 
 # Apple draws the body of an icon inside a 1024 grid rather than across it.
 GRID = 1024
@@ -31,10 +33,22 @@ RADIUS = 185.4
 # an Apple icon sits right beside the others in a dock.
 SQUIRCLE = 5.0
 
-# How far the light carries, and how much grain is in it. Stronger than the
-# window's: an icon is looked at from further away and has no text to protect.
-CARRY = 0.85
-GRAIN = 0.055
+# How far the light carries, and how much grain is in it. Both quieter than
+# they were on a dark ground: orange over paper is already loud, and grain
+# that read as texture on black reads as dirt on white.
+CARRY = 0.50
+GRAIN = 0.030
+
+# The light: where it sits, and how wide it spreads. One bloom low in a corner
+# rather than three across the bottom. Three colours need a whole window to
+# blend across; an icon is 16 pixels wide often enough that it needs one.
+BLOOM = (0.18, 0.94, 0.85)
+
+# The mark. Outlined rather than solid, and this thick because thinner is a
+# grey ring at 16 pixels while thicker closes the hole up and becomes a blob.
+# Both were drawn and looked at.
+ACROSS = 0.215
+STROKE = 0.105
 
 
 def squircle(size, radius, power):
@@ -58,29 +72,22 @@ def squircle(size, radius, power):
 
 
 def light(size):
-    """The three colours, gathered into one corner and bled into each other."""
-    body = Image.new("RGB", (size, size), BASE)
+    """Paper with the orange lying low in one corner of it."""
+    body = Image.new("RGB", (size, size), PAPER)
     pixels = body.load()
-    # Each is a soft round bloom: where it sits, how wide, how strong.
-    blooms = [
-        (0.16, 0.92, 0.78, 1.00),  # the warm one, low and to the left
-        (0.62, 1.04, 0.66, 0.85),
-        (1.02, 0.52, 0.70, 0.62),  # cool, off the right edge
-    ]
+    across_at, down_at, spread = BLOOM
     for y in range(size):
         down = y / size
         for x in range(size):
-            across = x / size
-            colour = list(BASE)
-            for (cx, cy, spread, strength) in blooms:
-                away = math.hypot(across - cx, down - cy) / spread
-                if away >= 1:
-                    continue
-                fade = (1 - away) ** 2
-                weight = fade * strength * CARRY
-                for c in range(3):
-                    colour[c] += (SKY[blooms.index((cx, cy, spread, strength))][c] - colour[c]) * weight
-            pixels[x, y] = tuple(int(max(0, min(255, v))) for v in colour)
+            away = math.hypot(x / size - across_at, down - down_at) / spread
+            if away >= 1:
+                pixels[x, y] = PAPER
+                continue
+            weight = (1 - away) ** 2 * CARRY
+            pixels[x, y] = tuple(
+                int(max(0, min(255, PAPER[c] + (ORANGE[c] - PAPER[c]) * weight)))
+                for c in range(3)
+            )
     return body
 
 
@@ -103,36 +110,31 @@ def grain(image, amount):
     return speckled
 
 
-def cell(size):
-    """The comb cell, pointy topped, the way the rail draws it.
-
-    Solid rather than outlined. The rail's glyph is a thin outline because it
-    sits at 20 pixels beside words; an icon has to survive 16 pixels in a
-    Spotlight result with nothing beside it, and at that size an outline is a
-    grey ring. Tried both: the outline is mud and this is unmistakable.
-    """
+def cell(size, across=ACROSS, stroke=STROKE):
+    """The comb cell, pointy topped, the way the rail draws it."""
     mark = Image.new("L", (size * 4, size * 4), 0)
     draw = ImageDraw.Draw(mark)
     middle = size * 2
-    across = size * 4 * 0.215
-    down = across * 2 / math.sqrt(3)
+    wide = size * 4 * across
+    tall = wide * 2 / math.sqrt(3)
     points = [
-        (middle, middle - down),
-        (middle + across, middle - down / 2),
-        (middle + across, middle + down / 2),
-        (middle, middle + down),
-        (middle - across, middle + down / 2),
-        (middle - across, middle - down / 2),
+        (middle, middle - tall),
+        (middle + wide, middle - tall / 2),
+        (middle + wide, middle + tall / 2),
+        (middle, middle + tall),
+        (middle - wide, middle + tall / 2),
+        (middle - wide, middle - tall / 2),
     ]
-    draw.polygon(points, fill=255)
+    if stroke is None:
+        draw.polygon(points, fill=255)
+    else:
+        draw.polygon(points, outline=255, width=int(size * 4 * stroke))
     return mark.resize((size, size), Image.LANCZOS)
 
 
 def draw(size):
     body = grain(light(size), GRAIN)
-    mark = cell(size)
-    ink = Image.new("RGB", (size, size), INK)
-    body.paste(ink, (0, 0), mark)
+    body.paste(Image.new("RGB", (size, size), ORANGE), (0, 0), cell(size))
     return body
 
 
@@ -145,14 +147,34 @@ def icon():
     canvas = Image.new("RGBA", (GRID, GRID), (0, 0, 0, 0))
     # A shadow, because every icon beside it in the dock has one.
     shadow = Image.new("RGBA", (GRID, GRID), (0, 0, 0, 0))
-    shadow.paste((0, 0, 0, 90), ((GRID - BODY) // 2, (GRID - BODY) // 2 + 12), shape)
+    shadow.paste((0, 0, 0, 70), ((GRID - BODY) // 2, (GRID - BODY) // 2 + 12), shape)
     canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(14)))
     canvas.alpha_composite(body, ((GRID - BODY) // 2, (GRID - BODY) // 2))
     return canvas
 
 
+def template(size=36):
+    """The mark alone, for the menu bar.
+
+    Black on nothing, which is what a template image is: macOS throws the
+    colour away and redraws it in whatever the menu bar wants, light, dark or
+    highlighted. Colour here would be ignored at best and wrong at worst.
+    """
+    mark = cell(size, across=0.40, stroke=0.15)
+    drawn = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    drawn.putalpha(mark)
+    return drawn
+
+
 def main():
-    out = Path(sys.argv[1] if len(sys.argv) > 1 else "skep.icns")
+    args = sys.argv[1:]
+    if args and args[0] == "--template":
+        out = Path(args[1] if len(args) > 1 else "skep-menu.png")
+        template(36).save(out)
+        template(18).save(out.with_name(out.stem.replace("@2x", "") + ".png"))
+        print(f"{out} written")
+        return
+    out = Path(args[0] if args else "skep.icns")
     full = icon()
     if out.suffix == ".png":
         full.save(out)
