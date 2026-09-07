@@ -274,7 +274,7 @@ impl Skep {
 
     /// The same control with nothing drawn around it, for whatever sits
     /// beside a chip and must not compete with it: Cancel, Clear.
-    pub(super) fn quiet(&self, id: &'static str, label: &'static str) -> Stateful<Div> {
+    pub(super) fn quiet(&self, id: impl Into<ElementId>, label: &'static str) -> Stateful<Div> {
         let theme = self.theme.clone();
         div()
             .id(id)

@@ -4,7 +4,57 @@
 use comb::EventKind;
 
 use super::paint::{dither, faded};
+use gpui::{AppContext as _, Entity, Focusable as _};
+
+use crate::field::{self, Field};
+
 use super::*;
+
+/// A service's settings, open over the window.
+pub(super) struct Tuning {
+    pub(super) service: String,
+    pub(super) version: Entity<Field>,
+    pub(super) port: Entity<Field>,
+    /// Whether it is up, which is the difference between changing a setting
+    /// and interrupting something.
+    pub(super) running: bool,
+    pub(super) complaint: Option<String>,
+    /// Dropping these stops the card redrawing as the fields are typed in.
+    _watching: Vec<Subscription>,
+}
+
+impl Tuning {
+    pub(super) fn new(
+        service: &str,
+        version: &str,
+        port: Option<u16>,
+        running: bool,
+        look: field::Look,
+        cx: &mut Context<Skep>,
+    ) -> Self {
+        // Filled in with what it is now rather than with what it would be if
+        // nobody had said anything, so the form opens showing the truth and
+        // clearing a field is the way to say "whatever you think".
+        let version_field = cx.new(|cx| Field::new("newest pinned", look, cx));
+        version_field.update(cx, |field, cx| field.set(version.to_string(), cx));
+        let port_field = cx.new(|cx| Field::new("the default", look, cx));
+        if let Some(port) = port {
+            port_field.update(cx, |field, cx| field.set(port.to_string(), cx));
+        }
+        let watching = [&version_field, &port_field]
+            .map(|field| cx.observe(field, |_, _, cx| cx.notify()))
+            .into_iter()
+            .collect();
+        Self {
+            service: service.to_string(),
+            version: version_field,
+            port: port_field,
+            running,
+            complaint: None,
+            _watching: watching,
+        }
+    }
+}
 
 pub(super) const LOG_HEIGHT: f32 = 248.;
 /// What the same panel is worth when there is nothing to show in it.
@@ -456,7 +506,7 @@ impl Skep {
                             .opacity(0.)
                             .group_hover("row", |style| style.opacity(1.));
                     }
-                    holder.child(self.actions(&status, id))
+                    holder.child(self.actions(&status, id, cx))
                 },
             );
 
@@ -985,11 +1035,38 @@ impl Skep {
         cx.notify();
     }
 
-    pub(super) fn actions(&self, status: &ServiceStatus, id: InstanceId) -> impl IntoElement {
+    pub(super) fn actions(
+        &self,
+        status: &ServiceStatus,
+        id: InstanceId,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let live = status.state.is_running() || status.state.is_transitional();
         // Everything else in the row compresses before the buttons do: a
         // control you cannot reach is worse than a name you cannot finish.
         let mut row = div().flex().flex_shrink_0().items_center().gap_2();
+        // What a service is set to belongs beside the service, not three
+        // navigations away in a list of every service at once. The list is
+        // still worth having; it answers a different question.
+        if !status.id.is_branch() {
+            let name = status.id.service.as_str().to_string();
+            let running = live;
+            let version = status.id.version.to_string();
+            let port = status.ports.values().next().copied();
+            row = row.child(
+                self.quiet(
+                    SharedString::from(format!("tune-{}", status.id)),
+                    "Settings",
+                )
+                .on_click(cx.listener(move |skep, _, window, cx| {
+                    cx.stop_propagation();
+                    let tuning = Tuning::new(&name, &version, port, running, skep.writing(), cx);
+                    tuning.port.focus_handle(cx).focus(window, cx);
+                    skep.tuning = Some(tuning);
+                    cx.notify();
+                })),
+            );
+        }
         if live {
             row = row
                 .child(self.button("Stop", Command::Stop(id.clone())))
@@ -998,6 +1075,208 @@ impl Skep {
             row = row.child(self.button("Start", Command::Start(id)));
         }
         row
+    }
+
+    /// What a service is set to, and the two things worth changing without
+    /// opening a file: which version, and which port.
+    ///
+    /// Only those two. A service listening on more than one is edited in
+    /// config.toml, where every port can be named, and a form in front of
+    /// that would have to know every adapter there will ever be.
+    pub(super) fn tuning_form(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tuning = self.tuning.as_ref()?;
+        let theme = &self.theme;
+        let service = SharedString::from(tuning.service.clone());
+
+        let labelled = |name: &'static str, about: &'static str, held: &Entity<Field>| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .w_full()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap_2()
+                        .child(div().label().child(SharedString::from(name)))
+                        .child(
+                            div()
+                                .caption()
+                                .text_color(theme.idle)
+                                .child(SharedString::from(about)),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .px_3()
+                        .py_2()
+                        .rounded(px(CHIP))
+                        .bg(theme.base)
+                        .border_1()
+                        .border_color(theme.border)
+                        .body()
+                        .font_family(MONO)
+                        .child(held.clone()),
+                )
+        };
+
+        Some(
+            div()
+                .id("tuning")
+                .on_key_down(cx.listener(Self::tuning_keys))
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(faded(theme.base, 0.72))
+                .on_click(cx.listener(|skep, _, _, cx| {
+                    skep.tuning = None;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .id("tuning-card")
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .w(px(460.))
+                        .p(px(MARGIN))
+                        .rounded(px(PANEL_RADIUS))
+                        .bg(theme.raised)
+                        .border_1()
+                        .border_color(theme.border)
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(div().title().child(service.clone()))
+                                .child(div().caption().text_color(theme.muted).child(
+                                    SharedString::from(
+                                        "Kept in config.toml, which is this machine's and \
+                                             travels with it. A project's skep.toml still wins \
+                                             wherever both speak.",
+                                    ),
+                                )),
+                        )
+                        .child(labelled("Port", "empty for the default", &tuning.port))
+                        .child(labelled(
+                            "Version",
+                            "empty for the newest pinned",
+                            &tuning.version,
+                        ))
+                        // Said before it happens rather than asked about
+                        // afterwards. One fewer press, and the sentence is
+                        // where the decision is being made.
+                        .children(tuning.running.then(|| {
+                            div()
+                                .caption()
+                                .text_color(theme.failed)
+                                .child(SharedString::from(format!(
+                                    "{service} is running and will be restarted."
+                                )))
+                        }))
+                        .children(tuning.complaint.as_ref().map(|complaint| {
+                            div()
+                                .caption()
+                                .text_color(theme.failed)
+                                .child(SharedString::from(complaint.clone()))
+                        }))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap_2()
+                                .child(self.quiet("tuning-cancel", "Cancel").on_click(cx.listener(
+                                    |skep, _, _, cx| {
+                                        skep.tuning = None;
+                                        cx.notify();
+                                    },
+                                )))
+                                .child(self.chip("tuning-save", "Save").on_click(cx.listener(
+                                    |skep, _, _, cx| {
+                                        skep.submit_tuning(cx);
+                                        cx.notify();
+                                    },
+                                ))),
+                        )
+                        .with_animation(
+                            "tuning-in",
+                            Animation::new(MOTION).with_easing(ease_in_out),
+                            |card, delta| card.opacity(delta).mt(px(10. * (1. - delta))),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Only the keys about the form. The fields own everything else.
+    pub(super) fn tuning_keys(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tuning) = self.tuning.as_ref() else {
+            return;
+        };
+        match event.keystroke.key.as_str() {
+            "escape" => {
+                self.tuning = None;
+                cx.notify();
+            }
+            "tab" => {
+                let on_port = tuning.port.focus_handle(cx).contains_focused(window, cx);
+                let next = if on_port {
+                    &tuning.version
+                } else {
+                    &tuning.port
+                };
+                next.focus_handle(cx).focus(window, cx);
+                cx.notify();
+            }
+            "enter" => self.submit_tuning(cx),
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    /// Writes it down, which is what makes it true. The engine is told by the
+    /// same path the file would have taken, so a change made here and a change
+    /// made in an editor arrive the same way.
+    pub(super) fn submit_tuning(&mut self, cx: &mut Context<Self>) {
+        let Some(tuning) = self.tuning.as_mut() else {
+            return;
+        };
+        let written = tuning.port.read(cx).text().trim().to_string();
+        let port = if written.is_empty() {
+            None
+        } else {
+            match written.parse::<u16>() {
+                // Port 0 means "give me any port", which is not a thing to
+                // pin a service to.
+                Ok(0) | Err(_) => {
+                    tuning.complaint = Some(format!("{written} is not a port number"));
+                    return;
+                }
+                Ok(port) => Some(port),
+            }
+        };
+        let version = tuning.version.read(cx).text().trim().to_string();
+        let service = tuning.service.clone();
+        let _ = self.commands.send(Command::Configure {
+            service,
+            version: (!version.is_empty()).then_some(version),
+            port,
+        });
+        self.tuning = None;
     }
 
     /// The accent lives here and on a breathing dot. Nowhere else.

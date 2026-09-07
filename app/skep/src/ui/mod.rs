@@ -185,6 +185,8 @@ pub struct Skep {
     projects: Vec<crate::bridge::Project>,
     /// A project being described, after its folder has been chosen.
     naming: Option<projects::Naming>,
+    /// A service's settings, open over the window.
+    tuning: Option<services::Tuning>,
     /// The light in the window. One picture, stretched to fit.
     sky: Option<std::sync::Arc<gpui::Image>>,
     /// The page's own tooth, so both halves of the window are one material.
@@ -345,6 +347,7 @@ impl Skep {
             tab: Tab::General,
             projects: Vec::new(),
             naming: None,
+            tuning: None,
             sky: None,
             tooth: None,
             authority_trusted: false,
@@ -787,7 +790,8 @@ impl Render for Skep {
                         Page::Settings => self.settings(cx),
                     })
                     .children(self.adding(cx))
-                    .children(self.naming_form(cx)),
+                    .children(self.naming_form(cx))
+                    .children(self.tuning_form(cx)),
             )
     }
 }

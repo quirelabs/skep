@@ -457,6 +457,57 @@ pub fn set_preference(path: &Path, name: &str, value: bool) -> Result<()> {
     write(path, &document)
 }
 
+/// What a service is set to on this machine, written into config.toml.
+///
+/// A value of None removes the key rather than writing an empty one, so
+/// clearing a field in the window means what it looks like it means: back to
+/// whatever the adapter says, with nothing left behind saying otherwise.
+///
+/// Only the version and the main port. A service that listens on more than
+/// one is edited in the file, where every port can be named; putting a form
+/// in front of that would be a form that has to know every adapter.
+pub fn set_service(
+    path: &Path,
+    name: &str,
+    version: Option<&str>,
+    port: Option<u16>,
+) -> Result<()> {
+    let mut document = read(path)?;
+    let services = table(path, &mut document, "services")?;
+    services.set_implicit(true);
+    let entry = services
+        .entry(name)
+        .or_insert_with(|| {
+            let mut fresh = toml_edit::Table::new();
+            fresh.set_implicit(false);
+            toml_edit::Item::Table(fresh)
+        })
+        .as_table_mut()
+        .ok_or_else(|| Error::Project {
+            path: path.display().to_string(),
+            message: format!(
+                "services.{name} is written inline; put it under a [services.{name}] heading to \
+                 edit it"
+            ),
+        })?;
+
+    match version {
+        Some(version) => entry.insert("version", toml_edit::value(version)),
+        None => entry.remove("version"),
+    };
+    match port {
+        Some(port) => entry.insert("port", toml_edit::value(i64::from(port))),
+        None => entry.remove("port"),
+    };
+
+    // A heading with nothing under it is worse than no heading: it reads as a
+    // setting somebody made and then a value that went missing.
+    if entry.is_empty() {
+        table(path, &mut document, "services")?.remove(name);
+    }
+    write(path, &document)
+}
+
 /// A preference whose answer is a word rather than yes or no.
 pub fn set_choice(path: &Path, name: &str, value: &str) -> Result<()> {
     let mut document = read(path)?;
@@ -1101,6 +1152,42 @@ mod tests {
 
         assert_eq!(project.sites["legacy.test"], 3000);
         assert!(project.run.is_none(), "nothing here is skep's to start");
+    }
+
+    #[test]
+    fn a_service_is_set_and_unset_without_disturbing_the_file() {
+        let path = scratch("service");
+        std::fs::write(&path, "# my machine\n[app]\nsites_in_browser = true\n").unwrap();
+
+        set_service(&path, "postgres", Some("17"), Some(15432)).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let read: Project = toml::from_str(&text).unwrap();
+        assert_eq!(read.services["postgres"].version.as_deref(), Some("17"));
+        assert_eq!(read.services["postgres"].port, Some(15432));
+        assert!(read.app.sites_in_browser, "the other settings survive");
+        assert!(text.contains("# my machine"), "and the file's own words");
+
+        // One of the two cleared leaves the other alone.
+        set_service(&path, "postgres", None, Some(15432)).unwrap();
+        let read: Project = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(read.services["postgres"].version, None);
+        assert_eq!(read.services["postgres"].port, Some(15432));
+
+        // Both cleared takes the heading with them rather than leaving an
+        // empty one behind.
+        set_service(&path, "postgres", None, None).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("postgres"),
+            "the empty heading should go:\n{text}"
+        );
+        let read: Project = toml::from_str(&text).unwrap();
+        assert!(read.services.is_empty());
+        assert!(
+            read.app.sites_in_browser,
+            "and everything else still stands"
+        );
     }
 
     #[test]

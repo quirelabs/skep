@@ -173,7 +173,7 @@ impl Skep {
             "Command line",
             "skep in a terminal, and skep-mcp for an agent. They are links to the copies inside \
              this application, so the command and the window are never two different versions.",
-            true,
+            false,
         ));
 
         out = match &found {

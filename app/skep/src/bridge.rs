@@ -29,6 +29,13 @@ pub enum Command {
     StartProject(String),
     /// Stop showing a project. Its files are untouched.
     ForgetProject(String),
+    /// What a service should be set to on this machine. Either field cleared
+    /// means back to the default rather than empty.
+    Configure {
+        service: String,
+        version: Option<String>,
+        port: Option<u16>,
+    },
     /// Which appearance to wear, or to follow the system.
     Wear(&'static str),
     /// Which screens the sidebar should not show. The whole list, since the
@@ -453,6 +460,54 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
                 }
                 Err(error) => Err(error),
             }
+        }
+        Command::Configure {
+            service,
+            version,
+            port,
+        } => {
+            let paths = engine.paths().clone();
+            let written = comb_services::project::ensure_settings(&paths).and_then(|path| {
+                comb_services::project::set_service(&path, &service, version.as_deref(), port)
+            });
+            if let Err(error) = written {
+                let _ = reports.send(Update::Failed(error.to_string()));
+                return;
+            }
+
+            // The spec is built from the file, so it has to be built again for
+            // the change to mean anything. Whatever was running is put back
+            // the way it was: a port is not worth a service somebody has to
+            // remember to start again.
+            let overview = engine.overview().await;
+            let was_running = overview
+                .services
+                .iter()
+                .filter(|status| status.id.service.as_str() == service && status.state.is_running())
+                .map(|status| status.id.clone())
+                .collect::<Vec<_>>();
+            for id in &was_running {
+                let _ = engine.stop(id).await;
+            }
+            let rebuilt = comb_services::spec_default(&service, None, &paths);
+            match rebuilt {
+                Ok(spec) => {
+                    let id = spec.id.clone();
+                    if let Err(error) = engine.upsert(spec).await {
+                        let _ = reports.send(Update::Failed(error.to_string()));
+                        return;
+                    }
+                    if !was_running.is_empty()
+                        && let Err(error) = engine.start(&id).await
+                    {
+                        let _ = reports.send(Update::Failed(error.to_string()));
+                    }
+                }
+                Err(error) => {
+                    let _ = reports.send(Update::Failed(error.to_string()));
+                }
+            }
+            return;
         }
         Command::Wear(appearance) => {
             let paths = engine.paths().clone();
