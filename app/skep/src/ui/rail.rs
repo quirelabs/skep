@@ -49,9 +49,25 @@ pub(super) const TITLEBAR: f32 = 44.;
 pub(super) const LIGHTS: f32 = 84.;
 
 impl Skep {
+    /// The key a screen is put away under. The name as the rail spells it,
+    /// lowercased, so what lands in config.toml is something a person could
+    /// have typed themselves.
+    pub(super) fn key(name: &str) -> String {
+        name.to_ascii_lowercase()
+    }
+
+    /// Whether this machine has put a screen away. Settings can never be:
+    /// it is the way back, and a sidebar you cannot undo is a trap.
+    pub(super) fn is_hidden(&self, name: &str) -> bool {
+        name != "Settings" && self.hidden.contains(&Self::key(name))
+    }
+
     pub(super) fn rail(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut items = Vec::with_capacity(RAIL.len());
         for (index, (name, glyph, page)) in RAIL.iter().enumerate() {
+            if self.is_hidden(name) {
+                continue;
+            }
             items.push(self.rail_item(index, name, glyph, *page, cx));
         }
 

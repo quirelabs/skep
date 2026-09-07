@@ -29,6 +29,9 @@ pub enum Command {
     StartProject(String),
     /// Stop showing a project. Its files are untouched.
     ForgetProject(String),
+    /// Which screens the sidebar should not show. The whole list, since the
+    /// list is the answer rather than a change to one.
+    Hide(Vec<String>),
     /// Take a directory to be a project, with what to run in it.
     AddProject {
         directory: String,
@@ -107,6 +110,7 @@ pub enum Update {
     /// The app's own preferences, as config.toml has them.
     Preferences {
         sites_in_browser: bool,
+        hidden: Vec<String>,
     },
     /// Every project this machine knows about.
     Projects(Vec<Project>),
@@ -284,6 +288,7 @@ fn tell_preferences(paths: &comb::Paths, reports: &UnboundedSender<Update>) {
     let settings = comb_services::project::settings(paths).unwrap_or_default();
     let _ = reports.send(Update::Preferences {
         sites_in_browser: settings.app.sites_in_browser,
+        hidden: settings.app.hidden,
     });
 }
 
@@ -444,6 +449,18 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
                 }
                 Err(error) => Err(error),
             }
+        }
+        Command::Hide(hidden) => {
+            let paths = engine.paths().clone();
+            match comb_services::project::ensure_settings(&paths)
+                .and_then(|path| comb_services::project::set_hidden(&path, &hidden))
+            {
+                Ok(()) => tell_preferences(&paths, reports),
+                Err(error) => {
+                    let _ = reports.send(Update::Failed(error.to_string()));
+                }
+            }
+            Ok(())
         }
         Command::Prefer(name, value) => {
             let paths = engine.paths().clone();

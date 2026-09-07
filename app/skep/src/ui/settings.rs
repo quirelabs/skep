@@ -35,6 +35,7 @@ impl Skep {
                     .min_w_0()
                     .overflow_y_scroll()
                     .child(self.command_line(cx))
+                    .child(self.sidebar(cx))
                     .child(self.behaviour(cx))
                     .child(self.certificates(cx))
                     .child(self.service_settings()),
@@ -151,6 +152,103 @@ impl Skep {
         }
     }
 
+    /// What the sidebar carries. Skep is designed to hold more than any one
+    /// person needs, and a screen somebody never opens is clutter no matter
+    /// how good it is, so putting one away is a thing they can do rather than
+    /// a thing they have to ask for.
+    ///
+    /// Away, not off. What is hidden keeps running: mail is still caught,
+    /// sites are still served. Anything else would make this a switch that
+    /// silently breaks a project, and this list is here to tidy a sidebar.
+    pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut out = div().flex().flex_col().w_full().child(self.section(
+            "Sidebar",
+            "Screens you do not want. What you put away keeps working, it just stops taking up \
+             room, and this is where it comes back from.",
+            false,
+        ));
+
+        for (name, _, page) in super::rail::RAIL {
+            // Settings is not offered: it is the way back from every other
+            // one of these.
+            let unbuilt = page.is_none();
+            let shown = !self.is_hidden(name);
+            out = out.child(self.showing(name, unbuilt, shown, cx));
+        }
+        out.into_any_element()
+    }
+
+    /// One screen and whether it is in the sidebar. The same row and the same
+    /// switch as every other preference, because it is one.
+    fn showing(
+        &self,
+        name: &'static str,
+        unbuilt: bool,
+        shown: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = &self.theme;
+        let mut hidden: Vec<String> = self.hidden.iter().cloned().collect();
+        let key = Self::key(name);
+        // The whole list, either way: what is written down is the answer, not
+        // the change that produced it.
+        if shown {
+            hidden.push(key);
+            hidden.sort();
+            hidden.dedup();
+        } else {
+            hidden.retain(|held| held != &key);
+        }
+
+        div()
+            .id(SharedString::from(format!("show-{name}")))
+            .group("showing")
+            .relative()
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(2.))
+                    .bg(theme.accent)
+                    .opacity(0.)
+                    .group_hover("showing", |style| style.opacity(1.)),
+            )
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .w_full()
+            .px(px(MARGIN))
+            .py_2p5()
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.raised))
+            .on_click(cx.listener(move |skep, _, _, cx| {
+                let _ = skep.commands.send(Command::Hide(hidden.clone()));
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().label().child(SharedString::from(name)))
+                    // An honest label on the two the rail shows dimmed. A
+                    // switch for something that does not exist yet should say
+                    // so rather than look broken.
+                    .children(unbuilt.then(|| {
+                        div()
+                            .caption()
+                            .text_color(theme.idle)
+                            .child(SharedString::from("not built yet"))
+                    })),
+            )
+            .child(self.switch(shown))
+    }
+
     /// What the app does, as opposed to what it holds. Written to
     /// config.toml, so it is the machine's preference and outlives the window.
     pub(super) fn behaviour(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -230,27 +328,30 @@ impl Skep {
                             .child(SharedString::from(about)),
                     ),
             )
-            .child(
-                // A switch rather than a tick: it is a thing with two
-                // positions, and the knob moving across says which.
-                div()
-                    .flex()
-                    .items_center()
-                    .flex_shrink_0()
-                    .w(px(34.))
-                    .h(px(20.))
-                    .mt_0p5()
-                    .px(px(2.))
-                    .rounded_full()
-                    .bg(if on { theme.accent } else { theme.raised })
-                    .border_1()
-                    .border_color(if on { theme.accent } else { theme.border })
-                    // The spacer leads when it is on, so the knob is where
-                    // the eye expects it: left for off, right for on.
-                    .children(on.then(|| div().flex_1()))
-                    .child(div().size(px(14.)).rounded_full().bg(theme.base))
-                    .children((!on).then(|| div().flex_1())),
-            )
+            .child(self.switch(on))
+    }
+
+    /// A switch rather than a tick: it is a thing with two positions, and the
+    /// knob moving across says which. One of them, so no preference anywhere
+    /// can invent a second shape.
+    pub(super) fn switch(&self, on: bool) -> impl IntoElement {
+        let theme = &self.theme;
+        div()
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .w(px(34.))
+            .h(px(20.))
+            .px(px(2.))
+            .rounded_full()
+            .bg(if on { theme.accent } else { theme.raised })
+            .border_1()
+            .border_color(if on { theme.accent } else { theme.border })
+            // The spacer leads when it is on, so the knob is where the eye
+            // expects it: left for off, right for on.
+            .children(on.then(|| div().flex_1()))
+            .child(div().size(px(14.)).rounded_full().bg(theme.base))
+            .children((!on).then(|| div().flex_1()))
     }
 
     /// A section's name and what it is for. Everything below it belongs to it

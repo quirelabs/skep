@@ -3,7 +3,7 @@
 //! engine never reported.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -171,6 +171,8 @@ pub struct Skep {
     was_active: bool,
     /// Whether a site opens in the browser rather than in the pane.
     sites_in_browser: bool,
+    /// Screens put away, by the name the rail knows them under.
+    hidden: BTreeSet<String>,
     /// Every project this machine knows about.
     projects: Vec<crate::bridge::Project>,
     /// A project being described, after its folder has been chosen.
@@ -288,6 +290,7 @@ impl Skep {
             scout: Rc::new(RefCell::new(None)),
             was_active: true,
             sites_in_browser: false,
+            hidden: BTreeSet::new(),
             projects: Vec::new(),
             naming: None,
             sky: None,
@@ -416,8 +419,20 @@ impl Skep {
                     None => self.site_trouble.push(why),
                 },
                 Update::Projects(projects) => self.projects = projects,
-                Update::Preferences { sites_in_browser } => {
+                Update::Preferences {
+                    sites_in_browser,
+                    hidden,
+                } => {
                     self.sites_in_browser = sites_in_browser;
+                    self.hidden = hidden.into_iter().collect();
+                    // A screen put away while you are standing on it cannot
+                    // stay under you.
+                    if rail::RAIL
+                        .iter()
+                        .any(|(name, _, page)| *page == Some(self.page) && self.is_hidden(name))
+                    {
+                        self.page = Page::Services;
+                    }
                 }
                 Update::Sites {
                     sites,

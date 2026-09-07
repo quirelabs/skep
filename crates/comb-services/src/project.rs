@@ -46,6 +46,11 @@ pub struct App {
     /// pane beside the list.
     #[serde(default)]
     pub sites_in_browser: bool,
+    /// Screens this machine does not want in the sidebar. Hidden only: what
+    /// is hidden keeps running, because a person tidying a sidebar is not
+    /// asking for their mail to stop being caught.
+    #[serde(default)]
+    pub hidden: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -444,6 +449,18 @@ pub fn forget_project(path: &Path, directory: &str) -> Result<bool> {
 pub fn set_preference(path: &Path, name: &str, value: bool) -> Result<()> {
     let mut document = read(path)?;
     table(path, &mut document, "app")?.insert(name, toml_edit::value(value));
+    write(path, &document)
+}
+
+/// The screens this machine has put away. Written whole rather than added to,
+/// since the list is the answer rather than a log of changes to it.
+pub fn set_hidden(path: &Path, hidden: &[String]) -> Result<()> {
+    let mut document = read(path)?;
+    let mut list = toml_edit::Array::new();
+    for name in hidden {
+        list.push(name.as_str());
+    }
+    table(path, &mut document, "app")?.insert("hidden", toml_edit::value(list));
     write(path, &document)
 }
 
@@ -1072,6 +1089,25 @@ mod tests {
 
         assert_eq!(project.sites["legacy.test"], 3000);
         assert!(project.run.is_none(), "nothing here is skep's to start");
+    }
+
+    #[test]
+    fn what_is_put_away_is_written_whole_and_read_back() {
+        let path = scratch("hidden");
+        std::fs::write(&path, "# mine\n[app]\nsites_in_browser = true\n").unwrap();
+
+        set_hidden(&path, &["mail".to_string(), "logs".to_string()]).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let read: Project = toml::from_str(&text).unwrap();
+        assert_eq!(read.app.hidden, ["mail", "logs"]);
+        assert!(read.app.sites_in_browser, "the other preference survives");
+        assert!(text.contains("# mine"), "and so does the file's own words");
+
+        // Emptying it is the answer too, not an absence of one.
+        set_hidden(&path, &[]).unwrap();
+        let read: Project = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(read.app.hidden.is_empty());
     }
 
     #[test]
