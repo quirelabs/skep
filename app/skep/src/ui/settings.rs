@@ -359,7 +359,7 @@ impl Skep {
                             .child(SharedString::from("not built yet"))
                     })),
             )
-            .child(self.switch(shown))
+            .child(self.switch(name, shown))
     }
 
     /// What the app does, as opposed to what it holds. Written to
@@ -441,30 +441,53 @@ impl Skep {
                             .child(SharedString::from(about)),
                     ),
             )
-            .child(self.switch(on))
+            .child(self.switch(name, on))
     }
 
     /// A switch rather than a tick: it is a thing with two positions, and the
     /// knob moving across says which. One of them, so no preference anywhere
     /// can invent a second shape.
-    pub(super) fn switch(&self, on: bool) -> impl IntoElement {
-        let theme = &self.theme;
+    ///
+    /// The knob slides and the track fills rather than both changing between
+    /// one frame and the next. This is the one place in the window where
+    /// motion carries meaning rather than smoothing an arrival: which way it
+    /// travelled is what says which way it just went, and a switch that
+    /// teleports is the control the platform is unanimous about.
+    pub(super) fn switch(&self, name: &str, on: bool) -> impl IntoElement {
+        let (base, raised, border, lit) = (
+            self.theme.base,
+            self.theme.raised,
+            self.theme.border,
+            self.theme.on,
+        );
         div()
-            .flex()
-            .items_center()
+            .relative()
             .flex_shrink_0()
             .w(px(34.))
             .h(px(20.))
-            .px(px(2.))
             .rounded_full()
-            .bg(if on { theme.accent } else { theme.raised })
             .border_1()
-            .border_color(if on { theme.accent } else { theme.border })
-            // The spacer leads when it is on, so the knob is where the eye
-            // expects it: left for off, right for on.
-            .children(on.then(|| div().flex_1()))
-            .child(div().size(px(14.)).rounded_full().bg(theme.base))
-            .children((!on).then(|| div().flex_1()))
+            .with_animation(
+                // The state is part of the name, so this runs again every
+                // time the state changes rather than once when it appears.
+                SharedString::from(format!("switch-{name}-{on}")),
+                Animation::new(MOTION).with_easing(ease_in_out),
+                move |switch, delta| {
+                    let along = if on { delta } else { 1. - delta };
+                    switch
+                        .bg(paint::mix(raised, lit, along))
+                        .border_color(paint::mix(border, lit, along))
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(2.))
+                                .left(px(2. + along * 14.))
+                                .size(px(14.))
+                                .rounded_full()
+                                .bg(base),
+                        )
+                },
+            )
     }
 
     /// A section's name and what it is for. Everything below it belongs to it

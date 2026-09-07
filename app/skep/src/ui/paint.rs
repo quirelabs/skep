@@ -137,6 +137,19 @@ pub(super) fn fingerprint(text: &str) -> u32 {
     sum
 }
 
+/// One colour part of the way to another, mixed in rgb rather than through
+/// hue, which is the only way orange to grey goes the short way round.
+pub(super) fn mix(from: Hsla, to: Hsla, along: f32) -> Hsla {
+    let (a, b) = (from.to_rgb(), to.to_rgb());
+    gpui::Rgba {
+        r: a.r + (b.r - a.r) * along,
+        g: a.g + (b.g - a.g) * along,
+        b: a.b + (b.b - a.b) * along,
+        a: a.a + (b.a - a.a) * along,
+    }
+    .into()
+}
+
 pub(super) fn faded(color: Hsla, alpha: f32) -> Hsla {
     Hsla { a: alpha, ..color }
 }

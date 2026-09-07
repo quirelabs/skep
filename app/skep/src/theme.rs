@@ -62,6 +62,14 @@ pub struct Theme {
     /// What panels and rows are made of: the raised colour with the wash
     /// showing through, so a surface belongs to the window it sits in.
     pub surface: Hsla,
+    /// What a control that is on is filled with.
+    ///
+    /// The app's own orange, which is the one place the palette's rule bends.
+    /// Colour is status everywhere else, and this is not status; it is the
+    /// platform's convention, since every switch on this machine wears the
+    /// accent colour when it is on, and it is the colour the icon has made
+    /// the app's own.
+    pub on: Hsla,
     /// Quiet text that sits on the wash rather than on a surface. Stronger
     /// than muted on purpose: over a colour that shifts across the window,
     /// grey stops carrying, so this is the text colour held back instead.
@@ -93,6 +101,7 @@ impl Theme {
             weather: (0.24, 0.045),
             wash: 0.05,
             surface: alpha(0x17171a, 0.78),
+            on: rgb(0xff7a2a).into(),
             chrome: alpha(0xf2f1ee, 0.70),
         }
     }
@@ -120,11 +129,17 @@ impl Theme {
                 rgb(0xff6f91).into(),
                 rgb(0x7c8cff).into(),
             ],
-            // Lighter on paper, and a touch more grain: there is no darkness
-            // for the colour to glow against, so it has to stay a suggestion.
-            weather: (0.24, 0.050),
+            // Stronger on paper, not lighter. The same fraction of a colour
+            // laid over white is a fraction of the impact it has over black,
+            // so matching the dark side's number gave a wash you had to look
+            // for. This is what it takes to land the same, and it still
+            // leaves the quietest text at 4.63 against the worst of it.
+            weather: (0.40, 0.050),
             wash: 0.05,
             surface: alpha(0xffffff, 0.78),
+            // Deeper than the dark side's, because a pale orange on paper is
+            // a suggestion rather than a state.
+            on: rgb(0xf0690f).into(),
             // 0.70 rather than the dark side's, because the wash over paper
             // leaves less headroom: this is 5.54 against the busiest corner.
             chrome: alpha(0x1a1a1c, 0.70),
