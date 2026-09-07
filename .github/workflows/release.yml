@@ -80,3 +80,108 @@ jobs:
             dist/*.sha256
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+  # The window, as something a person double clicks. Separate from the
+  # binaries job because it needs secrets that a fork's pull request will
+  # never have, and a release without them should still produce the command
+  # line rather than nothing at all.
+  app:
+    runs-on: macos-latest
+    # Notarisation takes minutes of waiting on Apple, not on us.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: rustup show
+
+      # Everything below needs a Developer ID. Said once, here, so the rest of
+      # the job can assume it and the skip is legible in the log.
+      - name: Is this a signing build
+        id: signing
+        env:
+          # Through the environment rather than interpolated into the script,
+          # so a certificate never lands on a command line.
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          if [ -n "$CERTIFICATE" ]; then
+            echo "possible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "possible=false" >> "$GITHUB_OUTPUT"
+            echo "no APPLE_CERTIFICATE; the dmg will not be built" >&2
+          fi
+
+      # A keychain of its own, deleted at the end, so nothing is left behind
+      # on a runner that is reused.
+      - name: Signing identity
+        if: steps.signing.outputs.possible == 'true'
+        env:
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$CERTIFICATE" | base64 --decode > /tmp/certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import /tmp/certificate.p12 -k build.keychain \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          # Without this codesign stops to ask for the password, on a machine
+          # with nobody at it.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain > /dev/null
+          rm -f /tmp/certificate.p12
+
+      - name: Bundle and sign
+        if: steps.signing.outputs.possible == 'true'
+        env:
+          SKEP_SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: scripts/bundle.sh --sign
+
+      - name: Disk image
+        if: steps.signing.outputs.possible == 'true'
+        env:
+          SKEP_SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: scripts/dmg.sh
+
+      # Submitted and waited for. The staple is the point: it writes the
+      # ticket into the image so a machine with no network still opens it
+      # without a warning.
+      - name: Notarise
+        if: steps.signing.outputs.possible == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit target/bundle/Skep.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM" \
+            --wait --timeout 30m
+          xcrun stapler staple target/bundle/Skep.dmg
+          # What a person's machine will decide, asked here instead.
+          spctl --assess --type open --context context:primary-signature \
+            -vv target/bundle/Skep.dmg
+
+      - name: Name it for the release
+        if: steps.signing.outputs.possible == 'true'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mv target/bundle/Skep.dmg "target/bundle/Skep-${version}-aarch64.dmg"
+          cd target/bundle && shasum -a 256 "Skep-${version}-aarch64.dmg" \
+            > "Skep-${version}-aarch64.dmg.sha256"
+
+      - name: Release
+        if: steps.signing.outputs.possible == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/bundle/*.dmg
+            target/bundle/*.sha256
+          fail_on_unmatched_files: true
+
+      - name: Leave nothing on the runner
+        if: always() && steps.signing.outputs.possible == 'true'
+        run: security delete-keychain build.keychain || true
