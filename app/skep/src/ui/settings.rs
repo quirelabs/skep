@@ -367,25 +367,18 @@ impl Skep {
             false,
         ));
 
-        for (name, _, page) in super::rail::RAIL {
+        for (name, _, _) in super::rail::RAIL {
             // Settings is not offered: it is the way back from every other
             // one of these.
-            let unbuilt = page.is_none();
             let shown = !self.is_hidden(name);
-            out = out.child(self.showing(name, unbuilt, shown, cx));
+            out = out.child(self.showing(name, shown, cx));
         }
         out.into_any_element()
     }
 
     /// One screen and whether it is in the sidebar. The same row and the same
     /// switch as every other preference, because it is one.
-    fn showing(
-        &self,
-        name: &'static str,
-        unbuilt: bool,
-        shown: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn showing(&self, name: &'static str, shown: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = &self.theme;
         let mut hidden: Vec<String> = self.hidden.iter().cloned().collect();
         let key = Self::key(name);
@@ -434,16 +427,7 @@ impl Skep {
                     .gap_2()
                     .flex_1()
                     .min_w_0()
-                    .child(div().label().child(SharedString::from(name)))
-                    // An honest label on the two the rail shows dimmed. A
-                    // switch for something that does not exist yet should say
-                    // so rather than look broken.
-                    .children(unbuilt.then(|| {
-                        div()
-                            .caption()
-                            .text_color(theme.idle)
-                            .child(SharedString::from("not built yet"))
-                    })),
+                    .child(div().label().child(SharedString::from(name))),
             )
             .child(self.switch(name, shown))
     }

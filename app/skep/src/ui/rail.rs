@@ -3,17 +3,19 @@
 
 use super::*;
 
-/// The rail shows what skep is designed to have, dimmed where it does not have
-/// it yet. Settings sits apart at the bottom, where settings go.
-pub(super) const RAIL: &[(&str, &str, Option<Page>)] = &[
+/// What the rail carries. Only screens that exist: a dimmed entry for
+/// something unbuilt tells somebody who did not write this that a feature is
+/// broken, or locked, or that they are missing something, and there is no
+/// version of that sentence worth saying to them. Logs and Agent come back
+/// here on the day they open. Settings sits apart at the bottom, where
+/// settings go.
+pub(super) const RAIL: &[(&str, &str, Page)] = &[
     // A skep is a straw beehive and the engine inside it is called comb, so
     // the cell is the app's own shape rather than a borrowed one.
-    ("Services", "hexagon", Some(Page::Services)),
-    ("Sites", "globe-simple", Some(Page::Sites)),
-    ("Projects", "squares-four", Some(Page::Projects)),
-    ("Logs", "list-dashes", None),
-    ("Mail", "envelope-simple", Some(Page::Mail)),
-    ("Agent", "sparkle", None),
+    ("Services", "hexagon", Page::Services),
+    ("Sites", "globe-simple", Page::Sites),
+    ("Projects", "squares-four", Page::Projects),
+    ("Mail", "envelope-simple", Page::Mail),
 ];
 
 /// The thin weight is eight units in a 256 unit box, so an icon lands on whole
@@ -85,13 +87,7 @@ impl Skep {
             .gap_0p5()
             .children(items)
             .child(div().flex_1())
-            .child(self.rail_item(
-                RAIL.len(),
-                "Settings",
-                SETTINGS_GLYPH,
-                Some(Page::Settings),
-                cx,
-            ))
+            .child(self.rail_item(RAIL.len(), "Settings", SETTINGS_GLYPH, Page::Settings, cx))
             .with_animation(
                 ("rail", moves),
                 Animation::new(MOTION).with_easing(ease_in_out),
@@ -294,19 +290,16 @@ impl Skep {
         index: usize,
         name: &'static str,
         glyph: &'static str,
-        page: Option<Page>,
+        page: Page,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let built = page.is_some();
-        let here = page == Some(self.page);
+        let here = page == self.page;
         // On the wash rather than on a surface, so the quiet colour is the
         // text colour held back rather than a grey.
         let colour = if here {
             self.theme.text
-        } else if built {
-            self.theme.chrome
         } else {
-            self.theme.idle
+            self.theme.chrome
         };
 
         let mut item = div()
@@ -349,28 +342,24 @@ impl Skep {
                 .child(SharedString::from(name)),
         );
 
-        match page {
-            Some(page) => item
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.raised))
-                .on_click(cx.listener(move |skep, _, _, cx| {
-                    skep.page = page;
-                    // A page that shows something fetched asks for it on the
-                    // way in rather than showing yesterday's answer.
-                    match page {
-                        Page::Mail => {
-                            let _ = skep.commands.send(Command::Mail);
-                        }
-                        Page::Sites => {
-                            let _ = skep.commands.send(Command::CheckSites);
-                        }
-                        _ => {}
+        item.cursor_pointer()
+            .hover(|style| style.bg(self.theme.raised))
+            .on_click(cx.listener(move |skep, _, _, cx| {
+                skep.page = page;
+                // A page that shows something fetched asks for it on the way
+                // in rather than showing yesterday's answer.
+                match page {
+                    Page::Mail => {
+                        let _ = skep.commands.send(Command::Mail);
                     }
-                    cx.notify();
-                }))
-                .into_any_element(),
-            None => item.into_any_element(),
-        }
+                    Page::Sites => {
+                        let _ = skep.commands.send(Command::CheckSites);
+                    }
+                    _ => {}
+                }
+                cx.notify();
+            }))
+            .into_any_element()
     }
 }
 
@@ -378,7 +367,7 @@ impl Skep {
 mod tests {
     use gpui::AssetSource;
 
-    use super::{COLLAPSE_GLYPH, RAIL, SETTINGS_GLYPH};
+    use super::{COLLAPSE_GLYPH, Page, RAIL, SETTINGS_GLYPH};
     use crate::icons::Icons;
 
     /// A glyph that does not resolve fails silently at runtime: gpui draws
@@ -407,7 +396,10 @@ mod tests {
 
     #[test]
     fn every_glyph_the_rail_asks_for_exists() {
-        for (name, glyph, _) in RAIL.iter().chain([&("Settings", SETTINGS_GLYPH, None)]) {
+        for (name, glyph, _) in RAIL
+            .iter()
+            .chain([&("Settings", SETTINGS_GLYPH, Page::Settings)])
+        {
             let found = Icons
                 .load(&format!("icons/{glyph}.svg"))
                 .expect("looking one up cannot fail");

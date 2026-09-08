@@ -546,7 +546,7 @@ impl Skep {
                     // stay under you.
                     if rail::RAIL
                         .iter()
-                        .any(|(name, _, page)| *page == Some(self.page) && self.is_hidden(name))
+                        .any(|(name, _, page)| *page == self.page && self.is_hidden(name))
                     {
                         self.page = Page::Services;
                     }
