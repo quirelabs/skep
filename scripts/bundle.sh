@@ -50,6 +50,9 @@ for binary in skep-app skep skep-mcp skep-helper; do
 	cp "target/${profile}/${binary}" "${app}/Contents/MacOS/"
 done
 cp app/skep/assets/skep.icns "${app}/Contents/Resources/"
+# The terms it is under, inside the thing they cover. Apache-2.0 asks that the
+# licence travel with the work, and a dmg is where somebody would look.
+cp LICENSE-APACHE LICENSE-MIT "${app}/Contents/Resources/"
 sed "s/__VERSION__/${version}/g" app/skep/Info.plist >"${app}/Contents/Info.plist"
 # Four bytes that predate Info.plist and that Finder still reads.
 printf 'APPL????' >"${app}/Contents/PkgInfo"

@@ -78,19 +78,18 @@ Three caveats, because the number is only worth what its method is worth:
 
 ## Sixty seconds
 
-macOS on Apple silicon. No toolchain, no account, nothing installed system
-wide.
+macOS 13.3 or newer, on Apple silicon. No toolchain, no account, nothing
+installed system wide.
 
-```sh
-curl -fsSL https://github.com/quirelabs/skep/releases/latest/download/skep-aarch64-apple-darwin.tar.gz | tar -xz
-export PATH="$PWD/skep:$PATH"
-```
+Download `Skep.dmg` from [the latest release][latest], drag it to
+Applications, and open it. It is signed and notarised, so it opens without an
+argument.
 
-Fetched with `curl` the binaries are not quarantined and run as they are. A
-copy downloaded through a browser is, and macOS will refuse it until you clear
-that with `xattr -d com.apple.quarantine skep/*`. There is a
-`skep-aarch64-apple-darwin.tar.gz.sha256` beside the archive if you would
-rather check than trust.
+The command line comes inside it. Settings has a button that puts `skep` and
+`skep-mcp` where your shell can find them, as links to the copies in the
+application, so the command and the window can never be different versions.
+
+[latest]: https://github.com/quirelabs/skep/releases/latest
 
 Building it yourself takes Rust 1.96, which `rustup` fetches because the
 toolchain is pinned:
@@ -98,7 +97,7 @@ toolchain is pinned:
 ```sh
 git clone https://github.com/quirelabs/skep
 cd skep
-cargo build --workspace       # then target/debug in place of skep/ below
+scripts/bundle.sh --debug        # Skep.app, in target/bundle
 ```
 
 Describe what a project needs, in `skep.toml` at its root:
@@ -135,13 +134,9 @@ than failing with an exit code:
   `brew services stop postgresql@17`, or change the port in skep.toml.
 ```
 
-There is a window too, which hosts the engine itself and stops services when
-it quits. It is not in the release yet; it ships on its own once it is signed
-and notarised. Until then it is a checkout away:
-
-```sh
-cargo run -p skep-app
-```
+The window hosts the engine itself and takes the services down with it when
+it closes, so `skep serve` is for the terminal and the two are the same engine
+either way.
 
 Other commands: `skep status`, `skep start|stop|restart <service>`,
 `skep logs <service>`, `skep snapshot <service> <name>`,
@@ -149,17 +144,21 @@ Other commands: `skep status`, `skep start|stop|restart <service>`,
 
 ## For agents
 
-Wire the MCP server into a client by pointing it at the built binary:
+Wire the MCP server into a client by pointing it at the copy inside the
+application:
 
 ```json
 {
   "mcpServers": {
     "skep": {
-      "command": "/absolute/path/to/skep/skep-mcp"
+      "command": "/Applications/Skep.app/Contents/MacOS/skep-mcp"
     }
   }
 }
 ```
+
+The absolute path rather than the bare name, because a client launched from
+the Dock does not always inherit a shell's `PATH`.
 
 The server is a client of the engine, not a second copy of it. If no engine is
 running it says so and stays up:
@@ -177,6 +176,8 @@ no skep engine is running. Start one with `skep serve`.
 | `skep_logs` | A bounded tail of a service's output |
 | `skep_project` | Read a repository's `skep.toml` and report or start what it needs |
 | `skep_sites` | Every hostname served over https, and the port behind each |
+| `skep_share` | Put a site, a project or a service on a public url, and wait for it |
+| `skep_unshare` | Take it back off |
 | `skep_mail` | What the mail catcher caught, searchable, and one message in full |
 | `skep_snapshot` | Keep a named copy of a service's data |
 | `skep_snapshots` | List the copies kept |
@@ -224,9 +225,10 @@ are products rather than dependencies and ship as release binaries.
 
 ## Where it runs
 
-macOS on Apple silicon. Every pinned release in the catalog is an arm64 build,
-and CI refuses to run on anything else rather than testing the wrong
-architecture.
+macOS 13.3 or newer, on Apple silicon. Every pinned release in the catalog is
+an arm64 build, and CI refuses to run on anything else rather than testing the
+wrong architecture. The floor is 13.3 because the message viewer asks WebKit
+to be inspectable, which arrived then.
 
 Linux is the intended second platform: all OS specific code is confined to one
 module, one file per system, and Valkey already publishes Linux binaries that

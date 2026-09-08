@@ -1070,8 +1070,19 @@ impl Skep {
         // What a service is set to belongs beside the service, not three
         // navigations away in a list of every service at once. The list is
         // still worth having; it answers a different question.
-        if !status.id.is_branch() {
-            let name = status.id.service.as_str().to_string();
+        //
+        // Only what the catalog knows. A branch takes its port and version
+        // from what it was copied from, and a project or a tunnel is not a
+        // service anybody configures: a project's port is skep's to choose,
+        // which is the whole reason projects work the way they do, and
+        // writing one into config.toml would say otherwise.
+        let name = status.id.service.as_str();
+        let settable = !status.id.is_branch()
+            && comb_services::catalog()
+                .iter()
+                .any(|adapter| adapter.name() == name);
+        if settable {
+            let name = name.to_string();
             let running = live;
             let port = status.ports.values().next().copied();
             row = row.child(
