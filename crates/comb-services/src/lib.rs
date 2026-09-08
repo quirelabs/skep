@@ -8,6 +8,7 @@ mod mongodb;
 mod mysql;
 mod postgres;
 pub mod project;
+pub mod update;
 mod valkey;
 
 use std::collections::BTreeMap;

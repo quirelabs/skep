@@ -173,6 +173,8 @@ pub struct Skep {
     sites_in_browser: bool,
     /// Screens put away, by the name the rail knows them under.
     hidden: BTreeSet<String>,
+    /// Where the look for a newer skep has got to.
+    newer: Newer,
     /// What each service is pinned to in config.toml, which is not the same
     /// question as what it is running.
     configured: BTreeMap<String, (Option<String>, Option<u16>)>,
@@ -226,6 +228,21 @@ pub(super) enum Tab {
     Machine,
     /// What each service is set to, and by whom.
     Services,
+}
+
+/// Where the look for a newer skep has got to.
+///
+/// Nothing here happens on its own. The check is a button, because an
+/// application that phones anywhere the moment it opens should say so first,
+/// and this one has no way to say so yet.
+pub(super) enum Newer {
+    Unasked,
+    Looking,
+    Current,
+    There(Box<comb_services::update::Release>),
+    Fetching,
+    Fetched,
+    Unknown(SharedString),
 }
 
 /// Which appearance the window wears.
@@ -345,6 +362,7 @@ impl Skep {
             was_active: true,
             sites_in_browser: false,
             hidden: BTreeSet::new(),
+            newer: Newer::Unasked,
             configured: BTreeMap::new(),
             wearing: Wearing::System,
             system: window.appearance(),
@@ -500,6 +518,19 @@ impl Skep {
                     None => self.site_trouble.push(why),
                 },
                 Update::Projects(projects) => self.projects = projects,
+                Update::Offered(found) => {
+                    self.newer = match found {
+                        Ok(Some(release)) => Newer::There(release),
+                        Ok(None) => Newer::Current,
+                        Err(why) => Newer::Unknown(why.into()),
+                    };
+                }
+                Update::Fetched(landed) => {
+                    self.newer = match landed {
+                        Ok(_) => Newer::Fetched,
+                        Err(why) => Newer::Unknown(why.into()),
+                    };
+                }
                 Update::Preferences {
                     sites_in_browser,
                     hidden,

@@ -38,6 +38,11 @@ pub enum Command {
         version: Option<String>,
         port: Option<u16>,
     },
+    /// Is there a newer skep. Asked rather than assumed: nothing here
+    /// reaches out until something asks it to.
+    LookForUpdate,
+    /// Fetch the release last offered, check it, and open it.
+    GetUpdate(Box<comb_services::update::Release>),
     /// Which appearance to wear, or to follow the system.
     Wear(&'static str),
     /// Which screens the sidebar should not show. The whole list, since the
@@ -73,6 +78,11 @@ pub enum Command {
 
 /// What the engine reports.
 pub enum Update {
+    /// What a look for a newer skep found: a release, or nothing, or why it
+    /// could not tell.
+    Offered(Result<Option<Box<comb_services::update::Release>>, String>),
+    /// Where the disk image landed, or why it did not.
+    Fetched(Result<String, String>),
     /// Everything at an instant, stamped so the replica knows what it covers.
     Overview(Box<Overview>),
     Event(Box<Event>),
@@ -518,6 +528,37 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
                     let _ = reports.send(Update::Failed(error.to_string()));
                 }
             }
+            return;
+        }
+        Command::LookForUpdate => {
+            let found = match comb_services::update::look(comb_services::update::MANIFEST).await {
+                Ok(manifest) => {
+                    comb_services::update::offered(&manifest, env!("CARGO_PKG_VERSION"))
+                        .map(|release| release.map(Box::new))
+                        .map_err(|error| error.to_string())
+                }
+                Err(error) => Err(error.to_string()),
+            };
+            let _ = reports.send(Update::Offered(found));
+            return;
+        }
+        Command::GetUpdate(release) => {
+            // Into Downloads, because that is where a thing somebody
+            // downloaded belongs and where they will look for it again.
+            let into = std::env::var("HOME")
+                .map(|home| std::path::PathBuf::from(home).join("Downloads"))
+                .unwrap_or_else(|_| std::env::temp_dir());
+            let landed = comb_services::update::fetch(&release, &into)
+                .await
+                .map(|path| path.display().to_string())
+                .map_err(|error| error.to_string());
+            if let Ok(path) = &landed {
+                // Opened rather than installed. Replacing a running bundle
+                // and relaunching it correctly is a great deal of risk for
+                // the sake of one drag.
+                let _ = std::process::Command::new("open").arg(path).spawn();
+            }
+            let _ = reports.send(Update::Fetched(landed));
             return;
         }
         Command::Wear(appearance) => {

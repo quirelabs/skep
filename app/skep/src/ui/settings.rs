@@ -56,7 +56,11 @@ impl Skep {
                         Tab::General => {
                             vec![self.appearance(cx), self.behaviour(cx), self.sidebar(cx)]
                         }
-                        Tab::Machine => vec![self.command_line(cx), self.certificates(cx)],
+                        Tab::Machine => vec![
+                            self.version(cx),
+                            self.command_line(cx),
+                            self.certificates(cx),
+                        ],
                         Tab::Services => vec![self.service_settings()],
                     }),
             )
@@ -154,6 +158,88 @@ impl Skep {
                     .child(choices),
             )
             .into_any_element()
+    }
+
+    /// Which skep this is, and whether there is a newer one.
+    ///
+    /// The check is a button rather than something that happens when the
+    /// window opens. Every other thing in this application that reaches out
+    /// does so because somebody asked it to, and an updater is not the place
+    /// to make the first exception.
+    pub(super) fn version(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = &self.theme;
+        let mut out = div().flex().flex_col().w_full().child(self.section(
+            "Version",
+            "Skep updates by disk image: this fetches it, checks it against what the release \
+             promised, and opens it for you to drag across.",
+            false,
+        ));
+
+        out = out.child(self.fact("running", env!("CARGO_PKG_VERSION").to_string(), true));
+
+        let (said, colour) = match &self.newer {
+            Newer::Unasked => (String::new(), theme.muted),
+            Newer::Looking => ("looking".to_string(), theme.muted),
+            Newer::Current => ("this is the newest there is".to_string(), theme.muted),
+            Newer::There(release) => (format!("{} is out", release.version), theme.text),
+            Newer::Fetching => ("fetching".to_string(), theme.muted),
+            Newer::Fetched => (
+                "in your Downloads, and opened. Drag it across.".to_string(),
+                theme.muted,
+            ),
+            Newer::Unknown(why) => (why.to_string(), theme.failed),
+        };
+        if !said.is_empty() {
+            out = out.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .w_full()
+                    .px(px(MARGIN))
+                    .py_1p5()
+                    .child(div().w(px(120.)).flex_shrink_0())
+                    .child(
+                        div()
+                            .label()
+                            .text_color(colour)
+                            .child(SharedString::from(said)),
+                    ),
+            );
+        }
+
+        let control = match &self.newer {
+            Newer::There(release) => {
+                let release = release.clone();
+                self.chip("get-update", "Download it").on_click(cx.listener(
+                    move |skep, _, _, cx| {
+                        skep.newer = Newer::Fetching;
+                        let _ = skep.commands.send(Command::GetUpdate(release.clone()));
+                        cx.notify();
+                    },
+                ))
+            }
+            _ => self
+                .chip("look-for-update", "Check for updates")
+                .on_click(cx.listener(|skep, _, _, cx| {
+                    skep.newer = Newer::Looking;
+                    let _ = skep.commands.send(Command::LookForUpdate);
+                    cx.notify();
+                })),
+        };
+
+        out.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .w_full()
+                .px(px(MARGIN))
+                .py_2()
+                .child(div().w(px(120.)).flex_shrink_0())
+                .child(control),
+        )
+        .into_any_element()
     }
 
     /// Where the command is, and how to put it somewhere if it is nowhere.

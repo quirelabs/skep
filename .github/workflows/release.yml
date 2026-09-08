@@ -173,6 +173,28 @@ jobs:
           cd target/bundle && shasum -a 256 "Skep-${version}-aarch64.dmg" \
             > "Skep-${version}-aarch64.dmg.sha256"
 
+      # What a copy already installed reads to find out it is behind. A
+      # release asset rather than a website, so this works before there is a
+      # website and keeps working if there never is one: `latest` is a
+      # redirect, so the url never changes as versions do.
+      - name: Say what the latest release is
+        if: steps.signing.outputs.possible == 'true'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          image="Skep-${version}-aarch64.dmg"
+          # The same tool the app checks it with, on the file that is actually
+          # being published rather than on one built a second time.
+          sum="$(shasum -a 256 "target/bundle/${image}" | cut -d' ' -f1)"
+          cat > target/bundle/latest.json <<JSON
+          {
+            "version": "${version}",
+            "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${image}",
+            "sha256": "${sum}",
+            "notes": "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
+          }
+          JSON
+          python3 -c "import json,sys; json.load(open('target/bundle/latest.json'))"
+
       - name: Release
         if: steps.signing.outputs.possible == 'true'
         uses: softprops/action-gh-release@v2
@@ -180,6 +202,7 @@ jobs:
           files: |
             target/bundle/*.dmg
             target/bundle/*.sha256
+            target/bundle/latest.json
           fail_on_unmatched_files: true
 
       - name: Leave nothing on the runner
