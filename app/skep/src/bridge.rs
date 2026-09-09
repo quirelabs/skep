@@ -514,6 +514,24 @@ async fn act(engine: &Engine, order: Command, reports: &UnboundedSender<Update>)
             match rebuilt {
                 Ok(spec) => {
                     let id = spec.id.clone();
+                    // A new version is a new instance, and upsert is keyed by
+                    // instance, so the old one would stay registered as a
+                    // stopped row beside the new one. Branches are left: they
+                    // belong to the version they were copied from.
+                    let stale: Vec<InstanceId> = overview
+                        .services
+                        .iter()
+                        .map(|status| status.id.clone())
+                        .filter(|old| {
+                            old.service.as_str() == service && old.tag.is_none() && *old != id
+                        })
+                        .collect();
+                    for old in &stale {
+                        if let Err(error) = engine.deregister(old).await {
+                            let _ = reports.send(Update::Failed(error.to_string()));
+                            return;
+                        }
+                    }
                     if let Err(error) = engine.upsert(spec).await {
                         let _ = reports.send(Update::Failed(error.to_string()));
                         return;

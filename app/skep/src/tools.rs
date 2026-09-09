@@ -104,9 +104,23 @@ pub fn install(from: &Path, into: &Path) -> std::io::Result<PathBuf> {
             ));
         }
         let link = into.join(name);
-        // A dangling link still counts as existing, which is exactly the case
-        // that needs clearing: it is a link to a build that has been deleted.
-        if link.exists() || link.symlink_metadata().is_ok() {
+        // Only a link is ever replaced, and only one that pointed at some
+        // build of this application. A real file of the same name is
+        // somebody else's and is named rather than removed. A dangling link
+        // is the one case that needs clearing: a build that has been deleted.
+        if let Ok(found) = link.symlink_metadata() {
+            // exists() follows the link, so a dangling one reads as absent.
+            let ours = found.file_type().is_symlink()
+                && (!link.exists()
+                    || std::fs::read_link(&link)
+                        .map(|target| target.file_name() == source.file_name())
+                        .unwrap_or(false));
+            if !ours {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("{} is already there and is not skep's", link.display()),
+                ));
+            }
             std::fs::remove_file(&link)?;
         }
         std::os::unix::fs::symlink(&source, &link)?;
@@ -207,6 +221,29 @@ mod tests {
         assert!(
             into.join("skep").exists(),
             "the link should point at a file"
+        );
+    }
+
+    /// The claim the settings page makes, held by the code that could break
+    /// it: a name that is somebody else's is never taken.
+    #[test]
+    fn a_file_that_is_not_ours_is_left_where_it_is() {
+        let root = scratch("foreign");
+        let (from, into) = (root.join("app"), root.join("bin"));
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&into).unwrap();
+        for name in TOOLS {
+            std::fs::write(from.join(name), "").unwrap();
+        }
+        std::fs::write(into.join("skep"), "somebody else's").unwrap();
+
+        let refused = install(&from, &into).unwrap_err();
+
+        assert_eq!(refused.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read_to_string(into.join("skep")).unwrap(),
+            "somebody else's",
+            "and it is untouched"
         );
     }
 
