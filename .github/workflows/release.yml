@@ -96,6 +96,20 @@ jobs:
       - name: Toolchain
         run: rustup show
 
+      # Its own key rather than the binaries job's. actions/cache only saves
+      # on a miss, so two jobs sharing a key means whichever finishes first
+      # decides what is kept, and this job compiles gpui, which the other
+      # never does. Without this every release builds gpui cold, which is
+      # most of an hour on a runner.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-app-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-app-
+
       # Everything below needs a Developer ID. Said once, here, so the rest of
       # the job can assume it and the skip is legible in the log.
       - name: Is this a signing build
