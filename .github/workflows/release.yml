@@ -75,6 +75,11 @@ jobs:
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
+          # A tag with a suffix (v0.1.0-rc1) is a rehearsal. GitHub's "latest"
+          # is the newest release that is not marked this way, and the updater
+          # reads latest.json from exactly there, so an unmarked rc would be
+          # offered to everybody as an update.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/*.tar.gz
             dist/*.sha256
@@ -219,6 +224,11 @@ jobs:
         if: steps.signing.outputs.possible == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          # A tag with a suffix (v0.1.0-rc1) is a rehearsal. GitHub's "latest"
+          # is the newest release that is not marked this way, and the updater
+          # reads latest.json from exactly there, so an unmarked rc would be
+          # offered to everybody as an update.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             target/bundle/*.dmg
             target/bundle/*.sha256
