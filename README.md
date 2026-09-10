@@ -78,27 +78,19 @@ Three caveats, because the number is only worth what its method is worth:
 
 ## Sixty seconds
 
-macOS 13.3 or newer, on Apple silicon. No toolchain, no account, nothing
+macOS 13.3 or newer on Apple silicon. No toolchain, no account, nothing
 installed system wide.
 
-Download `Skep.dmg` from [the latest release][latest], drag it to
-Applications, and open it. It is signed and notarised, so it opens without an
-argument.
+Download **Skep.dmg** from the
+[latest release](https://github.com/quirelabs/skep/releases/latest), drag it
+to Applications, and open it. It is signed and notarised, so it opens without
+a warning. The window hosts the engine: services are up while it is open and
+come down when it quits.
 
-The command line comes inside it. Settings has a button that puts `skep` and
-`skep-mcp` where your shell can find them, as links to the copies in the
-application, so the command and the window can never be different versions.
-
-[latest]: https://github.com/quirelabs/skep/releases/latest
-
-Building it yourself takes Rust 1.96, which `rustup` fetches because the
-toolchain is pinned:
-
-```sh
-git clone https://github.com/quirelabs/skep
-cd skep
-scripts/bundle.sh --debug        # Skep.app, in target/bundle
-```
+The command line comes with it. Settings has a button that puts `skep` and
+`skep-mcp` where your shell can find them. They are links into the
+application, so the command and the window are never two different versions
+of skep.
 
 Describe what a project needs, in `skep.toml` at its root:
 
@@ -109,11 +101,10 @@ version = "17"
 [services.mailpit]
 ```
 
-Host the engine in one terminal and bring the project up in another:
+Then, from inside that project:
 
 ```sh
-skep serve                         # holds the services; ctrl-c stops them
-cd path/to/your/project && skep up
+skep up
 ```
 
 ```
@@ -134,9 +125,12 @@ than failing with an exit code:
   `brew services stop postgresql@17`, or change the port in skep.toml.
 ```
 
-The window hosts the engine itself and takes the services down with it when
-it closes, so `skep serve` is for the terminal and the two are the same engine
-either way.
+Prefer a terminal to a window? The same release carries
+`skep-aarch64-apple-darwin.tar.gz` with the three binaries and a checksum
+beside it, and `skep serve` hosts the engine in a terminal instead. Building
+from a checkout takes Rust 1.96, which `rustup` fetches because the toolchain
+is pinned: `cargo build --workspace` for the command line, and
+`scripts/bundle.sh --debug` for a runnable `Skep.app`.
 
 Other commands: `skep status`, `skep start|stop|restart <service>`,
 `skep logs <service>`, `skep snapshot <service> <name>`,
@@ -145,6 +139,7 @@ Other commands: `skep status`, `skep start|stop|restart <service>`,
 ## For agents
 
 Wire the MCP server into a client by pointing it at the copy inside the
+application:
 application:
 
 ```json
@@ -159,6 +154,10 @@ application:
 
 The absolute path rather than the bare name, because a client launched from
 the Dock does not always inherit a shell's `PATH`.
+
+If you installed the command from Settings, `skep-mcp` is on your PATH as
+well, but a client launched from the Dock does not always share your shell's
+PATH, so the full path is the one that always works.
 
 The server is a client of the engine, not a second copy of it. If no engine is
 running it says so and stays up:
@@ -176,6 +175,8 @@ no skep engine is running. Start one with `skep serve`.
 | `skep_logs` | A bounded tail of a service's output |
 | `skep_project` | Read a repository's `skep.toml` and report or start what it needs |
 | `skep_sites` | Every hostname served over https, and the port behind each |
+| `skep_share` | Put a site, a project or a service on a public url through a quick tunnel, and wait for the url |
+| `skep_unshare` | Take it back off |
 | `skep_share` | Put a site, a project or a service on a public url, and wait for it |
 | `skep_unshare` | Take it back off |
 | `skep_mail` | What the mail catcher caught, searchable, and one message in full |
@@ -215,13 +216,16 @@ branching a branch gives another sibling rather than a nested one.
 | `app/skep` | The macOS app, built on GPUI |
 | `scripts/pin-release.sh` | Records a service release and its hash for the catalog |
 | `scripts/token-benchmark.sh` | Produces the transcripts in `bench/` |
+| `scripts/bundle.sh` | Assembles `Skep.app`, signed with `--sign`; `scripts/dmg.sh` wraps it |
+| `scripts/icon.py` | Draws the app icon and the menu bar marks from the same geometry |
 
 The engine is a library with no opinion about interfaces. The command line, the
 MCP server and the app are all clients of it, which is why they cannot disagree
 about what is running.
 
 crates.io carries the two libraries only. The command line, MCP server and app
-are products rather than dependencies and ship as release binaries.
+are products rather than dependencies and ship as one release: a signed,
+notarised `Skep.dmg` with the command line inside it.
 
 ## Where it runs
 
