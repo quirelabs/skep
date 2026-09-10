@@ -1632,7 +1632,7 @@ dependencies = [
 
 [[package]]
 name = "fake-service"
-version = "0.1.0-rc1"
+version = "0.1.0"
 dependencies = [
  "libc",
 ]
@@ -4371,7 +4371,7 @@ checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "quire-comb"
-version = "0.1.0-rc1"
+version = "0.1.0"
 dependencies = [
  "criterion",
  "http-body-util",
@@ -4392,7 +4392,7 @@ dependencies = [
 
 [[package]]
 name = "quire-comb-services"
-version = "0.1.0-rc1"
+version = "0.1.0"
 dependencies = [
  "http-body-util",
  "hyper",
@@ -5179,7 +5179,7 @@ checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
 name = "skep-app"
-version = "0.1.0-rc1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -5198,7 +5198,7 @@ dependencies = [
 
 [[package]]
 name = "skep-cli"
-version = "0.1.0-rc1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -5211,7 +5211,7 @@ dependencies = [
 
 [[package]]
 name = "skep-helper"
-version = "0.1.0-rc1"
+version = "0.1.0"
 dependencies = [
  "quire-comb",
  "serde_json",
@@ -5220,7 +5220,7 @@ dependencies = [
 
 [[package]]
 name = "skep-mcp"
-version = "0.1.0-rc1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "quire-comb",
